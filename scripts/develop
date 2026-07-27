@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Symlinks the custom component into the scratch config and starts
+# Home Assistant in debug mode so changes are picked up on restart.
+set -e
+
+cd "$(dirname "$0")/.."
+
+mkdir -p config/custom_components
+ln -sf "$(pwd)/custom_components/alpha_ess_local" config/custom_components/alpha_ess_local
+
+hass -c config --debug

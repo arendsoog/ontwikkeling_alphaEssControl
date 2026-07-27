@@ -1,0 +1,28 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "description": "Connect to your AlphaESS inverter/battery on the local network.",
+                "data": {
+                    "host": "Host (IP address)",
+                    "port": "Port"
+                }
+            }
+        },
+        "error": {
+            "cannot_connect": "Failed to connect",
+            "invalid_auth": "Invalid authentication",
+            "unknown": "Unexpected error"
+        },
+        "abort": {
+            "already_configured": "Device is already configured"
+        }
+    },
+    "entity": {
+        "sensor": {
+            "battery_soc": { "name": "Battery state of charge" },
+            "pv_power": { "name": "PV power" },
+            "grid_power": { "name": "Grid power" }
+        }
+    }
+}

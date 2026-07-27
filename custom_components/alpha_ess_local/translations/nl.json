@@ -1,0 +1,28 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "description": "Maak verbinding met je AlphaESS omvormer/batterij op het lokale netwerk.",
+                "data": {
+                    "host": "Host (IP-adres)",
+                    "port": "Poort"
+                }
+            }
+        },
+        "error": {
+            "cannot_connect": "Verbinden mislukt",
+            "invalid_auth": "Ongeldige authenticatie",
+            "unknown": "Onverwachte fout"
+        },
+        "abort": {
+            "already_configured": "Apparaat is al geconfigureerd"
+        }
+    },
+    "entity": {
+        "sensor": {
+            "battery_soc": { "name": "Batterij laadniveau" },
+            "pv_power": { "name": "PV-vermogen" },
+            "grid_power": { "name": "Netvermogen" }
+        }
+    }
+}

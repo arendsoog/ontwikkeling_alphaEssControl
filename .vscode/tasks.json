@@ -1,0 +1,27 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run Home Assistant",
+            "type": "shell",
+            "command": "scripts/develop",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Lint (ruff)",
+            "type": "shell",
+            "command": "scripts/lint",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run tests",
+            "type": "shell",
+            "command": "pytest --cov=custom_components.alpha_ess_local tests",
+            "problemMatcher": []
+        }
+    ]
+}

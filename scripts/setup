@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Sets up the Python dependencies and a scratch Home Assistant config
+# for running/debugging the integration inside the devcontainer.
+set -e
+
+cd "$(dirname "$0")/.."
+
+python3 -m pip install --upgrade pip
+pip3 install -r requirements-test.txt
+
+mkdir -p config
+if [ ! -f config/configuration.yaml ]; then
+    hass --script ensure_config -c config
+fi
+
+if ! grep -q "logger:" config/configuration.yaml 2>/dev/null; then
+    cat <<'EOF' >> config/configuration.yaml
+
+logger:
+  default: info
+  logs:
+    custom_components.alpha_ess_local: debug
+EOF
+fi
