@@ -1,12 +1,12 @@
 {
     "domain": "alpha_ess_local",
     "name": "AlphaESS Local Control",
-    "codeowners": ["@your-github-username"],
+    "codeowners": ["@arendsoog100"],
     "config_flow": true,
     "dependencies": [],
-    "documentation": "https://github.com/your-github-username/ha-alpha-ess-local",
+    "documentation": "https://github.com/arendsoog100/ha-alpha-ess-local",
     "iot_class": "local_polling",
-    "issue_tracker": "https://github.com/your-github-username/ha-alpha-ess-local/issues",
+    "issue_tracker": "https://github.com/arendsoog100/ha-alpha-ess-local/issues",
     "requirements": [],
     "version": "0.1.0"
 }
