@@ -18,11 +18,102 @@
             "already_configured": "Apparaat is al geconfigureerd"
         }
     },
+    "options": {
+        "step": {
+            "init": {
+                "description": "Stel prijs-, voorspellings- en planningsinstellingen af. Alle velden zijn optioneel en worden pas gebruikt zodra de bijbehorende functie is gebouwd.{solar_forecast_note}",
+                "data": {
+                    "pv_power": "PV-vermogen dak",
+                    "usable_battery_capacity": "Bruikbare batterijcapaciteit",
+                    "inverter_nominal_power": "Nominaal vermogen omvormer",
+                    "provider_use_fee": "Leveringskosten",
+                    "provider_return_fee": "Terugleverkosten",
+                    "vat_percentage": "BTW",
+                    "entsoe_price_entity": "ENTSO-E entity",
+                    "frank_energie_price_entity": "Frank Energie entity",
+                    "forecast_solar_entries": "Forecast.Solar locaties",
+                    "solcast_entries": "Solcast locaties",
+                    "extra_pv_power_entity": "Extra PV-installatie: vermogensensor",
+                    "extra_pv_power_capacity": "Extra PV-installatie: capaciteit",
+                    "extra_pv_control_enabled": "Extra PV: prijssturing inschakelen",
+                    "house_load_power_entity": "Huisverbruik vermogensensor (P1)",
+                    "allow_provider_control_hours": "Uren waarin de leverancier het schema mag overschrijven",
+                    "extra_pv_modbus_hub": "Extra PV: Modbus hub-naam (leeg = uitgeschakeld)",
+                    "extra_pv_modbus_slave": "Extra PV: Modbus slave-ID",
+                    "extra_pv_modbus_address": "Extra PV: Modbus registeradres",
+                    "extra_pv_modbus_on_value": "Extra PV: registerwaarde voor \"aan\"",
+                    "extra_pv_modbus_off_value": "Extra PV: registerwaarde voor \"uit\" (curtailen)",
+                    "persist_daily_charge_limit": "Netlaad-/ontlaadlimiet (1x per dag) bewaren na herstart",
+                    "control_enabled": "Batterijsturing inschakelen (schrijft echte commando's naar de omvormer)"
+                }
+            }
+        }
+    },
     "entity": {
         "sensor": {
             "battery_soc": { "name": "Batterij laadniveau" },
-            "pv_power": { "name": "PV-vermogen" },
-            "grid_power": { "name": "Netvermogen" }
+            "pv_power": { "name": "PV vermogen dak" },
+            "grid_power": { "name": "Netvermogen" },
+            "battery_power": { "name": "Batterijvermogen" },
+            "total_energy_feed_to_grid": { "name": "Totale energie geleverd aan net" },
+            "total_energy_consume_from_grid": { "name": "Totale energie verbruikt van net" },
+            "pv_total_energy_feed_to_grid": { "name": "PV totale energie geleverd aan net" },
+            "pv_total_energy_consume_from_grid": { "name": "PV totale energie verbruikt van net" },
+            "price_current_hour": { "name": "Prijs huidig uur" },
+            "price_lowest_today": { "name": "Laagste prijs vandaag" },
+            "price_highest_today": { "name": "Hoogste prijs vandaag" },
+            "price_earning_status": {
+                "name": "Winst status",
+                "state": {
+                    "no_earning": "Geen winst",
+                    "earning_on_return": "Winst op teruglevering",
+                    "earning_on_use": "Winst op afname"
+                }
+            },
+            "solar_forecast_current_hour": { "name": "Zonneprognose huidig uur" },
+            "solar_forecast_today": { "name": "Zonneprognose vandaag" },
+            "solar_forecast_tomorrow": { "name": "Zonneprognose morgen" },
+            "schedule_current_hour_action": { "name": "Planning huidig uur actie" },
+            "schedule_next_hour_action": { "name": "Planning volgend uur actie" },
+            "schedule_remaining_solar_surplus_today": { "name": "Resterend zonne-overschot vandaag" },
+            "extra_pv_power": { "name": "PV vermogen extra" },
+            "total_pv_power": { "name": "PV vermogen totaal" },
+            "house_load_today": { "name": "Vandaag huisverbruik" },
+            "solar_energy_today": { "name": "Vandaag zonne-energie" },
+            "solar_to_battery_today": { "name": "Vandaag zonne-energie in batterij" },
+            "grid_to_battery_today": { "name": "Vandaag netstroom batterij" },
+            "dispatch_current_mode": { "name": "Dispatch huidige modus" }
+        },
+        "number": {
+            "max_soc_positive_price": { "name": "Max SOC bij positieve prijzen" },
+            "max_soc_negative_price": { "name": "Max SOC bij negatieve prijzen" },
+            "min_soc_discharge": { "name": "Min SOC bij ontladen batterij" },
+            "daily_min_profit": { "name": "Minimale dagelijkse winst voor geoptimaliseerd schema" }
+        },
+        "switch": {
+            "discharge_enabled": { "name": "Ontladen via schema toestaan" }
+        }
+    },
+    "services": {
+        "force_charge_grid": {
+            "name": "Forceer laden vanaf net",
+            "description": "Overschrijft de planning van het huidige uur om te forceren dat er vanaf het net wordt geladen, totdat dit wordt opgeheven."
+        },
+        "force_discharge": {
+            "name": "Forceer ontladen",
+            "description": "Overschrijft de planning van het huidige uur om te forceren dat de batterij wordt ontladen, totdat dit wordt opgeheven."
+        },
+        "force_charge_pv": {
+            "name": "Forceer laden op zon",
+            "description": "Overschrijft de planning van het huidige uur om te forceren dat er alleen op zonnestroom wordt geladen, totdat dit wordt opgeheven."
+        },
+        "force_no_charging": {
+            "name": "Forceer niet laden",
+            "description": "Overschrijft de planning van het huidige uur om te forceren dat de batterij niet laadt, totdat dit wordt opgeheven."
+        },
+        "clear_manual_override": {
+            "name": "Handmatige overschrijving opheffen",
+            "description": "Verwijdert een actieve handmatige overschrijving en geeft de controle terug aan de planner."
         }
     }
 }

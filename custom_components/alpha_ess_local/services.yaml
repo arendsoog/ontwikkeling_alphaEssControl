@@ -1,0 +1,33 @@
+force_charge_grid:
+  name: Force charge from grid
+  description: >-
+    Override the current hour's schedule to force charging from the grid,
+    until cleared with clear_manual_override. Only takes effect once
+    battery control is enabled in the integration's options.
+
+force_discharge:
+  name: Force discharge
+  description: >-
+    Override the current hour's schedule to force discharging the battery,
+    until cleared with clear_manual_override. Only takes effect once
+    battery control is enabled in the integration's options.
+
+force_charge_pv:
+  name: Force charge from PV
+  description: >-
+    Override the current hour's schedule to force charging from solar
+    production only, until cleared with clear_manual_override. Only takes
+    effect once battery control is enabled in the integration's options.
+
+force_no_charging:
+  name: Force no charging
+  description: >-
+    Override the current hour's schedule to force no battery charging,
+    until cleared with clear_manual_override. Only takes effect once
+    battery control is enabled in the integration's options.
+
+clear_manual_override:
+  name: Clear manual override
+  description: >-
+    Remove any active manual dispatch override, reverting to the
+    scheduler's own decision.

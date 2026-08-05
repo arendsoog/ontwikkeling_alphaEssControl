@@ -18,11 +18,102 @@
             "already_configured": "Device is already configured"
         }
     },
+    "options": {
+        "step": {
+            "init": {
+                "description": "Tune pricing, forecasting, and scheduler settings. All fields are optional and only used once the corresponding feature is built.{solar_forecast_note}",
+                "data": {
+                    "pv_power": "Roof PV power",
+                    "usable_battery_capacity": "Usable battery capacity",
+                    "inverter_nominal_power": "Inverter nominal power",
+                    "provider_use_fee": "Provider use fee",
+                    "provider_return_fee": "Provider return fee",
+                    "vat_percentage": "VAT",
+                    "entsoe_price_entity": "ENTSO-E entity",
+                    "frank_energie_price_entity": "Frank Energie entity",
+                    "forecast_solar_entries": "Forecast.Solar locations",
+                    "solcast_entries": "Solcast locations",
+                    "extra_pv_power_entity": "Additional PV installation: power sensor",
+                    "extra_pv_power_capacity": "Additional PV installation: capacity",
+                    "extra_pv_control_enabled": "Extra PV: enable price control",
+                    "house_load_power_entity": "House load power sensor (P1)",
+                    "allow_provider_control_hours": "Hours where the provider may override the schedule",
+                    "extra_pv_modbus_hub": "Extra PV: Modbus hub name (empty = disabled)",
+                    "extra_pv_modbus_slave": "Extra PV: Modbus slave ID",
+                    "extra_pv_modbus_address": "Extra PV: Modbus register address",
+                    "extra_pv_modbus_on_value": "Extra PV: register value for \"on\"",
+                    "extra_pv_modbus_off_value": "Extra PV: register value for \"off\" (curtail)",
+                    "persist_daily_charge_limit": "Keep the once-per-day grid-charge/discharge limit after a restart",
+                    "control_enabled": "Enable battery control (writes real commands to the inverter)"
+                }
+            }
+        }
+    },
     "entity": {
         "sensor": {
             "battery_soc": { "name": "Battery state of charge" },
-            "pv_power": { "name": "PV power" },
-            "grid_power": { "name": "Grid power" }
+            "pv_power": { "name": "PV power roof" },
+            "grid_power": { "name": "Grid power" },
+            "battery_power": { "name": "Battery power" },
+            "total_energy_feed_to_grid": { "name": "Total energy fed to grid" },
+            "total_energy_consume_from_grid": { "name": "Total energy consumed from grid" },
+            "pv_total_energy_feed_to_grid": { "name": "PV total energy fed to grid" },
+            "pv_total_energy_consume_from_grid": { "name": "PV total energy consumed from grid" },
+            "price_current_hour": { "name": "Current hour price" },
+            "price_lowest_today": { "name": "Lowest price today" },
+            "price_highest_today": { "name": "Highest price today" },
+            "price_earning_status": {
+                "name": "Earning status",
+                "state": {
+                    "no_earning": "No earning",
+                    "earning_on_return": "Earning on return",
+                    "earning_on_use": "Earning on use"
+                }
+            },
+            "solar_forecast_current_hour": { "name": "Solar forecast current hour" },
+            "solar_forecast_today": { "name": "Solar forecast today" },
+            "solar_forecast_tomorrow": { "name": "Solar forecast tomorrow" },
+            "schedule_current_hour_action": { "name": "Schedule current hour action" },
+            "schedule_next_hour_action": { "name": "Schedule next hour action" },
+            "schedule_remaining_solar_surplus_today": { "name": "Remaining solar surplus today" },
+            "extra_pv_power": { "name": "PV power extra" },
+            "total_pv_power": { "name": "PV power total" },
+            "house_load_today": { "name": "Today house consumption" },
+            "solar_energy_today": { "name": "Today solar energy" },
+            "solar_to_battery_today": { "name": "Today solar to battery" },
+            "grid_to_battery_today": { "name": "Today grid to battery" },
+            "dispatch_current_mode": { "name": "Dispatch current mode" }
+        },
+        "number": {
+            "max_soc_positive_price": { "name": "Max SOC on positive-price hours" },
+            "max_soc_negative_price": { "name": "Max SOC on negative-price hours" },
+            "min_soc_discharge": { "name": "Min SOC on battery discharge" },
+            "daily_min_profit": { "name": "Minimum daily profit for optimized schedule" }
+        },
+        "switch": {
+            "discharge_enabled": { "name": "Allow scheduled discharge" }
+        }
+    },
+    "services": {
+        "force_charge_grid": {
+            "name": "Force charge from grid",
+            "description": "Override the current hour's schedule to force charging from the grid, until cleared."
+        },
+        "force_discharge": {
+            "name": "Force discharge",
+            "description": "Override the current hour's schedule to force discharging the battery, until cleared."
+        },
+        "force_charge_pv": {
+            "name": "Force charge from PV",
+            "description": "Override the current hour's schedule to force charging from solar production only, until cleared."
+        },
+        "force_no_charging": {
+            "name": "Force no charging",
+            "description": "Override the current hour's schedule to force no battery charging, until cleared."
+        },
+        "clear_manual_override": {
+            "name": "Clear manual override",
+            "description": "Remove any active manual dispatch override, reverting to the scheduler's own decision."
         }
     }
 }

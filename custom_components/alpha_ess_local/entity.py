@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 
 from .const import DOMAIN
-from .coordinator import AlphaEssLocalDataUpdateCoordinator
 
 
-class AlphaEssLocalEntity(CoordinatorEntity[AlphaEssLocalDataUpdateCoordinator]):
-    """Common base for all entities of this integration."""
+class AlphaEssLocalEntity(CoordinatorEntity[DataUpdateCoordinator[Any]]):
+    """Common base for all entities of this integration.
+
+    Shared by entities backed by either of this integration's coordinators
+    (Modbus polling, price derivation) — same device, different data streams.
+    """
 
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator: AlphaEssLocalDataUpdateCoordinator) -> None:
+    def __init__(self, coordinator: DataUpdateCoordinator[Any]) -> None:
         """Initialize the entity."""
         super().__init__(coordinator)
         self._attr_unique_id = coordinator.config_entry.entry_id

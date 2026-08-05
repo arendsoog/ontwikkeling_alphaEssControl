@@ -1,18 +1,24 @@
-"""Client for talking to an AlphaESS inverter/battery on the local network.
+"""Modbus TCP client for an AlphaESS inverter/battery on the local network.
 
-This is a scaffold: it establishes the client shape (errors, connection
-handling, data shape) that the coordinator and config flow depend on.
-Replace the body of `async_get_data` / `async_test_connection` with the
-actual protocol calls (Modbus TCP via pymodbus, or the inverter's local
-HTTP API) once that's confirmed against real hardware.
+Port of AlphaESS.c/AlphaESS.h. Uses pymodbus's async TCP client to talk to
+the inverter directly (function codes 3/16, holding registers), preserving
+the original's register map, retry behavior, and on-wire encoding quirks
+(see protocol.py).
 """
 
 from __future__ import annotations
 
 import asyncio
-import socket
 
-import aiohttp
+from pymodbus.client import AsyncModbusTcpClient
+from pymodbus.exceptions import ModbusException
+from pymodbus.pdu import ExceptionResponse
+
+from . import protocol
+from .protocol import DispatchParam
+
+RESPONSE_TIMEOUT = 5
+RECONNECT_DELAY = 1  # matches the C source's sleep(1) to avoid TIME_WAIT
 
 
 class AlphaEssLocalApiClientError(Exception):
@@ -28,66 +34,175 @@ class AlphaEssLocalApiClientAuthenticationError(AlphaEssLocalApiClientError):
 
 
 class AlphaEssLocalApiClient:
-    """Talks to a single AlphaESS device over the local network."""
+    """Talks to a single AlphaESS device over Modbus TCP."""
 
-    def __init__(
-        self,
-        host: str,
-        port: int,
-        session: aiohttp.ClientSession,
-    ) -> None:
+    def __init__(self, host: str, port: int) -> None:
         """Initialize the API client."""
         self._host = host
         self._port = port
-        self._session = session
+        self._client = AsyncModbusTcpClient(host, port=port, timeout=RESPONSE_TIMEOUT)
+
+    async def async_close(self) -> None:
+        """Close the Modbus connection."""
+        self._client.close()
+
+    async def _ensure_connected(self) -> None:
+        if not self._client.connected and not await self._client.connect():
+            raise AlphaEssLocalApiClientCommunicationError(
+                f"Could not connect to {self._host}:{self._port}"
+            )
+
+    async def _reconnect(self) -> None:
+        self._client.close()
+        await asyncio.sleep(RECONNECT_DELAY)
+        await self._ensure_connected()
+
+    async def _read_registers(self, address: int, count: int) -> list[int]:
+        """Read holding registers, retrying once after a reconnect on failure."""
+        await self._ensure_connected()
+        try:
+            result = await self._client.read_holding_registers(
+                address, count=count, device_id=protocol.SLAVE_ID
+            )
+            if not (result.isError() or isinstance(result, ExceptionResponse)):
+                return result.registers
+        except ModbusException:
+            pass
+
+        try:
+            await self._reconnect()
+            result = await self._client.read_holding_registers(
+                address, count=count, device_id=protocol.SLAVE_ID
+            )
+            if result.isError() or isinstance(result, ExceptionResponse):
+                raise AlphaEssLocalApiClientCommunicationError(
+                    f"Error reading register {address:#06x} from {self._host}"
+                )
+            return result.registers
+        except ModbusException as exception:
+            raise AlphaEssLocalApiClientCommunicationError(
+                f"Error reading register {address:#06x} from {self._host}"
+            ) from exception
+
+    async def _write_registers(self, address: int, values: list[int]) -> None:
+        """Write holding registers. Not retried, matching the C source."""
+        await self._ensure_connected()
+        try:
+            result = await self._client.write_registers(
+                address, values, device_id=protocol.SLAVE_ID
+            )
+        except ModbusException as exception:
+            raise AlphaEssLocalApiClientCommunicationError(
+                f"Error writing register {address:#06x} to {self._host}"
+            ) from exception
+        if result.isError() or isinstance(result, ExceptionResponse):
+            raise AlphaEssLocalApiClientCommunicationError(
+                f"Error writing register {address:#06x} to {self._host}"
+            )
 
     async def async_test_connection(self) -> None:
         """Verify that the device is reachable, raising on failure.
 
-        Used by the config flow to validate user input before creating
-        a config entry.
+        Used by the config flow to validate user input before creating a
+        config entry. Closes the connection afterward.
         """
-        await self.async_get_data()
+        try:
+            await self.async_get_soc()
+        finally:
+            await self.async_close()
+
+    async def async_get_soc(self) -> float:
+        """State of charge, in percent (0.1% units on the wire)."""
+        registers = await self._read_registers(protocol.REG_SOC, 1)
+        return registers[0] / 10.0
+
+    async def async_get_pv_power(self) -> int:
+        """Total PV generated power, in Watts (roof + garage strings)."""
+        registers = await self._read_registers(protocol.REG_PV_POWER, protocol.REG_PV_POWER_COUNT)
+        pv1 = protocol.to_unsigned_int(registers[0], registers[1])
+        pv2 = protocol.to_unsigned_int(registers[4], registers[5])
+        return pv1 + pv2
+
+    async def async_get_battery_power(self) -> int:
+        """Battery power, in Watts. Negative = charge, positive = discharge."""
+        registers = await self._read_registers(protocol.REG_BATTERY_POWER, 1)
+        return protocol.to_signed_short(registers[0])
+
+    async def async_get_total_active_power(self) -> int:
+        """Grid power, in Watts. Negative = feed to grid, positive = use from grid."""
+        registers = await self._read_registers(protocol.REG_TOTAL_ACTIVE_POWER, 2)
+        return protocol.to_signed_int(registers[0], registers[1])
+
+    async def async_get_total_energy_feed_to_grid(self) -> float:
+        """Total energy fed to grid, in kWh."""
+        registers = await self._read_registers(protocol.REG_TOTAL_ENERGY_FEED_TO_GRID, 2)
+        return protocol.to_unsigned_int(registers[0], registers[1]) * 0.01
+
+    async def async_get_total_energy_consume_from_grid(self) -> float:
+        """Total energy consumed from grid, in kWh."""
+        registers = await self._read_registers(protocol.REG_TOTAL_ENERGY_CONSUME_FROM_GRID, 2)
+        return protocol.to_unsigned_int(registers[0], registers[1]) * 0.01
+
+    async def async_get_pv_total_energy_feed_to_grid(self) -> float:
+        """Total PV energy fed to grid, in kWh."""
+        registers = await self._read_registers(protocol.REG_PV_TOTAL_ENERGY_FEED_TO_GRID, 2)
+        return protocol.to_unsigned_int(registers[0], registers[1]) * 0.01
+
+    async def async_get_pv_total_energy_consume_from_grid(self) -> float:
+        """Total PV energy consumed from grid, in kWh."""
+        registers = await self._read_registers(protocol.REG_PV_TOTAL_ENERGY_CONSUME_FROM_GRID, 2)
+        return protocol.to_unsigned_int(registers[0], registers[1]) * 0.01
+
+    async def async_get_dispatch_param(self) -> DispatchParam:
+        """Read the current dispatch mode/power/cutoff-SOC/duration."""
+        registers = await self._read_registers(
+            protocol.REG_DISPATCH_PARAM, protocol.REG_DISPATCH_PARAM_COUNT
+        )
+        return protocol.decode_dispatch_param(registers)
+
+    async def async_set_dispatch_param(self, param: DispatchParam) -> None:
+        """Write a new dispatch mode/power/cutoff-SOC/duration."""
+        registers = protocol.encode_dispatch_param(param)
+        await self._write_registers(protocol.REG_DISPATCH_PARAM, registers)
+
+    async def async_get_max_feed_into_grid(self) -> int:
+        """Max feed-into-grid percentage (0-100)."""
+        registers = await self._read_registers(protocol.REG_MAX_FEED_INTO_GRID, 1)
+        return registers[0]
+
+    async def async_set_max_feed_into_grid(self, max_feed: int) -> None:
+        """Set max feed-into-grid percentage (0-100, clamped)."""
+        max_feed = min(max_feed, 100)
+        await self._write_registers(protocol.REG_MAX_FEED_INTO_GRID, [max_feed])
+
+    async def async_set_time_period_control(
+        self,
+        start_hour: int,
+        start_min: int,
+        stop_hour: int,
+        stop_min: int,
+        cutoff_soc: int,
+        charge: bool,
+    ) -> None:
+        """Set a charge/discharge time-window with a cut-off SOC."""
+        registers = protocol.encode_time_period_control(
+            start_hour, start_min, stop_hour, stop_min, cutoff_soc, charge
+        )
+        await self._write_registers(protocol.REG_TIME_PERIOD_CONTROL, registers)
 
     async def async_get_data(self) -> dict:
-        """Fetch the latest data from the device.
-
-        TODO: replace this placeholder with the real Modbus/HTTP call(s)
-        and map the raw registers/fields onto a stable dict of values,
-        e.g. {"battery_soc": 42, "pv_power": 1234, "grid_power": -300}.
-        """
-        return await self._api_wrapper(
-            method="get",
-            # Local inverters/battery gateways typically only expose plain
-            # HTTP (or Modbus TCP) on the LAN, not TLS.
-            url=f"http://{self._host}:{self._port}/",  # NOSONAR
-        )
-
-    async def _api_wrapper(self, method: str, url: str, data: dict | None = None) -> dict:
-        """Wrap network calls to normalize errors."""
-        try:
-            async with async_timeout.timeout(10):
-                response = await self._session.request(
-                    method=method,
-                    url=url,
-                    json=data,
-                )
-                if response.status in (401, 403):
-                    raise AlphaEssLocalApiClientAuthenticationError(
-                        "Invalid credentials"
-                    )
-                response.raise_for_status()
-                return await response.json()
-
-        except asyncio.TimeoutError as exception:
-            raise AlphaEssLocalApiClientCommunicationError(
-                f"Timeout communicating with {self._host}"
-            ) from exception
-        except (aiohttp.ClientError, socket.gaierror) as exception:
-            raise AlphaEssLocalApiClientCommunicationError(
-                f"Error communicating with {self._host}"
-            ) from exception
-        except Exception as exception:  # noqa: BLE001
-            raise AlphaEssLocalApiClientError(
-                f"Unexpected error communicating with {self._host}"
-            ) from exception
+        """Fetch the coordinator-facing snapshot of live inverter data."""
+        return {
+            "battery_soc": await self.async_get_soc(),
+            "pv_power": await self.async_get_pv_power(),
+            "battery_power": await self.async_get_battery_power(),
+            "grid_power": await self.async_get_total_active_power(),
+            "total_energy_feed_to_grid": await self.async_get_total_energy_feed_to_grid(),
+            "total_energy_consume_from_grid": (
+                await self.async_get_total_energy_consume_from_grid()
+            ),
+            "pv_total_energy_feed_to_grid": (await self.async_get_pv_total_energy_feed_to_grid()),
+            "pv_total_energy_consume_from_grid": (
+                await self.async_get_pv_total_energy_consume_from_grid()
+            ),
+        }
