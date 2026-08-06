@@ -91,7 +91,7 @@
             "daily_min_profit": { "name": "Minimum daily profit for optimized schedule" }
         },
         "switch": {
-            "discharge_enabled": { "name": "Allow scheduled discharge" }
+            "discharge_enabled": { "name": "Allow grid discharge" }
         }
     },
     "services": {

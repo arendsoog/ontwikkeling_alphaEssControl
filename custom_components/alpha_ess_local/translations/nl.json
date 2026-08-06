@@ -91,7 +91,7 @@
             "daily_min_profit": { "name": "Minimale dagelijkse winst voor geoptimaliseerd schema" }
         },
         "switch": {
-            "discharge_enabled": { "name": "Ontladen via schema toestaan" }
+            "discharge_enabled": { "name": "Ontladen net toegestaan" }
         }
     },
     "services": {
