@@ -17,6 +17,9 @@ venv/
 # (the latter symlinks the integration into config/custom_components/)
 config/
 
+# Legacy C reference implementation, kept locally only
+/.old c code/
+
 # VS Code
 !.vscode/tasks.json
 !.vscode/launch.json
