@@ -1,11 +1,30 @@
 # AlphaESSControl
 
 Home Assistant custom integration (HACS) to monitor and control an AlphaESS
-inverter/battery system over the local network.
+inverter/battery system over the local network (Modbus TCP), with
+price-and-solar-aware charge scheduling.
 
-> **Status:** scaffold only. `custom_components/alpha_ess_local/api.py`
-> contains a placeholder client — the real Modbus/HTTP protocol calls still
-> need to be implemented against actual hardware.
+## Installation
+
+### HACS (recommended)
+
+This integration isn't in the default HACS store, so it needs to be added
+as a custom repository first:
+
+1. In Home Assistant, go to **HACS → Integrations**.
+2. Click the **⋮** menu (top right) → **Custom repositories**.
+3. Add repository `https://github.com/arendsoog/ontwikkeling_alphaEssControl`,
+   category **Integration**.
+4. Find **AlphaESSControl** in HACS and click **Download**.
+5. Restart Home Assistant.
+6. Go to **Settings → Devices & Services → Add Integration**, search for
+   **AlphaESSControl**, and enter your inverter's host/port.
+
+### Manual
+
+Copy `custom_components/alpha_ess_local` into your Home Assistant config's
+`custom_components/` folder, restart Home Assistant, then add the
+integration as in step 6 above.
 
 ## Development environment
 
@@ -57,12 +76,11 @@ custom_components/alpha_ess_local/
 tests/
 ```
 
-## Before publishing to HACS
+## Publishing status
 
-- [ ] Replace `@your-github-username` / repo URLs in
-      [manifest.json](custom_components/alpha_ess_local/manifest.json) and
-      [hacs.json](hacs.json)
-- [ ] Implement the real device protocol in
+- [x] `manifest.json` / `hacs.json` point at the real repo
+      (`arendsoog/ontwikkeling_alphaEssControl`)
+- [x] Real Modbus TCP protocol implemented in
       [api.py](custom_components/alpha_ess_local/api.py)
-- [ ] Push to a public GitHub repo, then add it in HACS as a
-      custom repository (category: Integration)
+- [ ] Repo is public on GitHub so HACS can add it as a custom repository
+- [ ] Submit to the default HACS integration list (optional, once stable)
