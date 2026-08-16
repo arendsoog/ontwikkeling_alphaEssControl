@@ -76,6 +76,23 @@ custom_components/alpha_ess_local/
 tests/
 ```
 
+## Releasing a new version
+
+HACS shows whatever GitHub Release is newest, so bumping the version means:
+
+1. Update `"version"` in
+   [manifest.json](custom_components/alpha_ess_local/manifest.json)
+   (follow [semver](https://semver.org)) and commit it.
+2. Tag the commit and push the tag:
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+3. [.github/workflows/release.yaml](.github/workflows/release.yaml) then
+   checks that the tag matches `manifest.json`'s version and publishes a
+   GitHub Release automatically (with auto-generated release notes). HACS
+   picks up the new release from there — no manual step in HACS itself.
+
 ## Publishing status
 
 - [x] `manifest.json` / `hacs.json` point at the real repo
