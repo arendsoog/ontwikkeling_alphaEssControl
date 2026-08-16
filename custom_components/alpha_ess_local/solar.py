@@ -1,4 +1,4 @@
-"""Solar production forecast handling for AlphaESS Local Control.
+"""Solar production forecast handling for AlphaESSControl.
 
 Port of Solar.c. Unlike the original (NED.nl percentage forecast + our own
 orientation/tilt correction), forecasts are read from other HA integrations

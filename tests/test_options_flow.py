@@ -1,4 +1,4 @@
-"""Tests for the AlphaESS Local Control options flow."""
+"""Tests for the AlphaESSControl options flow."""
 
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType

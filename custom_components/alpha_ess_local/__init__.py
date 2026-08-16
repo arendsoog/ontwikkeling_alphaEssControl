@@ -1,4 +1,4 @@
-"""The AlphaESS Local Control integration."""
+"""The AlphaESSControl integration."""
 
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ def _async_register_dispatch_services(hass: HomeAssistant) -> None:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry) -> bool:
-    """Set up AlphaESS Local Control from a config entry."""
+    """Set up AlphaESSControl from a config entry."""
     client = AlphaEssLocalApiClient(
         host=entry.data[CONF_HOST],
         port=entry.data[CONF_PORT],

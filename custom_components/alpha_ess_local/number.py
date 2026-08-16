@@ -1,4 +1,4 @@
-"""Number platform for AlphaESS Local Control.
+"""Number platform for AlphaESSControl.
 
 Live-adjustable scheduler settings, as `NumberEntity` sliders directly on
 this integration's own device — same "Bediening"/Controls pattern other

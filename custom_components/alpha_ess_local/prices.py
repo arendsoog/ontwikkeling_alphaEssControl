@@ -1,4 +1,4 @@
-"""Day-ahead price handling for AlphaESS Local Control.
+"""Day-ahead price handling for AlphaESSControl.
 
 Port of Prices.c. Unlike the original, prices are read from existing HA
 entities (the ENTSO-e / Frank Energie integrations, configured via the

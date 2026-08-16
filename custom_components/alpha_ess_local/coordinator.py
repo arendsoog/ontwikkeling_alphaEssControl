@@ -1,4 +1,4 @@
-"""DataUpdateCoordinators for AlphaESS Local Control."""
+"""DataUpdateCoordinators for AlphaESSControl."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-# AlphaESS Local Control
+# AlphaESSControl
 
 Home Assistant custom integration (HACS) to monitor and control an AlphaESS
 inverter/battery system over the local network.

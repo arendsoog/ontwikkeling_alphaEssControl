@@ -1,4 +1,4 @@
-"""Fixtures shared by the AlphaESS Local Control tests."""
+"""Fixtures shared by the AlphaESSControl tests."""
 
 from unittest.mock import AsyncMock, patch
 

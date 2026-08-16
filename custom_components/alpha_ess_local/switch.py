@@ -1,4 +1,4 @@
-"""Switch platform for AlphaESS Local Control.
+"""Switch platform for AlphaESSControl.
 
 A live on/off control directly on this integration's own device — same
 "Bediening"/Controls pattern as number.py's sliders.

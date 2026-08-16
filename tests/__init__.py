@@ -1,1 +1,1 @@
-"""Tests for the AlphaESS Local Control integration."""
+"""Tests for the AlphaESSControl integration."""

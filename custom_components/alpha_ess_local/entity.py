@@ -1,4 +1,4 @@
-"""Base entity for AlphaESS Local Control."""
+"""Base entity for AlphaESSControl."""
 
 from __future__ import annotations
 

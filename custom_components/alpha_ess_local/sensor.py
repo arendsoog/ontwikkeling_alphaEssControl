@@ -1,4 +1,4 @@
-"""Sensor platform for AlphaESS Local Control.
+"""Sensor platform for AlphaESSControl.
 
 Three families of sensors, backed by this integration's three coordinators:
 - `MODBUS_SENSOR_DESCRIPTIONS`: keys match the dict returned by

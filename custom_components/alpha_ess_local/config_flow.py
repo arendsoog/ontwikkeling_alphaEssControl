@@ -1,4 +1,4 @@
-"""Config flow for AlphaESS Local Control."""
+"""Config flow for AlphaESSControl."""
 
 from __future__ import annotations
 
@@ -520,7 +520,7 @@ def _options_schema(
 
 
 class AlphaEssLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for AlphaESS Local Control."""
+    """Handle a config flow for AlphaESSControl."""
 
     VERSION = 1
 
@@ -572,7 +572,7 @@ class AlphaEssLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
-    """Handle the options flow for AlphaESS Local Control.
+    """Handle the options flow for AlphaESSControl.
 
     Covers device physical specs, pricing, API tokens, optional local
     sensors, and scheduler tuning (see const.py) — settings consumed by

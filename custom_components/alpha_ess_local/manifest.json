@@ -1,6 +1,6 @@
 {
     "domain": "alpha_ess_local",
-    "name": "AlphaESS Local Control",
+    "name": "AlphaESSControl",
     "codeowners": ["@arendsoog100"],
     "config_flow": true,
     "dependencies": [],

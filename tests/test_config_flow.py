@@ -1,4 +1,4 @@
-"""Tests for the AlphaESS Local Control config flow."""
+"""Tests for the AlphaESSControl config flow."""
 
 from unittest.mock import AsyncMock
 

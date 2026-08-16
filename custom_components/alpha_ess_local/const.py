@@ -1,4 +1,4 @@
-"""Constants for the AlphaESS Local Control integration."""
+"""Constants for the AlphaESSControl integration."""
 
 from datetime import timedelta
 from logging import Logger, getLogger
