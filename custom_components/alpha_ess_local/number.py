@@ -22,7 +22,7 @@ from homeassistant.components.number import (
     NumberMode,
     RestoreNumber,
 )
-from homeassistant.const import PERCENTAGE
+from homeassistant.const import PERCENTAGE, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -30,6 +30,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import AlphaEssLocalConfigEntry
 from .const import (
     DEFAULT_DAILY_MIN_PROFIT,
+    DEFAULT_MAX_GRID_LOAD,
     DEFAULT_MAX_SOC_NEGATIVE_PRICE,
     DEFAULT_MAX_SOC_POSITIVE_PRICE,
     DEFAULT_MIN_SOC_DISCHARGE,
@@ -87,6 +88,16 @@ NUMBER_DESCRIPTIONS: tuple[AlphaEssLocalNumberDescription, ...] = (
         # entity's own scale is whole cents — see orchestrator.py's /100
         # on the read side.
         default_value=round(DEFAULT_DAILY_MIN_PROFIT * 100),
+    ),
+    AlphaEssLocalNumberDescription(
+        key="max_grid_load",
+        translation_key="max_grid_load",
+        native_min_value=5,
+        native_max_value=10,
+        native_step=0.5,
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        mode=NumberMode.SLIDER,
+        default_value=DEFAULT_MAX_GRID_LOAD,
     ),
 )
 

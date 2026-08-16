@@ -65,6 +65,15 @@ class DispatchConfig:
     """The subset of options-flow config the dispatch decision needs."""
 
     usable_battery_capacity: float
+    # Same live cap schedule.py's ScheduleConfig.max_grid_load applies at
+    # planning time (whichever is higher of the number.py "Max grid load"
+    # slider and the optional "peak load this month" sensor — see
+    # orchestrator._effective_max_grid_load_wh, shared by both coordinators
+    # so planning and dispatch always agree). Reapplied here so the actual
+    # ~20s dispatch power command stays under it too, not just the hourly
+    # plan's total Wh. Defaults to unconstrained so existing callers/tests
+    # that don't pass it keep prior (uncapped) behavior.
+    max_grid_load: float = float("inf")
 
 
 @dataclass
@@ -83,7 +92,9 @@ def _full_dispatch_power(usable_battery_capacity: float) -> int:
     return (int(usable_battery_capacity) * (SOC_MAX_BATTERY - SOC_MIN)) // 1000 + 500
 
 
-def decide_dispatch(hour: Hour, cur_soc: int, config: DispatchConfig) -> DispatchDecision:
+def decide_dispatch(
+    hour: Hour, cur_soc: int, config: DispatchConfig, house_load_w: float = 0.0
+) -> DispatchDecision:
     """Port of CheckAndSetChargingMode's two switch statements plus both
     security checks.
 
@@ -91,6 +102,12 @@ def decide_dispatch(hour: Hour, cur_soc: int, config: DispatchConfig) -> Dispatc
     forces feed-in on, then the earning-on-use security check may force it
     back off; matches the original's direct struct mutation (same pattern
     already used by `schedule._finalise_schedule`).
+
+    `house_load_w`: the same house-load figure schedule.py's planning
+    already assumed for this hour (`hour.estimated_house_load`) — reused
+    here (not a fresh live meter read) so the dispatch-level cap stays
+    consistent with what the DP actually planned for, rather than
+    introducing a second, potentially-conflicting live signal.
     """
     cutoff_soc = hour.cutoff_soc
     below_cutoff = cutoff_soc == SOC_MAX_BATTERY or cur_soc < cutoff_soc
@@ -151,7 +168,17 @@ def decide_dispatch(hour: Hour, cur_soc: int, config: DispatchConfig) -> Dispatc
         param_cutoff_soc = 0
         pv_on = True
     elif mode == DispatchMode.STATE_OF_CHARGE_CONTROL:
-        power = -full_power if hour.charge == Charge.CHARGING_DISCHARGE else full_power
+        if hour.charge == Charge.CHARGING_DISCHARGE:
+            power = -full_power
+        else:
+            # CHARGING_ON_GRID: throttle the actual charge power so
+            # house_load_w + power stays under the capaciteitstarief cap —
+            # the same "total netpiek" reasoning schedule.py's planning
+            # already applied, reapplied here for the real-time command.
+            # min() with full_power (already int) before casting to int
+            # keeps this safe even when max_grid_load is unconstrained
+            # (float("inf") would overflow an int() cast on its own).
+            power = int(min(full_power, max(0.0, config.max_grid_load - house_load_w)))
         param_cutoff_soc = cutoff_soc
         pv_on = True
     elif mode == DispatchMode.MAXIMISE_CONSUMPTION:

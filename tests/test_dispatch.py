@@ -182,6 +182,43 @@ def test_decide_dispatch_charging_on_grid_below_cutoff_normal_price():
     assert decision.param.cutoff_soc == 900
 
 
+def test_decide_dispatch_charging_on_grid_throttled_by_max_grid_load():
+    # Belgian capaciteitstarief: house_load_w + power must stay under the
+    # live max_grid_load cap, not just the hourly plan's total Wh -- same
+    # "total netpiek" reasoning schedule.py already applies at planning
+    # time, reapplied here for the real ~20s dispatch command.
+    hour = _hour(charge=Charge.CHARGING_ON_GRID, earning=Earning.EARNING_ON_RETURN, cutoff_soc=900)
+    config = DispatchConfig(usable_battery_capacity=CAPACITY, max_grid_load=2000.0)
+
+    decision = decide_dispatch(hour, cur_soc=500, config=config, house_load_w=300.0)
+
+    assert decision.param.mode == DispatchMode.STATE_OF_CHARGE_CONTROL
+    assert decision.param.power == 1700  # 2000 - 300, well under FULL_POWER
+
+
+def test_decide_dispatch_charging_on_grid_uncapped_by_default():
+    # config.max_grid_load defaults to float("inf") -- existing callers that
+    # don't pass it keep the prior, uncapped behavior.
+    hour = _hour(charge=Charge.CHARGING_ON_GRID, earning=Earning.EARNING_ON_RETURN, cutoff_soc=900)
+
+    decision = decide_dispatch(hour, cur_soc=500, config=_config(), house_load_w=5000.0)
+
+    assert decision.param.power == FULL_POWER
+
+
+def test_decide_dispatch_charging_discharge_ignores_max_grid_load():
+    # Discharging increases export, not import -- the capaciteitstarief cap
+    # (which only bounds grid *import*) must never throttle it.
+    hour = _hour(
+        charge=Charge.CHARGING_DISCHARGE, earning=Earning.EARNING_ON_RETURN, cutoff_soc=200
+    )
+    config = DispatchConfig(usable_battery_capacity=CAPACITY, max_grid_load=0.0)
+
+    decision = decide_dispatch(hour, cur_soc=500, config=config, house_load_w=0.0)
+
+    assert decision.param.power == -FULL_POWER
+
+
 def test_decide_dispatch_charging_on_grid_above_cutoff_earning_on_use():
     hour = _hour(charge=Charge.CHARGING_ON_GRID, earning=Earning.EARNING_ON_USE, cutoff_soc=900)
     decision = decide_dispatch(hour, cur_soc=900, config=_config())

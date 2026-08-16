@@ -37,6 +37,7 @@
                     "extra_pv_power_capacity": "Additional PV installation: capacity",
                     "extra_pv_control_enabled": "Extra PV: enable price control",
                     "house_load_power_entity": "House load power sensor (P1)",
+                    "peak_load_this_month_entity": "Peak load this month sensor (capaciteitstarief)",
                     "allow_provider_control_hours": "Hours where the provider may override the schedule",
                     "extra_pv_modbus_hub": "Extra PV: Modbus hub name (empty = disabled)",
                     "extra_pv_modbus_slave": "Extra PV: Modbus slave ID",
@@ -88,7 +89,8 @@
             "max_soc_positive_price": { "name": "Max SOC on positive-price hours" },
             "max_soc_negative_price": { "name": "Max SOC on negative-price hours" },
             "min_soc_discharge": { "name": "Min SOC on battery discharge" },
-            "daily_min_profit": { "name": "Minimum daily profit for optimized schedule" }
+            "daily_min_profit": { "name": "Minimum daily profit for optimized schedule" },
+            "max_grid_load": { "name": "Max grid-charge load" }
         },
         "switch": {
             "discharge_enabled": { "name": "Allow grid discharge" }

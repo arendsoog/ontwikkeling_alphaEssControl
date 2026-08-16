@@ -42,6 +42,7 @@ from .const import (
     CONF_EXTRA_PV_POWER_ENTITY,
     CONF_HOUSE_LOAD_POWER_ENTITY,
     CONF_INVERTER_NOMINAL_POWER,
+    CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
     CONF_PROVIDER_RETURN_FEE,
     CONF_PROVIDER_USE_FEE,
@@ -56,6 +57,7 @@ from .const import (
     DEFAULT_EXTRA_PV_MODBUS_OFF_VALUE,
     DEFAULT_EXTRA_PV_MODBUS_ON_VALUE,
     DEFAULT_EXTRA_PV_MODBUS_SLAVE,
+    DEFAULT_MAX_GRID_LOAD,
     DEFAULT_MAX_SOC_NEGATIVE_PRICE,
     DEFAULT_MAX_SOC_POSITIVE_PRICE,
     DEFAULT_MIN_SOC_DISCHARGE,
@@ -324,6 +326,32 @@ def _switch_entity_value(hass: HomeAssistant, entry: ConfigEntry, key: str, defa
     if state is None or state.state in ("unknown", "unavailable"):
         return default
     return state.state == "on"
+
+
+def _effective_max_grid_load_wh(hass: HomeAssistant, entry: ConfigEntry) -> float:
+    """The max-grid-load cap actually in effect, in Wh (== average kW over a
+    1-hour DP step).
+
+    Whichever is higher of the live "Max grid load" slider (number.py, kW)
+    and an optional external "peak load this month" sensor
+    (CONF_PEAK_LOAD_THIS_MONTH_ENTITY, e.g. a P1/DSMR-derived template
+    sensor) — the slider is a floor, not a ceiling: under the Belgian
+    capaciteitstarief (billed on the month's single highest 15-min grid-
+    import peak), once house load alone has already pushed that peak above
+    the slider this month, charging up to that already-paid-for level costs
+    nothing extra. Shared by the schedule coordinator (hourly planning) and
+    the dispatch coordinator (the live ~20s power command), so both layers
+    always agree on the same cap.
+    """
+    max_grid_load_wh = (
+        _number_entity_value(hass, entry, "max_grid_load", DEFAULT_MAX_GRID_LOAD) * 1000
+    )
+    peak_load_this_month_w = _entity_power(
+        hass, entry.options.get(CONF_PEAK_LOAD_THIS_MONTH_ENTITY)
+    )
+    if peak_load_this_month_w is not None:
+        max_grid_load_wh = max(max_grid_load_wh, peak_load_this_month_w)
+    return max_grid_load_wh
 
 
 def _dsmr_net_power(hass: HomeAssistant, config_entry_id: str) -> float | None:
@@ -724,6 +752,8 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                 today.index_charge = index_charge
                 today.index_discharge = index_discharge
 
+        max_grid_load_wh = _effective_max_grid_load_wh(self.hass, self.config_entry)
+
         config = ScheduleConfig(
             inverter_nominal_power=options.get(CONF_INVERTER_NOMINAL_POWER, 0),
             usable_battery_capacity=options.get(CONF_USABLE_BATTERY_CAPACITY, 0),
@@ -775,6 +805,7 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             discharge_enabled=_switch_entity_value(
                 self.hass, self.config_entry, "discharge_enabled", True
             ),
+            max_grid_load=max_grid_load_wh,
         )
 
         modbus_data = self._modbus_coordinator.data or {}
@@ -928,7 +959,16 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         # for the rest of the day.
         if schedule_day is not None:
             budget_newly_used = False
-            if hour.charge == Charge.CHARGING_ON_GRID and not schedule_day.charge_on_grid_used:
+            if (
+                hour.charge == Charge.CHARGING_ON_GRID
+                and not schedule_day.charge_on_grid_used
+                # If schedule.py already predicted the max_grid_load rate cap
+                # will leave this hour short of its own cutoff_soc target,
+                # don't spend the once-per-day budget on it -- leave it free
+                # so a later hour's recompute can still try to make up the
+                # difference (see data.Hour.estimated_grid_charge_shortfall_wh).
+                and hour.estimated_grid_charge_shortfall_wh <= 0.0
+            ):
                 schedule_day.charge_on_grid_used = True
                 schedule_day.index_charge = now.hour
                 budget_newly_used = True
@@ -978,8 +1018,11 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
 
         dispatch_config = dispatch.DispatchConfig(
             usable_battery_capacity=options.get(CONF_USABLE_BATTERY_CAPACITY, 0),
+            max_grid_load=_effective_max_grid_load_wh(self.hass, self.config_entry),
         )
-        decision = dispatch.decide_dispatch(hour, cur_soc, dispatch_config)
+        decision = dispatch.decide_dispatch(
+            hour, cur_soc, dispatch_config, hour.estimated_house_load
+        )
 
         already_set = (
             not hour_start

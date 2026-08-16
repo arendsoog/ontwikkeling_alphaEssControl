@@ -93,6 +93,14 @@ class Hour:
     real_grid_to_battery: int = 0
     estimated_result: float = 0.0
     real_result: float = 0.0
+    # Wh: for a CHARGING_ON_GRID hour, how far short the max_grid_load rate
+    # cap (see schedule.ScheduleConfig.max_grid_load) is predicted to leave
+    # this hour's cutoff_soc target — 0.0 if fully achievable or not
+    # applicable. Set by schedule._apply_grid_load_shortfall; read by
+    # orchestrator.py's dispatch coordinator to decide whether this hour
+    # actually used up the once-per-day grid-charge budget, or whether a
+    # later hour should still be free to try (see charge_on_grid_used).
+    estimated_grid_charge_shortfall_wh: float = 0.0
     five_min_count: int = 0
     provider_override: list = field(
         default_factory=lambda: [ProviderOverride() for _ in range(MAX_QUARTERS)]

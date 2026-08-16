@@ -37,6 +37,7 @@
                     "extra_pv_power_capacity": "Extra PV-installatie: capaciteit",
                     "extra_pv_control_enabled": "Extra PV: prijssturing inschakelen",
                     "house_load_power_entity": "Huisverbruik vermogensensor (P1)",
+                    "peak_load_this_month_entity": "Piekbelasting deze maand-sensor (capaciteitstarief)",
                     "allow_provider_control_hours": "Uren waarin de leverancier het schema mag overschrijven",
                     "extra_pv_modbus_hub": "Extra PV: Modbus hub-naam (leeg = uitgeschakeld)",
                     "extra_pv_modbus_slave": "Extra PV: Modbus slave-ID",
@@ -88,7 +89,8 @@
             "max_soc_positive_price": { "name": "Max SOC bij positieve prijzen" },
             "max_soc_negative_price": { "name": "Max SOC bij negatieve prijzen" },
             "min_soc_discharge": { "name": "Min SOC bij ontladen batterij" },
-            "daily_min_profit": { "name": "Minimale dagelijkse winst voor geoptimaliseerd schema" }
+            "daily_min_profit": { "name": "Minimale dagelijkse winst voor geoptimaliseerd schema" },
+            "max_grid_load": { "name": "Max belasting net-laden" }
         },
         "switch": {
             "discharge_enabled": { "name": "Ontladen net toegestaan" }

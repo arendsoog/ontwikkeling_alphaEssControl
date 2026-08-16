@@ -26,6 +26,7 @@ from custom_components.alpha_ess_local.const import (
     CONF_EXTRA_PV_MODBUS_OFF_VALUE,
     CONF_EXTRA_PV_MODBUS_ON_VALUE,
     CONF_EXTRA_PV_MODBUS_SLAVE,
+    CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
     CONF_USABLE_BATTERY_CAPACITY,
     DOMAIN,
@@ -614,6 +615,7 @@ async def test_schedule_coordinator_converts_soc_bound_options_to_native_scale(
     hass.states.async_set(_register_soc_number(hass, entry, "max_soc_negative_price"), "97.5")
     hass.states.async_set(_register_soc_number(hass, entry, "min_soc_discharge"), "25.0")
     hass.states.async_set(_register_soc_number(hass, entry, "daily_min_profit"), "65")
+    hass.states.async_set(_register_soc_number(hass, entry, "max_grid_load"), "7.5")
 
     modbus_coordinator = SimpleNamespace(data={"battery_soc": 55.0})
     price_day = Day(valid=True)
@@ -641,6 +643,8 @@ async def test_schedule_coordinator_converts_soc_bound_options_to_native_scale(
     assert config.max_soc_negative_price == 975
     assert config.min_soc_discharge == 250
     assert config.daily_min_profit == pytest.approx(0.65)
+    # kW slider (7.5) -> Wh, schedule.py's own scale (1 hour of kW == kWh == 1000 Wh).
+    assert config.max_grid_load == pytest.approx(7500.0)
     # No switch.py entity registered here -- falls back to its default (on).
     assert config.discharge_enabled is True
 
@@ -678,6 +682,112 @@ async def test_schedule_coordinator_reads_discharge_enabled_from_live_switch(
 
     config = mock_run_scheduler.call_args.args[4]
     assert config.discharge_enabled is False
+
+
+async def test_schedule_coordinator_uses_peak_load_sensor_when_higher_than_slider(
+    hass: HomeAssistant, freezer
+):
+    # Belgian capaciteitstarief bills on the month's single highest 15-min
+    # grid-import peak -- once house load alone has already pushed that
+    # peak above the max_grid_load slider this month, charging up to that
+    # already-paid-for level costs nothing extra, so the higher of the two
+    # (slider vs. this optional external sensor) becomes the effective cap.
+    freezer.move_to("2024-01-15 14:00:00")
+    entry = MockConfigEntry(
+        domain=DOMAIN, options={CONF_PEAK_LOAD_THIS_MONTH_ENTITY: "sensor.piekbelasting_deze_maand"}
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(_register_soc_number(hass, entry, "max_grid_load"), "6.0")
+    hass.states.async_set("sensor.piekbelasting_deze_maand", "8.5", {"unit_of_measurement": "kW"})
+
+    modbus_coordinator = SimpleNamespace(data={"battery_soc": 55.0})
+    prices_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+    solar_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+
+    coordinator = AlphaEssLocalScheduleCoordinator(
+        hass, entry, modbus_coordinator, prices_coordinator, solar_coordinator
+    )
+
+    with (
+        patch(
+            "custom_components.alpha_ess_local.storage.retrieve_mean_data",
+            MagicMock(return_value=None),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.run_scheduler", MagicMock()
+        ) as mock_run_scheduler,
+    ):
+        await coordinator._async_update_data()
+
+    config = mock_run_scheduler.call_args.args[4]
+    # 8.5 kW sensor > 6.0 kW slider -> the sensor's value (in Wh) wins.
+    assert config.max_grid_load == pytest.approx(8500.0)
+
+
+async def test_schedule_coordinator_ignores_peak_load_sensor_when_lower_than_slider(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 14:00:00")
+    entry = MockConfigEntry(
+        domain=DOMAIN, options={CONF_PEAK_LOAD_THIS_MONTH_ENTITY: "sensor.piekbelasting_deze_maand"}
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(_register_soc_number(hass, entry, "max_grid_load"), "6.0")
+    hass.states.async_set("sensor.piekbelasting_deze_maand", "3.0", {"unit_of_measurement": "kW"})
+
+    modbus_coordinator = SimpleNamespace(data={"battery_soc": 55.0})
+    prices_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+    solar_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+
+    coordinator = AlphaEssLocalScheduleCoordinator(
+        hass, entry, modbus_coordinator, prices_coordinator, solar_coordinator
+    )
+
+    with (
+        patch(
+            "custom_components.alpha_ess_local.storage.retrieve_mean_data",
+            MagicMock(return_value=None),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.run_scheduler", MagicMock()
+        ) as mock_run_scheduler,
+    ):
+        await coordinator._async_update_data()
+
+    config = mock_run_scheduler.call_args.args[4]
+    # 3.0 kW sensor < 6.0 kW slider -> the slider still applies.
+    assert config.max_grid_load == pytest.approx(6000.0)
+
+
+async def test_schedule_coordinator_ignores_unconfigured_peak_load_sensor(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 14:00:00")
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    hass.states.async_set(_register_soc_number(hass, entry, "max_grid_load"), "6.0")
+
+    modbus_coordinator = SimpleNamespace(data={"battery_soc": 55.0})
+    prices_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+    solar_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+
+    coordinator = AlphaEssLocalScheduleCoordinator(
+        hass, entry, modbus_coordinator, prices_coordinator, solar_coordinator
+    )
+
+    with (
+        patch(
+            "custom_components.alpha_ess_local.storage.retrieve_mean_data",
+            MagicMock(return_value=None),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.run_scheduler", MagicMock()
+        ) as mock_run_scheduler,
+    ):
+        await coordinator._async_update_data()
+
+    config = mock_run_scheduler.call_args.args[4]
+    assert config.max_grid_load == pytest.approx(6000.0)
 
 
 async def test_schedule_coordinator_overlays_persisted_dispatch_daily_state(
@@ -841,6 +951,51 @@ async def test_dispatch_coordinator_control_enabled_writes_when_changed(
 
     client.async_set_max_feed_into_grid.assert_awaited_once_with(decision.target_feed_in_percentage)
     client.async_set_dispatch_param.assert_awaited_once_with(decision.param)
+
+
+async def test_dispatch_coordinator_throttles_charging_on_grid_by_effective_max_grid_load(
+    hass: HomeAssistant, freezer
+):
+    # The live "Max grid load" slider (number.py) must also throttle the
+    # actual ~20s dispatch power command for CHARGING_ON_GRID, not just the
+    # hourly plan's total Wh -- same capaciteitstarief reasoning as
+    # schedule.py's planning-time cap.
+    freezer.move_to("2024-01-15 14:00:00")
+    current_hour = dt_util.now().hour
+    entry = MockConfigEntry(domain=DOMAIN, options={CONF_USABLE_BATTERY_CAPACITY: 10000})
+    entry.add_to_hass(hass)
+    hass.states.async_set(_register_soc_number(hass, entry, "max_grid_load"), "2.0")
+
+    day = _schedule_day_with_hour(
+        current_hour,
+        charge=Charge.CHARGING_ON_GRID,
+        earning=Earning.EARNING_ON_RETURN,
+        cutoff_soc=900,
+        estimated_house_load=300,
+    )
+    schedule_coordinator = SimpleNamespace(data={"today": day})
+
+    cur_param = DispatchParam(
+        mode=DispatchMode.NO_BATTERY_CHARGE,
+        started=True,
+        power=0,
+        cutoff_soc=0,
+        duration=3600,
+        para7=255,
+        pv_on=True,
+    )
+    client = _fake_client(cur_param, cur_feed_in_percentage=0)
+    modbus_coordinator = _fake_modbus_coordinator(client, battery_soc=50.0)
+
+    coordinator = AlphaEssLocalDispatchCoordinator(
+        hass, entry, modbus_coordinator, schedule_coordinator
+    )
+    decision = await coordinator._async_update_data()
+
+    assert decision.param.mode == DispatchMode.STATE_OF_CHARGE_CONTROL
+    # 2.0 kW slider -> 2000 Wh, minus 300 Wh estimated house load = 1700 W,
+    # well under the ~9460 W the battery could otherwise take.
+    assert decision.param.power == 1700
 
 
 async def test_dispatch_coordinator_skips_write_when_unchanged(hass: HomeAssistant, freezer):
@@ -1009,6 +1164,50 @@ async def test_dispatch_coordinator_persists_charge_on_grid_used_on_transition_o
         mock_store.reset_mock()
         await coordinator._async_update_data()  # still same hour, already used -> no new persist
         mock_store.assert_not_called()
+
+
+async def test_dispatch_coordinator_leaves_charge_on_grid_used_false_when_shortfall_predicted(
+    hass: HomeAssistant, freezer
+):
+    # schedule.py predicted the max_grid_load rate cap will leave this hour
+    # short of its cutoff_soc target (estimated_grid_charge_shortfall_wh >
+    # 0) -- the once-per-day budget must NOT be spent on it, so a later
+    # hour's recompute can still try to make up the difference.
+    freezer.move_to("2024-01-15 06:00:00")
+    current_hour = dt_util.now().hour
+    entry = MockConfigEntry(domain=DOMAIN, options={CONF_USABLE_BATTERY_CAPACITY: 10000})
+    entry.add_to_hass(hass)
+
+    day = _schedule_day_with_hour(
+        current_hour, charge=Charge.CHARGING_ON_GRID, estimated_grid_charge_shortfall_wh=1000.0
+    )
+    schedule_coordinator = SimpleNamespace(data={"today": day})
+
+    cur_param = DispatchParam(
+        mode=DispatchMode.DEFAULT,
+        started=False,
+        power=0,
+        cutoff_soc=0,
+        duration=0,
+        para7=255,
+        pv_on=True,
+    )
+    client = _fake_client(cur_param, cur_feed_in_percentage=0)
+    modbus_coordinator = _fake_modbus_coordinator(client)
+
+    coordinator = AlphaEssLocalDispatchCoordinator(
+        hass, entry, modbus_coordinator, schedule_coordinator
+    )
+
+    with patch(
+        "custom_components.alpha_ess_local.orchestrator.storage.store_dispatch_daily_state",
+        MagicMock(),
+    ) as mock_store:
+        await coordinator._async_update_data()
+
+    assert day.charge_on_grid_used is False
+    assert day.index_charge == -1
+    mock_store.assert_not_called()
 
 
 async def test_dispatch_coordinator_does_not_persist_when_option_disabled(

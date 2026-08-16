@@ -103,6 +103,31 @@ DEFAULT_MAX_SOC_POSITIVE_PRICE = 90.0
 DEFAULT_MAX_SOC_NEGATIVE_PRICE = 100.0
 DEFAULT_MIN_SOC_DISCHARGE = 20.0
 
+# Max grid load (kW) during the scheduler's own deliberate grid-charge
+# (CHARGING_ON_GRID) — caps house load + charge power together, not just the
+# charge power alone, so the DP won't push the total grid import peak above
+# this. Aimed at Belgian "capaciteitstarief"/capaciteitskost, which is billed
+# on your highest 15-minute grid-import peak per month — keeping that peak
+# low is the whole point of this slider, independent of any price-arbitrage
+# reasoning elsewhere in the scheduler. Same "Bediening" live-slider pattern
+# as the SOC bounds above (number.py); default matches schedule.py's existing
+# hardcoded CHARGE_LIMIT (10 kW) so a caller that doesn't pass it, or an
+# installation that hasn't touched the slider yet, keeps prior behavior.
+DEFAULT_MAX_GRID_LOAD = 10.0
+
+# Optional entity pointing at an external "peak load this month" sensor
+# (e.g. a P1/DSMR-derived template sensor tracking the month's highest
+# 15-min-average grid-import power). The capaciteitstarief bills on that one
+# monthly peak regardless of how many times it's reached — so once a peak
+# higher than max_grid_load has already occurred this month (from house load
+# alone, which this integration can't control), charging up to that
+# already-paid-for level costs nothing extra. Treated as a floor, not a
+# ceiling: the *effective* cap used each cycle is
+# max(max_grid_load slider, this sensor's current value) — never lower than
+# the slider. Optional; if unset or unavailable, the slider alone applies
+# (today's behavior).
+CONF_PEAK_LOAD_THIS_MONTH_ENTITY = "peak_load_this_month_entity"
+
 # Options flow: dispatch control (Phase 7b)
 # CONF_CONTROL_ENABLED is the master switch for real writes to the inverter
 # (async_set_dispatch_param/async_set_max_feed_into_grid) — default off, so

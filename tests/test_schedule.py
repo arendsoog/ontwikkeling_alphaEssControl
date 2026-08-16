@@ -8,12 +8,15 @@ port, computed separately) rather than just re-deriving from the function
 under test.
 """
 
+import logging
+
 import pytest
 
 from custom_components.alpha_ess_local.data import Charge, Day, Earning
 from custom_components.alpha_ess_local.schedule import (
     SOC_STEPS,
     ScheduleConfig,
+    _apply_grid_load_shortfall,
     _apply_scenario_to_day,
     _battery_efficiency,
     _calculate_best_schedule,
@@ -189,8 +192,10 @@ def test_evaluate_hour_action_charging_on_grid_charges_to_max_and_sets_flag():
 
 
 def test_evaluate_hour_action_charging_on_grid_uses_configured_negative_price_cap():
-    # Earning on use (negative price) -> the cap is config.max_soc_negative_price,
-    # not the positive-price one. 98.0% of 10000 Wh = 9800 Wh.
+    # Earning on use (negative price) -> the SOC cap is config.max_soc_negative_price
+    # (98.0% of 10000 Wh = 9800 Wh), not the positive-price one. max_grid_load
+    # deliberately does NOT affect this -- it only throttles dispatch.py's
+    # live power command, never the DP's own planning target.
     hour = Day(valid=True).hour[2]
     hour.estimated_solar_power = 0
     hour.estimated_house_load = 300
@@ -260,6 +265,29 @@ def test_evaluate_hour_action_charging_on_grid_skips_when_solar_covers_the_whole
     assert new_soc_wh == 0.0
     assert profit == float("-inf")
     assert next_cu is False
+
+
+def test_evaluate_hour_action_charging_on_grid_ignores_max_grid_load():
+    # max_grid_load only throttles dispatch.py's live power command (see
+    # test_dispatch.py) -- it must never affect the DP's own planning target
+    # here, even when set very low.
+    hour = Day(valid=True).hour[2]
+    hour.estimated_solar_power = 0
+    hour.estimated_house_load = 300
+    hour.earning = Earning.EARNING_ON_RETURN
+    hour.price = 0.20
+
+    new_soc_wh, profit, next_cu, next_du = _evaluate_hour_action(
+        Charge.CHARGING_ON_GRID,
+        hour,
+        soc_wh=0.0,
+        charge_used=False,
+        discharge_used=False,
+        config=_config(max_grid_load=2000.0),
+    )
+
+    assert new_soc_wh == pytest.approx(9000.0)  # unaffected -- same as the default-config case
+    assert next_cu is True
 
 
 def test_evaluate_hour_action_charging_on_grid_noop_when_already_used():
@@ -434,15 +462,10 @@ def test_finalise_schedule_sets_feed_in_and_cutoff_soc():
     day.hour[5].charge = Charge.NO_CHARGING
     day.hour[6].charge = Charge.CHARGING_DISCHARGE
     day.hour[7].charge = Charge.CHARGING_ON_PV
-    day.hour[8].charge = Charge.CHARGING_ON_GRID
-    day.hour[8].earning = Earning.EARNING_ON_USE
-    day.hour[9].charge = Charge.CHARGING_ON_GRID
-    day.hour[9].earning = Earning.EARNING_ON_RETURN
 
-    _finalise_schedule(day, _config())
+    _finalise_schedule(day, Day(valid=False), _config())
 
     from custom_components.alpha_ess_local.data import (
-        SOC_MAX,
         SOC_MAX_CHARGE_ON_GRID,
         SOC_MIN,
         SOC_MIN_DISCHARGE_AFTER,
@@ -454,36 +477,65 @@ def test_finalise_schedule_sets_feed_in_and_cutoff_soc():
     # ceiling, regardless of this hour's own price sign -- see
     # _finalise_schedule's comment.
     assert day.hour[7].cutoff_soc == SOC_MAX_CHARGE_ON_GRID
-    assert day.hour[8].cutoff_soc == SOC_MAX_CHARGE_ON_GRID
-    assert day.hour[9].cutoff_soc == SOC_MAX
-    assert day.index_charge == 9  # last CHARGING_ON_GRID hour wins
+    assert day.index_charge == -1  # no CHARGING_ON_GRID hour in this scenario
     assert day.hour[0].feed_in == (day.hour[0].earning == Earning.EARNING_ON_RETURN)
 
 
 def test_finalise_schedule_uses_configured_soc_bounds():
     # Custom (non-default) SOC bounds from ScheduleConfig must be reflected
     # exactly, not the data.py constants they used to be hardcoded to.
+    # (CHARGING_ON_GRID's cutoff_soc no longer reads these directly -- see
+    # test_finalise_schedule_charging_on_grid_cutoff_soc_from_next_hour_target
+    # below -- only indirectly, via the DP's own max_capacity clamp during
+    # planning.)
     day = _flat_day()
     day.hour[5].charge = Charge.CHARGING_DISCHARGE
     day.hour[6].charge = Charge.CHARGING_ON_PV
-    day.hour[7].charge = Charge.CHARGING_ON_GRID
-    day.hour[7].earning = Earning.EARNING_ON_USE
-    day.hour[8].charge = Charge.CHARGING_ON_GRID
-    day.hour[8].earning = Earning.EARNING_ON_RETURN
 
     config = _config(
         max_soc_positive_price=850,  # 85.0%
         max_soc_negative_price=980,  # 98.0%
         min_soc_discharge=300,  # 30.0%
     )
-    _finalise_schedule(day, config)
+    _finalise_schedule(day, Day(valid=False), config)
 
     assert day.hour[5].cutoff_soc == 300
     # CHARGING_ON_PV (solar) always targets max_soc_negative_price, not
     # max_soc_positive_price -- regardless of this hour's own price sign.
     assert day.hour[6].cutoff_soc == 980
-    assert day.hour[7].cutoff_soc == 980
-    assert day.hour[8].cutoff_soc == 850
+
+
+def test_finalise_schedule_charging_on_grid_cutoff_soc_from_next_hour_target():
+    # cutoff_soc for CHARGING_ON_GRID is the DP's own planned target for
+    # that hour (the *next* hour's estimated_start_soc, already net of
+    # reserved_for_solar -- see _evaluate_hour_action), NOT the flat SOC
+    # ceiling -- max_grid_load and the SOC-bound sliders only constrain it
+    # indirectly, via the DP itself.
+    day = _flat_day()
+    day.hour[8].charge = Charge.CHARGING_ON_GRID
+    day.hour[8].earning = Earning.EARNING_ON_RETURN
+    # DP planned to stop at 65.0%, e.g. to leave room for solar.
+    day.hour[9].estimated_start_soc = 65
+
+    _finalise_schedule(day, Day(valid=False), _config())
+
+    assert day.hour[8].cutoff_soc == 650
+    assert day.index_charge == 8
+
+
+def test_finalise_schedule_charging_on_grid_cutoff_soc_falls_back_to_ceiling_on_last_hour():
+    # The schedule's very last hour has no "next hour" to know a target
+    # from -- falls back to the full ceiling (matches the old flat-ceiling
+    # behavior for this one edge case).
+    from custom_components.alpha_ess_local.data import SOC_MAX_BATTERY
+
+    day = _flat_day()
+    day.hour[23].charge = Charge.CHARGING_ON_GRID
+    day.hour[23].earning = Earning.EARNING_ON_RETURN
+
+    _finalise_schedule(day, Day(valid=False), _config())
+
+    assert day.hour[23].cutoff_soc == SOC_MAX_BATTERY  # 100.0%
 
 
 def test_finalise_schedule_index_charge_minus_one_when_none_scheduled():
@@ -491,7 +543,7 @@ def test_finalise_schedule_index_charge_minus_one_when_none_scheduled():
     for hour in day.hour:
         hour.charge = Charge.NO_CHARGING
 
-    _finalise_schedule(day, _config())
+    _finalise_schedule(day, Day(valid=False), _config())
 
     assert day.index_charge == -1
 
@@ -500,7 +552,7 @@ def test_finalise_schedule_noop_on_invalid_day():
     day = Day(valid=False)
     day.index_charge = 5
 
-    _finalise_schedule(day, _config())
+    _finalise_schedule(day, Day(valid=False), _config())
 
     assert day.index_charge == 5  # untouched
 
@@ -619,3 +671,73 @@ def test_set_schedule_falls_back_to_charge_pv_when_baseline_is_unreachable():
 
     for hour in today.hour:
         assert hour.charge == Charge.CHARGING_ON_PV
+
+
+# --- _apply_grid_load_shortfall ---------------------------------------------------
+
+
+def _grid_charge_hour(
+    *,
+    estimated_start_soc=0,
+    cutoff_soc=900,
+    house_load=300,
+    solar=0,
+    price=0.20,
+    earning=Earning.EARNING_ON_RETURN,
+):
+    today = Day(year=2024, mon=1, day=15, valid=True)
+    hour = today.hour[10]
+    hour.valid = True
+    hour.charge = Charge.CHARGING_ON_GRID
+    hour.estimated_start_soc = estimated_start_soc
+    hour.cutoff_soc = cutoff_soc
+    hour.estimated_solar_power = solar
+    hour.estimated_house_load = house_load
+    hour.earning = earning
+    hour.price = price
+    return today
+
+
+def test_apply_grid_load_shortfall_logs_and_records_shortfall_when_cap_binds(caplog):
+    # cutoff_soc=900 (90%) from a start of 0 -> needs 9000 Wh; a tight
+    # 2000 Wh cap minus 300 Wh house load only reaches 1700 Wh within the
+    # hour -> a real shortfall.
+    today = _grid_charge_hour()
+    tomorrow = Day(valid=False)
+    config = _config(max_grid_load=2000.0)
+
+    with caplog.at_level(logging.INFO, logger="custom_components.alpha_ess_local"):
+        _apply_grid_load_shortfall(today, tomorrow, config)
+
+    messages = [r.message for r in caplog.records]
+    assert any("hour 10" in m and "short" in m for m in messages)
+    # 9000 needed - 1700 reachable = 7300 Wh -- read by orchestrator.py's
+    # dispatch bookkeeping to decide whether to spend the once-per-day budget.
+    assert today.hour[10].estimated_grid_charge_shortfall_wh == pytest.approx(7300.0)
+
+
+def test_apply_grid_load_shortfall_silent_when_cap_does_not_bind(caplog):
+    today = _grid_charge_hour()
+    tomorrow = Day(valid=False)
+    # Default max_grid_load (CHARGE_LIMIT, 10000 Wh) minus 300 Wh house load
+    # (9700 Wh reachable) comfortably covers the 9000 Wh needed to reach the
+    # 90% cutoff_soc from a start of 0 -> cap never binds, nothing to report.
+    config = _config()
+
+    with caplog.at_level(logging.INFO, logger="custom_components.alpha_ess_local"):
+        _apply_grid_load_shortfall(today, tomorrow, config)
+
+    assert not any("max_grid_load cap may leave" in r.message for r in caplog.records)
+    assert today.hour[10].estimated_grid_charge_shortfall_wh == 0.0
+
+
+def test_apply_grid_load_shortfall_ignores_hours_not_charging_on_grid():
+    today = Day(year=2024, mon=1, day=15, valid=True)
+    for hour in today.hour:
+        hour.valid = True
+        hour.charge = Charge.CHARGING_ON_PV
+    tomorrow = Day(valid=False)
+    config = _config(max_grid_load=2000.0)
+
+    # Should not raise/log anything -- no hour is CHARGING_ON_GRID.
+    _apply_grid_load_shortfall(today, tomorrow, config)

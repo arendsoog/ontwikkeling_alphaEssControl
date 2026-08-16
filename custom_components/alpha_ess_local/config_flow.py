@@ -34,6 +34,7 @@ from .const import (
     CONF_FRANK_ENERGIE_PRICE_ENTITY,
     CONF_HOUSE_LOAD_POWER_ENTITY,
     CONF_INVERTER_NOMINAL_POWER,
+    CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
     CONF_PROVIDER_RETURN_FEE,
     CONF_PROVIDER_USE_FEE,
@@ -468,6 +469,16 @@ def _options_schema(
             _value_label_checklist(house_load_candidates)
             if house_load_candidates
             else selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
+        ),
+        (
+            vol.Optional(
+                CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
+                description={"suggested_value": options.get(CONF_PEAK_LOAD_THIS_MONTH_ENTITY)},
+            ),
+            # Points at your own "peak load this month" sensor (e.g. a
+            # P1/DSMR-derived template sensor) -- no known integration to
+            # auto-detect candidates from, so always a plain entity picker.
+            selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
         ),
         (
             vol.Optional(

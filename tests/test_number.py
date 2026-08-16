@@ -1,13 +1,14 @@
 """Tests for number.py.
 
-These are the live-adjustable scheduler-setting sliders (SOC bounds, and
-the minimum daily profit threshold) that live directly on the device (see
-orchestrator._number_entity_value for the read side).
+These are the live-adjustable scheduler-setting sliders (SOC bounds, the
+minimum daily profit threshold, and the max grid-charge load) that live
+directly on the device (see orchestrator._number_entity_value for the read
+side).
 """
 
 from unittest.mock import MagicMock
 
-from homeassistant.const import PERCENTAGE
+from homeassistant.const import PERCENTAGE, UnitOfPower
 from homeassistant.core import HomeAssistant, State
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -16,6 +17,7 @@ from pytest_homeassistant_custom_component.common import (
 
 from custom_components.alpha_ess_local.const import (
     DEFAULT_DAILY_MIN_PROFIT,
+    DEFAULT_MAX_GRID_LOAD,
     DEFAULT_MAX_SOC_NEGATIVE_PRICE,
     DEFAULT_MAX_SOC_POSITIVE_PRICE,
     DEFAULT_MIN_SOC_DISCHARGE,
@@ -35,18 +37,25 @@ def _description(key: str):
     return next(d for d in NUMBER_DESCRIPTIONS if d.key == key)
 
 
-def test_number_descriptions_cover_all_four_scheduler_settings():
+def test_number_descriptions_cover_all_five_scheduler_settings():
     keys = {d.key for d in NUMBER_DESCRIPTIONS}
     assert keys == {
         "max_soc_positive_price",
         "max_soc_negative_price",
         "min_soc_discharge",
         "daily_min_profit",
+        "max_grid_load",
     }
 
 
-def test_number_descriptions_are_0_to_100_sliders_with_step_1():
-    for description in NUMBER_DESCRIPTIONS:
+def test_soc_and_profit_number_descriptions_are_0_to_100_sliders_with_step_1():
+    for key in (
+        "max_soc_positive_price",
+        "max_soc_negative_price",
+        "min_soc_discharge",
+        "daily_min_profit",
+    ):
+        description = _description(key)
         assert description.native_min_value == 0
         assert description.native_max_value == 100
         assert description.native_step == 1
@@ -61,6 +70,14 @@ def test_daily_min_profit_description_uses_cents_unit():
     assert _description("daily_min_profit").native_unit_of_measurement == "ct"
 
 
+def test_max_grid_load_description_is_5_to_10_kw_slider_with_half_kw_step():
+    description = _description("max_grid_load")
+    assert description.native_min_value == 5
+    assert description.native_max_value == 10
+    assert description.native_step == 0.5
+    assert description.native_unit_of_measurement == UnitOfPower.KILO_WATT
+
+
 def test_number_descriptions_default_values_match_const_defaults():
     assert _description("max_soc_positive_price").default_value == DEFAULT_MAX_SOC_POSITIVE_PRICE
     assert _description("max_soc_negative_price").default_value == DEFAULT_MAX_SOC_NEGATIVE_PRICE
@@ -68,6 +85,7 @@ def test_number_descriptions_default_values_match_const_defaults():
     # DEFAULT_DAILY_MIN_PROFIT is in EUR (0.40); this entity's own scale is
     # whole cents (40).
     assert _description("daily_min_profit").default_value == round(DEFAULT_DAILY_MIN_PROFIT * 100)
+    assert _description("max_grid_load").default_value == DEFAULT_MAX_GRID_LOAD
 
 
 def test_soc_number_initial_value_matches_description_default():
