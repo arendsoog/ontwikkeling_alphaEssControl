@@ -1,12 +1,16 @@
 {
-    "domain": "alpha_ess_local",
-    "name": "AlphaESSControl",
-    "codeowners": ["@arendsoog"],
-    "config_flow": true,
-    "dependencies": [],
-    "documentation": "https://github.com/arendsoog/ontwikkeling_alphaEssControl",
-    "iot_class": "local_polling",
-    "issue_tracker": "https://github.com/arendsoog/ontwikkeling_alphaEssControl/issues",
-    "requirements": ["pymodbus>=3.10.0"],
-    "version": "0.1.0"
+  "domain": "alpha_ess_local",
+  "name": "AlphaESSControl",
+  "codeowners": [
+    "@arendsoog"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/arendsoog/ontwikkeling_alphaEssControl",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/arendsoog/ontwikkeling_alphaEssControl/issues",
+  "requirements": [
+    "pymodbus>=3.10.0"
+  ],
+  "version": "0.1.1"
 }
