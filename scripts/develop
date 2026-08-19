@@ -6,6 +6,13 @@ set -e
 cd "$(dirname "$0")/.."
 
 mkdir -p config/custom_components
-ln -sf "$(pwd)/custom_components/alpha_ess_local" config/custom_components/alpha_ess_local
+# Plain `ln -sf` misbehaves once the destination is already a symlink
+# pointing at a real directory (as it is on every run after the first): it
+# follows the existing symlink and drops the new link *inside* the real
+# custom_components/alpha_ess_local/ instead of replacing it, leaving a
+# stray self-referencing symlink there. Removing the destination first
+# avoids that.
+rm -f config/custom_components/alpha_ess_local
+ln -s "$(pwd)/custom_components/alpha_ess_local" config/custom_components/alpha_ess_local
 
 hass -c config --debug
