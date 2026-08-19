@@ -7,6 +7,8 @@ test_schedule.py, so these tests focus on the *wiring* (right args, right
 merged Day objects), not re-verifying the scheduler's decisions.
 """
 
+import glob
+import os
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -49,8 +51,10 @@ from custom_components.alpha_ess_local.orchestrator import (
     _switch_entity_value,
     async_handle_daily_rollover,
     async_handle_hourly_rollover,
+    get_db_path,
     hour_correction_from_mean,
     merge_day_sources,
+    migrate_legacy_db_if_needed,
 )
 from custom_components.alpha_ess_local.protocol import DispatchMode, DispatchParam
 from custom_components.alpha_ess_local.storage import HourMean
@@ -195,6 +199,116 @@ def test_sample_hour_accumulates_solar_and_grid_to_battery_averages():
     assert hour.five_min_count == 2
     assert hour.real_solar_to_battery == round((300.0 + 0.0) / 2)
     assert hour.real_grid_to_battery == round((200.0 + 800.0) / 2)
+
+
+# --- get_db_path -------------------------------------------------------------
+
+
+def test_get_db_path_keyed_by_unique_id_not_entry_id(hass: HomeAssistant):
+    # Removing and re-adding the integration against the same inverter gets
+    # a fresh, random entry_id each time -- keying the db filename by the
+    # stable host:port unique_id instead means history survives that.
+    entry = MockConfigEntry(domain=DOMAIN, options={}, unique_id="192.168.1.106:1502")
+    entry.add_to_hass(hass)
+
+    path = get_db_path(hass, entry)
+
+    assert entry.entry_id not in path
+    assert "192.168.1.106_1502" in path
+
+
+def test_get_db_path_falls_back_to_entry_id_without_unique_id(hass: HomeAssistant):
+    entry = MockConfigEntry(domain=DOMAIN, options={}, unique_id=None)
+    entry.add_to_hass(hass)
+
+    path = get_db_path(hass, entry)
+
+    assert entry.entry_id in path
+
+
+# --- migrate_legacy_db_if_needed ----------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_alpha_ess_local_db_files(hass: HomeAssistant):
+    # hass.config.path() in this test harness resolves to a real, shared
+    # testing_config/ directory on disk (not a fresh tmp dir per test), so
+    # .db files these tests create/rename must be cleaned up or they'd leak
+    # into (and break) other tests.
+    yield
+    for path in glob.glob(hass.config.path("alpha_ess_local_*.db")):
+        os.remove(path)
+
+
+def test_migrate_legacy_db_adopts_the_sole_orphaned_file(hass: HomeAssistant):
+    entry = MockConfigEntry(domain=DOMAIN, options={}, unique_id="192.168.1.106:1502")
+    entry.add_to_hass(hass)
+    legacy_path = hass.config.path("alpha_ess_local_01SOMEOLDENTRYID.db")
+    open(legacy_path, "w").close()
+
+    migrate_legacy_db_if_needed(hass, entry)
+
+    new_path = get_db_path(hass, entry)
+    assert os.path.exists(new_path)
+    assert not os.path.exists(legacy_path)
+
+
+def test_migrate_legacy_db_does_nothing_without_an_orphan(hass: HomeAssistant):
+    entry = MockConfigEntry(domain=DOMAIN, options={}, unique_id="192.168.1.106:1502")
+    entry.add_to_hass(hass)
+
+    migrate_legacy_db_if_needed(hass, entry)  # must not raise
+
+    assert not os.path.exists(get_db_path(hass, entry))
+
+
+def test_migrate_legacy_db_does_not_overwrite_an_existing_db(hass: HomeAssistant):
+    entry = MockConfigEntry(domain=DOMAIN, options={}, unique_id="192.168.1.106:1502")
+    entry.add_to_hass(hass)
+    new_path = get_db_path(hass, entry)
+    with open(new_path, "w") as f:
+        f.write("already has data")
+    legacy_path = hass.config.path("alpha_ess_local_01SOMEOLDENTRYID.db")
+    open(legacy_path, "w").close()
+
+    migrate_legacy_db_if_needed(hass, entry)
+
+    with open(new_path) as f:
+        assert f.read() == "already has data"
+    assert os.path.exists(legacy_path)  # left alone, not consumed
+
+
+def test_migrate_legacy_db_skips_ambiguous_multiple_orphans(hass: HomeAssistant):
+    entry = MockConfigEntry(domain=DOMAIN, options={}, unique_id="192.168.1.106:1502")
+    entry.add_to_hass(hass)
+    orphan_1 = hass.config.path("alpha_ess_local_01AAAAAAAAAAAAAAAAAAAAAAAA.db")
+    orphan_2 = hass.config.path("alpha_ess_local_01BBBBBBBBBBBBBBBBBBBBBBBB.db")
+    open(orphan_1, "w").close()
+    open(orphan_2, "w").close()
+
+    migrate_legacy_db_if_needed(hass, entry)
+
+    assert not os.path.exists(get_db_path(hass, entry))
+    assert os.path.exists(orphan_1)
+    assert os.path.exists(orphan_2)
+
+
+def test_migrate_legacy_db_ignores_files_claimed_by_other_entries(hass: HomeAssistant):
+    other_entry = MockConfigEntry(domain=DOMAIN, options={}, unique_id="192.168.1.107:1502")
+    other_entry.add_to_hass(hass)
+    other_path = get_db_path(hass, other_entry)
+    open(other_path, "w").close()
+
+    entry = MockConfigEntry(domain=DOMAIN, options={}, unique_id="192.168.1.106:1502")
+    entry.add_to_hass(hass)
+
+    migrate_legacy_db_if_needed(hass, entry)
+
+    # other_entry's db is a real file matching the "alpha_ess_local_*.db"
+    # glob, but it's claimed by a currently configured entry -- must not be
+    # treated as an orphan and stolen.
+    assert not os.path.exists(get_db_path(hass, entry))
+    assert os.path.exists(other_path)
 
 
 # --- AlphaEssLocalRealDataCoordinator ----------------------------------------

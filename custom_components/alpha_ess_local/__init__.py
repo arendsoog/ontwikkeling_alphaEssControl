@@ -24,6 +24,7 @@ from .orchestrator import (
     AlphaEssLocalScheduleCoordinator,
     async_handle_daily_rollover,
     async_handle_hourly_rollover,
+    migrate_legacy_db_if_needed,
 )
 
 PLATFORMS: list[Platform] = [Platform.NUMBER, Platform.SENSOR, Platform.SWITCH]
@@ -86,6 +87,8 @@ def _async_register_dispatch_services(hass: HomeAssistant) -> None:
 
 async def async_setup_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry) -> bool:
     """Set up AlphaESSControl from a config entry."""
+    await hass.async_add_executor_job(migrate_legacy_db_if_needed, hass, entry)
+
     client = AlphaEssLocalApiClient(
         host=entry.data[CONF_HOST],
         port=entry.data[CONF_PORT],

@@ -16,6 +16,9 @@ phase (see the plan doc).
 
 from __future__ import annotations
 
+import glob
+import os
+import re
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -100,8 +103,58 @@ MIN_SIGMA_WH = 200
 
 
 def get_db_path(hass: HomeAssistant, entry: ConfigEntry) -> str:
-    """The per-config-entry SQLite file storage.py reads/writes."""
-    return hass.config.path(f"alpha_ess_local_{entry.entry_id}.db")
+    """The per-inverter SQLite file storage.py reads/writes.
+
+    Keyed by `entry.unique_id` (host:port, set by config_flow.py) rather
+    than `entry.entry_id` (a random ID HA generates fresh on every add), so
+    removing and re-adding the integration against the same inverter picks
+    its existing history back up instead of starting from an empty
+    database. Falls back to entry_id for the rare case of no unique_id
+    (e.g. entries predating this, or in tests).
+    """
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", entry.unique_id or entry.entry_id)
+    return hass.config.path(f"alpha_ess_local_{safe_id}.db")
+
+
+def migrate_legacy_db_if_needed(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Adopt a pre-existing history file left over from before db paths were
+    keyed by host:port (previously keyed by entry_id, a random ID HA
+    generates fresh on every add -- so removing and re-adding the
+    integration orphaned the old history under a name the new entry could
+    never guess on its own).
+
+    Best-effort and conservative, since this is blind file-based recovery:
+    only touches files that don't already belong to another currently
+    configured entry, and only acts when exactly one such orphan exists --
+    with more than one, guessing which inverter it belonged to would risk
+    silently merging two different inverters' histories, so it's left
+    alone (and logged) for the user to sort out by hand instead. Must run
+    (via executor) before anything reads/writes this entry's db.
+    """
+    new_path = get_db_path(hass, entry)
+    if os.path.exists(new_path):
+        return
+
+    claimed_paths = {
+        get_db_path(hass, other)
+        for other in hass.config_entries.async_entries(DOMAIN)
+        if other.entry_id != entry.entry_id
+    }
+    orphans = [
+        path
+        for path in glob.glob(hass.config.path("alpha_ess_local_*.db"))
+        if path not in claimed_paths
+    ]
+    if len(orphans) == 1:
+        LOGGER.info("Adopting existing AlphaESSControl history file %s as %s", orphans[0], new_path)
+        os.rename(orphans[0], new_path)
+    elif len(orphans) > 1:
+        LOGGER.warning(
+            "Found %d orphaned AlphaESSControl history files and can't tell which (if "
+            "any) belongs to this inverter, so none were adopted: %s",
+            len(orphans),
+            orphans,
+        )
 
 
 def hour_correction_from_mean(
