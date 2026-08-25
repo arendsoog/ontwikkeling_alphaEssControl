@@ -104,6 +104,13 @@ MODBUS_SENSOR_DESCRIPTIONS: tuple[AlphaEssLocalSensorDescription, ...] = (
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
     ),
+    AlphaEssLocalSensorDescription(
+        key="pv_total_energy",
+        translation_key="pv_total_energy",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+    ),
 )
 
 
@@ -169,6 +176,7 @@ class AlphaEssLocalDaySensorDescription(SensorEntityDescription):
 
     day_key: str = "today"
     value_fn: Callable[[Day, Mapping[str, Any]], Any]
+    attributes_fn: Callable[[Day, Mapping[str, Any]], Mapping[str, Any] | None] | None = None
 
 
 PRICE_SENSOR_DESCRIPTIONS: tuple[AlphaEssLocalDaySensorDescription, ...] = (
@@ -279,6 +287,41 @@ def _remaining_solar_surplus_today(day: Day, _options: Mapping[str, Any]) -> int
     )
 
 
+def _hour_plan_entries(day: Day) -> list[dict[str, Any]]:
+    """The full day's hour-by-hour plan, as plain dicts for a sensor attribute.
+
+    Lets you see the whole day's price/solar/house-load/chosen-action
+    breakdown from Home Assistant itself (e.g. a dashboard table), instead
+    of only ever being visible in schedule.py's DEBUG log output.
+    """
+    return [
+        {
+            "hour": h,
+            "price": hour.price,
+            "solar_forecast_w": hour.estimated_solar_power,
+            "house_load_w": hour.estimated_house_load,
+            "action": set_charging_msg(hour.charge),
+        }
+        for h, hour in enumerate(day.hour)
+        if hour.valid
+    ]
+
+
+def _day_plan_hour_count(day: Day, _options: Mapping[str, Any]) -> int | None:
+    """Number of hours with a planned action today — the state for
+    `schedule_today_plan` (the full breakdown lives in its `hours`
+    attribute, see `_hour_plan_entries`)."""
+    if not day.valid:
+        return None
+    return len(_hour_plan_entries(day))
+
+
+def _day_plan_attributes(day: Day, _options: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    if not day.valid:
+        return None
+    return {"hours": _hour_plan_entries(day)}
+
+
 SCHEDULE_SENSOR_DESCRIPTIONS: tuple[AlphaEssLocalDaySensorDescription, ...] = (
     AlphaEssLocalDaySensorDescription(
         key="schedule_current_hour_action",
@@ -299,6 +342,13 @@ SCHEDULE_SENSOR_DESCRIPTIONS: tuple[AlphaEssLocalDaySensorDescription, ...] = (
         device_class=SensorDeviceClass.ENERGY,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_remaining_solar_surplus_today,
+    ),
+    AlphaEssLocalDaySensorDescription(
+        key="schedule_today_plan",
+        translation_key="schedule_today_plan",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_day_plan_hour_count,
+        attributes_fn=_day_plan_attributes,
     ),
 )
 
@@ -336,6 +386,7 @@ async def async_setup_entry(
             AlphaEssLocalSolarEnergyTodaySensor(runtime_data.real_data_coordinator),
             AlphaEssLocalSolarToBatteryTodaySensor(runtime_data.real_data_coordinator),
             AlphaEssLocalGridToBatteryTodaySensor(runtime_data.real_data_coordinator),
+            AlphaEssLocalYesterdaySavingsSensor(runtime_data.real_data_coordinator),
             AlphaEssLocalDispatchModeSensor(runtime_data.dispatch_coordinator),
         ]
     )
@@ -382,6 +433,14 @@ class AlphaEssLocalDaySensor(AlphaEssLocalEntity, SensorEntity):
         """Return the current value, derived from the configured day's Day."""
         day = self.coordinator.data[self.entity_description.day_key]
         return self.entity_description.value_fn(day, self.coordinator.config_entry.options)
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        """Return extra attributes, if this description defines any."""
+        if self.entity_description.attributes_fn is None:
+            return None
+        day = self.coordinator.data[self.entity_description.day_key]
+        return self.entity_description.attributes_fn(day, self.coordinator.config_entry.options)
 
 
 class AlphaEssLocalExtraPvPowerSensor(AlphaEssLocalEntity, SensorEntity):
@@ -571,6 +630,55 @@ class AlphaEssLocalGridToBatteryTodaySensor(AlphaEssLocalEntity, SensorEntity):
             return None
         total_wh = sum(hour.real_grid_to_battery for hour in day.hour if hour.valid)
         return round(total_wh / 1000, 2)
+
+
+class AlphaEssLocalYesterdaySavingsSensor(AlphaEssLocalEntity, SensorEntity):
+    """Yesterday's real per-hour solar generation and cost savings.
+
+    State is total savings (solar + battery combined), in EUR, derived from
+    `storage.retrieve_day_savings` — not an estimate: it's computed from the
+    actual measured net grid exchange that day, compared against what the
+    same hours would have cost with no solar, and with solar but no
+    battery. The `hours` attribute carries the full per-hour breakdown for
+    a dashboard table.
+    """
+
+    _attr_translation_key = "yesterday_savings"
+    _attr_native_unit_of_measurement = "EUR"
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: DataUpdateCoordinator) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_yesterday_savings"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return yesterday's total savings (solar + battery), in EUR."""
+        if self.coordinator.data is None:
+            return None
+        hours = self.coordinator.data.yesterday_savings
+        if not hours:
+            return None
+        return round(sum(h["savings_solar_eur"] + h["savings_battery_eur"] for h in hours), 2)
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        """Return the per-hour breakdown, plus each column's daily total."""
+        if self.coordinator.data is None:
+            return None
+        hours = self.coordinator.data.yesterday_savings
+        if not hours:
+            return None
+        return {
+            "hours": hours,
+            "solar_wh_total": sum(h["solar_wh"] for h in hours),
+            "solar_wh_roof_total": sum(h["solar_wh_roof"] for h in hours),
+            "solar_wh_extra_total": sum(h["solar_wh_extra"] for h in hours),
+            "savings_solar_eur_total": round(sum(h["savings_solar_eur"] for h in hours), 2),
+            "savings_battery_eur_total": round(sum(h["savings_battery_eur"] for h in hours), 2),
+        }
 
 
 class AlphaEssLocalDispatchModeSensor(AlphaEssLocalEntity, SensorEntity):

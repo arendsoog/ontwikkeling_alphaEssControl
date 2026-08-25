@@ -20,6 +20,9 @@ config/
 # Legacy C reference implementation, kept locally only
 /.old c code/
 
+# Frank Energie tariff data, kept locally only
+/.tarieven_frank/
+
 # VS Code
 !.vscode/tasks.json
 !.vscode/launch.json

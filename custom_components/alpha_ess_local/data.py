@@ -80,6 +80,11 @@ class Hour:
     estimated_solar_power_roof_offset: float = 0.0
     real_solar_power_roof: int = 0
     real_extra_pv_power: int = 0
+    # DSMR's active-tariff indicator ("normal"/"low") observed while
+    # sampling this hour -- None when unknown (non-DSMR house-load source,
+    # or an orphan-recovered hour that predates this field). Used to pick
+    # the day/night network fee -- see orchestrator._house_load_tariff.
+    real_tariff: str | None = None
     estimated_house_load: int = 0
     estimated_house_load_sigma: float = 0.0  # onzekerheid huislast (voor scenario's)
     real_house_load: int = 0
@@ -93,14 +98,6 @@ class Hour:
     real_grid_to_battery: int = 0
     estimated_result: float = 0.0
     real_result: float = 0.0
-    # Wh: for a CHARGING_ON_GRID hour, how far short the max_grid_load rate
-    # cap (see schedule.ScheduleConfig.max_grid_load) is predicted to leave
-    # this hour's cutoff_soc target — 0.0 if fully achievable or not
-    # applicable. Set by schedule._apply_grid_load_shortfall; read by
-    # orchestrator.py's dispatch coordinator to decide whether this hour
-    # actually used up the once-per-day grid-charge budget, or whether a
-    # later hour should still be free to try (see charge_on_grid_used).
-    estimated_grid_charge_shortfall_wh: float = 0.0
     five_min_count: int = 0
     provider_override: list = field(
         default_factory=lambda: [ProviderOverride() for _ in range(MAX_QUARTERS)]

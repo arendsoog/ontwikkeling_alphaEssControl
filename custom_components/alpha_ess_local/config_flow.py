@@ -20,6 +20,7 @@ from .api import (
 )
 from .const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
+    CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
     CONF_ENTSOE_PRICE_ENTITY,
     CONF_EXTRA_PV_CONTROL_ENABLED,
@@ -28,21 +29,28 @@ from .const import (
     CONF_EXTRA_PV_MODBUS_OFF_VALUE,
     CONF_EXTRA_PV_MODBUS_ON_VALUE,
     CONF_EXTRA_PV_MODBUS_SLAVE,
+    CONF_EXTRA_PV_PANEL_COUNT,
+    CONF_EXTRA_PV_PANEL_WP,
     CONF_EXTRA_PV_POWER_CAPACITY,
     CONF_EXTRA_PV_POWER_ENTITY,
     CONF_FORECAST_SOLAR_ENTRIES,
     CONF_FRANK_ENERGIE_PRICE_ENTITY,
     CONF_HOUSE_LOAD_POWER_ENTITY,
     CONF_INVERTER_NOMINAL_POWER,
+    CONF_NETWORK_USE_FEE_LOW,
+    CONF_NETWORK_USE_FEE_NORMAL,
     CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
     CONF_PROVIDER_RETURN_FEE,
     CONF_PROVIDER_USE_FEE,
+    CONF_PV_PANEL_COUNT,
+    CONF_PV_PANEL_WP,
     CONF_PV_POWER,
     CONF_SOLCAST_ENTRIES,
     CONF_USABLE_BATTERY_CAPACITY,
     CONF_VAT_PERCENTAGE,
     DEFAULT_ALLOW_PROVIDER_CONTROL_HOURS,
+    DEFAULT_APPLY_VAT_ON_RETURN,
     DEFAULT_CONTROL_ENABLED,
     DEFAULT_EXTRA_PV_CONTROL_ENABLED,
     DEFAULT_EXTRA_PV_MODBUS_ADDRESS,
@@ -50,6 +58,7 @@ from .const import (
     DEFAULT_EXTRA_PV_MODBUS_ON_VALUE,
     DEFAULT_EXTRA_PV_MODBUS_SLAVE,
     DEFAULT_FORECAST_SOLAR_ENTRIES,
+    DEFAULT_NETWORK_USE_FEE,
     DEFAULT_PERSIST_DAILY_CHARGE_LIMIT,
     DEFAULT_PORT,
     DEFAULT_PROVIDER_RETURN_FEE,
@@ -73,6 +82,12 @@ def _power_selector(unit: str) -> selector.NumberSelector:
         selector.NumberSelectorConfig(
             mode=selector.NumberSelectorMode.BOX, min=0, unit_of_measurement=unit
         )
+    )
+
+
+def _count_selector() -> selector.NumberSelector:
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(mode=selector.NumberSelectorMode.BOX, min=0, step=1)
     )
 
 
@@ -168,6 +183,28 @@ def _house_load_candidates(hass: HomeAssistant) -> list[tuple[str, str]]:
     return candidates
 
 
+# DSMR's own "belgium_maximum_demand_current_month" sensor -- the highest
+# monthly 15-minute-average peak, published only by Belgian "5B" meters
+# (verified against homeassistant/components/dsmr/sensor.py). Exactly what
+# CONF_PEAK_LOAD_THIS_MONTH_ENTITY wants (the capaciteitstarief floor), so
+# it's worth auto-detecting like the other DSMR-derived fields above,
+# instead of leaving that field a plain pick-any-sensor selector.
+_DSMR_PEAK_LOAD_KEY = "belgium_maximum_demand_current_month"
+
+
+def _peak_load_candidates(hass: HomeAssistant) -> list[tuple[str, str]]:
+    """Auto-detect DSMR's own peak-load-this-month sensor (Belgian 5B meters)."""
+    registry = er.async_get(hass)
+    candidates: list[tuple[str, str]] = []
+    for entry in hass.config_entries.async_entries("dsmr"):
+        for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+            if reg_entry.domain == "sensor" and reg_entry.unique_id.endswith(
+                f"_{_DSMR_PEAK_LOAD_KEY}"
+            ):
+                candidates.append((reg_entry.entity_id, entry.title))
+    return candidates
+
+
 # pysma's internal register keys for its PV-power sensors, verified directly
 # from pysma/definitions/webconnect.py — pysma doesn't give these entities a
 # readable unique_id suffix the way HomeWizard/DSMR do, so there's nothing
@@ -245,6 +282,7 @@ def _options_schema(
     solcast_entries = hass.config_entries.async_entries("solcast_solar")
     house_load_candidates = _house_load_candidates(hass)
     extra_pv_candidates = _extra_pv_candidates(hass)
+    peak_load_candidates = _peak_load_candidates(hass)
 
     missing = [
         name
@@ -262,7 +300,14 @@ def _options_schema(
     # in the form (ENTSO-E/Frank Energie/Forecast.Solar/Solcast, in that
     # order) while still being conditionally omitted.
     fields: list[tuple[Any, Any]] = [
-        (vol.Optional(CONF_PV_POWER, default=options.get(CONF_PV_POWER, 0)), _power_selector("W")),
+        (
+            vol.Optional(CONF_PV_PANEL_WP, default=options.get(CONF_PV_PANEL_WP, 0)),
+            _power_selector("Wp"),
+        ),
+        (
+            vol.Optional(CONF_PV_PANEL_COUNT, default=options.get(CONF_PV_PANEL_COUNT, 0)),
+            _count_selector(),
+        ),
         (
             vol.Optional(
                 CONF_USABLE_BATTERY_CAPACITY,
@@ -311,6 +356,51 @@ def _options_schema(
             selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     mode=selector.NumberSelectorMode.BOX, min=0, max=100, unit_of_measurement="%"
+                )
+            ),
+        ),
+        (
+            # Some contracts (e.g. Belgian Frank Energie's teruglevering
+            # formula) are explicitly VAT-exempt on the feed-in/return price
+            # while still taxing use normally -- on by default so every
+            # existing installation keeps applying VAT to both sides.
+            vol.Optional(
+                CONF_APPLY_VAT_ON_RETURN,
+                default=options.get(CONF_APPLY_VAT_ON_RETURN, DEFAULT_APPLY_VAT_ON_RETURN),
+            ),
+            selector.BooleanSelector(),
+        ),
+        (
+            # Netbeheerder ("Afname") per-kWh network cost, day/night
+            # differentiated -- separate from CONF_PROVIDER_USE_FEE (the
+            # energy supplier's fee) and from the capaciteitstarief
+            # (max_grid_load, billed on peak kW). Only ever applied where
+            # the real tariff state is known (live DSMR sampling) -- see
+            # orchestrator.py's _house_load_tariff.
+            vol.Optional(
+                CONF_NETWORK_USE_FEE_NORMAL,
+                default=options.get(CONF_NETWORK_USE_FEE_NORMAL, DEFAULT_NETWORK_USE_FEE),
+            ),
+            selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    mode=selector.NumberSelectorMode.BOX,
+                    min=0,
+                    step="any",
+                    unit_of_measurement="EUR/kWh",
+                )
+            ),
+        ),
+        (
+            vol.Optional(
+                CONF_NETWORK_USE_FEE_LOW,
+                default=options.get(CONF_NETWORK_USE_FEE_LOW, DEFAULT_NETWORK_USE_FEE),
+            ),
+            selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    mode=selector.NumberSelectorMode.BOX,
+                    min=0,
+                    step="any",
+                    unit_of_measurement="EUR/kWh",
                 )
             ),
         ),
@@ -387,11 +477,14 @@ def _options_schema(
             else selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
         ),
         (
-            vol.Optional(
-                CONF_EXTRA_PV_POWER_CAPACITY,
-                default=options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0),
-            ),
+            vol.Optional(CONF_EXTRA_PV_PANEL_WP, default=options.get(CONF_EXTRA_PV_PANEL_WP, 0)),
             _power_selector("Wp"),
+        ),
+        (
+            vol.Optional(
+                CONF_EXTRA_PV_PANEL_COUNT, default=options.get(CONF_EXTRA_PV_PANEL_COUNT, 0)
+            ),
+            _count_selector(),
         ),
         (
             # Dedicated feature toggle for the extra-PV price control below —
@@ -473,11 +566,20 @@ def _options_schema(
         (
             vol.Optional(
                 CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
-                description={"suggested_value": options.get(CONF_PEAK_LOAD_THIS_MONTH_ENTITY)},
+                # Pre-fills with the previously saved value if there is one;
+                # otherwise with DSMR's own "belgium_maximum_demand_current_
+                # month" sensor when detected (Belgian 5B meters). Always a
+                # plain pick-any-sensor selector (not a locked checklist like
+                # house-load/extra-PV above) -- unlike those, this field has
+                # no "wrong" alternative to guard against, so it should
+                # always be free to point at any sensor, auto-detected or
+                # not, shown by its own friendly name rather than the DSMR
+                # hub's host:port title.
+                description={
+                    "suggested_value": options.get(CONF_PEAK_LOAD_THIS_MONTH_ENTITY)
+                    or (peak_load_candidates[0][0] if peak_load_candidates else None)
+                },
             ),
-            # Points at your own "peak load this month" sensor (e.g. a
-            # P1/DSMR-derived template sensor) -- no known integration to
-            # auto-detect candidates from, so always a plain entity picker.
             selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
         ),
         (
@@ -584,7 +686,12 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
     ) -> config_entries.ConfigFlowResult:
         """Handle the options step."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            data = dict(user_input)
+            data[CONF_PV_POWER] = data.get(CONF_PV_PANEL_WP, 0) * data.get(CONF_PV_PANEL_COUNT, 0)
+            data[CONF_EXTRA_PV_POWER_CAPACITY] = data.get(CONF_EXTRA_PV_PANEL_WP, 0) * data.get(
+                CONF_EXTRA_PV_PANEL_COUNT, 0
+            )
+            return self.async_create_entry(title="", data=data)
 
         schema, missing = _options_schema(self.hass, self.config_entry.options)
         return self.async_show_form(

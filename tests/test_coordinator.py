@@ -11,8 +11,12 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.alpha_ess_local.const import (
+    CONF_APPLY_VAT_ON_RETURN,
     CONF_ENTSOE_PRICE_ENTITY,
     CONF_FORECAST_SOLAR_ENTRIES,
+    CONF_PROVIDER_RETURN_FEE,
+    CONF_PROVIDER_USE_FEE,
+    CONF_VAT_PERCENTAGE,
     DOMAIN,
 )
 from custom_components.alpha_ess_local.coordinator import (
@@ -21,7 +25,7 @@ from custom_components.alpha_ess_local.coordinator import (
     AlphaEssLocalSolarCoordinator,
     _StartupRaceRetryHelper,
 )
-from custom_components.alpha_ess_local.data import Day
+from custom_components.alpha_ess_local.data import Day, Earning
 
 ENTSOE_ENTITY_ID = "sensor.entsoe_average_electricity_price_today"
 
@@ -53,6 +57,48 @@ async def test_prices_coordinator_builds_today_and_tomorrow(hass: HomeAssistant)
     assert set(data.keys()) == {"today", "tomorrow"}
     assert data["today"].valid is True
     assert data["today"].hour[0].price == 0.10
+
+
+async def test_prices_coordinator_apply_vat_on_return_false_exempts_return_side(
+    hass: HomeAssistant,
+):
+    # price=0.10, return_fee=-0.12: with the full 21% VAT on the return side
+    # (apply_vat_on_return defaults True), profit_on_return = 0.10*1.21 -
+    # 0.12 = 0.001 > 0 -> EARNING_ON_RETURN. With apply_vat_on_return=False,
+    # profit_on_return = 0.10 - 0.12 = -0.02 <= 0 and cost_on_use stays
+    # positive -> neither branch fires, earning stays NO_EARNING (same
+    # numbers/reasoning as test_prices.py's
+    # test_apply_earning_classification_return_vat_percentage_overrides_return_side).
+    hass.states.async_set(
+        ENTSOE_ENTITY_ID,
+        "0.10",
+        {
+            "prices_today": [
+                {
+                    "time": dt_util.now()
+                    .replace(hour=5, minute=0, second=0, microsecond=0)
+                    .isoformat(),
+                    "price": 0.10,
+                }
+            ]
+        },
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            CONF_ENTSOE_PRICE_ENTITY: ENTSOE_ENTITY_ID,
+            CONF_PROVIDER_USE_FEE: 0.0,
+            CONF_PROVIDER_RETURN_FEE: -0.12,
+            CONF_VAT_PERCENTAGE: 21,
+            CONF_APPLY_VAT_ON_RETURN: False,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    coordinator = AlphaEssLocalPricesCoordinator(hass, entry)
+    data = await coordinator._async_update_data()
+
+    assert data["today"].hour[5].earning == Earning.NO_EARNING
 
 
 async def test_prices_coordinator_handles_no_configured_entities(hass: HomeAssistant):

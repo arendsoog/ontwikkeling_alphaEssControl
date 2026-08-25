@@ -9,6 +9,7 @@ merged Day objects), not re-verifying the scheduler's decisions.
 
 import glob
 import os
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -40,10 +41,13 @@ from custom_components.alpha_ess_local.orchestrator import (
     AlphaEssLocalRealDataCoordinator,
     AlphaEssLocalScheduleCoordinator,
     _dsmr_net_power,
+    _dsmr_tariff_indicator,
+    _effective_use_fee,
     _entity_power,
     _extra_pv_power,
     _grid_to_battery,
     _house_load_power,
+    _house_load_tariff,
     _number_entity_value,
     _sample_hour,
     _sma_pv_power,
@@ -55,6 +59,7 @@ from custom_components.alpha_ess_local.orchestrator import (
     hour_correction_from_mean,
     merge_day_sources,
     migrate_legacy_db_if_needed,
+    watch_for_source_recovery,
 )
 from custom_components.alpha_ess_local.protocol import DispatchMode, DispatchParam
 from custom_components.alpha_ess_local.storage import HourMean
@@ -201,6 +206,20 @@ def test_sample_hour_accumulates_solar_and_grid_to_battery_averages():
     assert hour.real_grid_to_battery == round((200.0 + 800.0) / 2)
 
 
+def test_sample_hour_return_vat_percentage_overrides_export_side_real_result():
+    hour = Hour()
+    hour.price = 0.20
+    # pv_roof=1000, total_active_power=-200 (exporting) -> real_house_load
+    # = 1000 + 0 - 200 + 0 = 800 (valid, not negative); active_power ends
+    # up negative -> real_result uses the mk_return_price branch.
+    _sample_hour(hour, 1000.0, 0.0, -200.0, 0.0, 0.02, 0.01, 21.0, return_vat_percentage=0)
+
+    # real_result = -active_power * mk_return_price(0.20, 0.01, 0) / 1000
+    #             = 200 * 0.21 / 1000 = 0.042 (vs 0.0504 with the full 21%
+    #             VAT applied, i.e. omitting return_vat_percentage).
+    assert hour.real_result == pytest.approx(0.042)
+
+
 # --- get_db_path -------------------------------------------------------------
 
 
@@ -325,7 +344,9 @@ async def test_real_data_coordinator_accumulates_sample_without_storing(
         data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
     )
 
-    coordinator = AlphaEssLocalRealDataCoordinator(hass, entry, modbus_coordinator)
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
 
     with patch(
         "custom_components.alpha_ess_local.storage.store_hour_data", MagicMock()
@@ -337,13 +358,66 @@ async def test_real_data_coordinator_accumulates_sample_without_storing(
     mock_store.assert_not_called()
 
 
+async def test_real_data_coordinator_sets_current_hour_price_from_prices_coordinator(
+    hass: HomeAssistant, freezer
+):
+    # Regression test: Hour.price used to silently stay at its 0.0
+    # dataclass default forever (nothing in this coordinator ever set it),
+    # which meant storage.retrieve_day_savings' EUR figures only ever
+    # reflected the small use_fee/return_fee component, not the actual
+    # market price.
+    freezer.move_to("2024-01-15 10:03:00")
+    current_hour = dt_util.now().hour
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
+    )
+    price_day = Day(valid=True)
+    price_day.hour[current_hour].valid = True
+    price_day.hour[current_hour].price = 0.185
+    prices_coordinator = SimpleNamespace(data={"today": price_day})
+
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, prices_coordinator
+    )
+
+    with patch("custom_components.alpha_ess_local.storage.store_hour_data", MagicMock()):
+        data = await coordinator._async_update_data()
+
+    assert data.day.hour[current_hour].price == 0.185
+
+
+async def test_real_data_coordinator_leaves_price_at_default_when_prices_not_ready(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 10:03:00")
+    current_hour = dt_util.now().hour
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
+    )
+
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    with patch("custom_components.alpha_ess_local.storage.store_hour_data", MagicMock()):
+        data = await coordinator._async_update_data()
+
+    assert data.day.hour[current_hour].price == 0.0
+
+
 async def test_real_data_coordinator_stores_on_hour_boundary(hass: HomeAssistant, freezer):
     entry = MockConfigEntry(domain=DOMAIN, options={})
     entry.add_to_hass(hass)
     modbus_coordinator = SimpleNamespace(
         data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
     )
-    coordinator = AlphaEssLocalRealDataCoordinator(hass, entry, modbus_coordinator)
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
 
     with patch(
         "custom_components.alpha_ess_local.storage.store_hour_data", MagicMock(return_value=True)
@@ -367,6 +441,177 @@ async def test_real_data_coordinator_stores_on_hour_boundary(hass: HomeAssistant
     assert data.day.hour[next_hour].valid is True  # accumulation continues into the new hour
 
 
+async def test_real_data_coordinator_uses_pv_total_energy_register_delta_when_available(
+    hass: HomeAssistant, freezer
+):
+    # The inverter's own cumulative "Total Energy from PV" register is more
+    # accurate than averaging our own coarse periodic power samples -- its
+    # hour-boundary delta should override real_solar_power_roof.
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={
+            "pv_power": 500,
+            "battery_power": -200,
+            "grid_power": 50,
+            "pv_total_energy": 10.0,
+        }
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    with patch(
+        "custom_components.alpha_ess_local.storage.store_hour_data", MagicMock(return_value=True)
+    ) as mock_store:
+        freezer.move_to("2024-01-15 10:03:00")
+        first_hour = dt_util.now().hour
+        await coordinator._async_update_data()  # baseline captured: 10.0 kWh
+
+        modbus_coordinator.data["pv_total_energy"] = 11.6  # +1.6 kWh over the hour
+        freezer.move_to("2024-01-15 11:01:00")
+        await coordinator._async_update_data()
+
+    previous_day = mock_store.call_args.args[1]
+    # 1.6 kWh delta -> 1600 Wh, not the 500 W sample average.
+    assert previous_day.hour[first_hour].real_solar_power_roof == 1600
+
+
+async def test_real_data_coordinator_falls_back_to_sampled_average_without_pv_total_energy(
+    hass: HomeAssistant, freezer
+):
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    with patch(
+        "custom_components.alpha_ess_local.storage.store_hour_data", MagicMock(return_value=True)
+    ) as mock_store:
+        freezer.move_to("2024-01-15 10:03:00")
+        first_hour = dt_util.now().hour
+        await coordinator._async_update_data()
+
+        freezer.move_to("2024-01-15 11:01:00")
+        await coordinator._async_update_data()
+
+    previous_day = mock_store.call_args.args[1]
+    assert previous_day.hour[first_hour].real_solar_power_roof == 1000
+
+
+async def test_real_data_coordinator_ignores_negative_pv_total_energy_delta(
+    hass: HomeAssistant, freezer
+):
+    """A register reset/rollover must not silently produce a nonsense negative Wh."""
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 500, "battery_power": -200, "grid_power": 50, "pv_total_energy": 10.0}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    with patch(
+        "custom_components.alpha_ess_local.storage.store_hour_data", MagicMock(return_value=True)
+    ) as mock_store:
+        freezer.move_to("2024-01-15 10:03:00")
+        first_hour = dt_util.now().hour
+        await coordinator._async_update_data()
+
+        modbus_coordinator.data["pv_total_energy"] = 9.0  # reset/rollover
+        freezer.move_to("2024-01-15 11:01:00")
+        await coordinator._async_update_data()
+
+    previous_day = mock_store.call_args.args[1]
+    assert previous_day.hour[first_hour].real_solar_power_roof == 500  # sample average, unaffected
+
+
+async def test_real_data_coordinator_stores_hour_with_network_fee_blended_by_tariff(
+    hass: HomeAssistant, freezer
+):
+    # A DSMR house-load source whose active-tariff indicator reads "low" for
+    # the whole hour -- the persisted use_fee for that hour should be
+    # provider_use_fee + network_use_fee_low, not provider_use_fee alone.
+    dsmr_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
+    dsmr_entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    usage = registry.async_get_or_create(
+        "sensor", "dsmr", "serial123_current_electricity_usage", config_entry=dsmr_entry
+    )
+    delivery = registry.async_get_or_create(
+        "sensor", "dsmr", "serial123_current_electricity_delivery", config_entry=dsmr_entry
+    )
+    tariff = registry.async_get_or_create(
+        "sensor", "dsmr", "serial123_electricity_active_tariff", config_entry=dsmr_entry
+    )
+    hass.states.async_set(usage.entity_id, "0.5", {"unit_of_measurement": "kW"})
+    hass.states.async_set(delivery.entity_id, "0.0", {"unit_of_measurement": "kW"})
+    hass.states.async_set(tariff.entity_id, "low")
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            "house_load_power_entity": f"dsmr:{dsmr_entry.entry_id}",
+            "provider_use_fee": 0.02,
+            "network_use_fee_low": 0.05,
+            "network_use_fee_normal": 0.03,
+        },
+    )
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    with patch(
+        "custom_components.alpha_ess_local.storage.store_hour_data", MagicMock(return_value=True)
+    ) as mock_store:
+        freezer.move_to("2024-01-15 10:03:00")
+        await coordinator._async_update_data()
+
+        freezer.move_to("2024-01-15 11:01:00")
+        await coordinator._async_update_data()
+
+    mock_store.assert_called_once()
+    use_fee_arg = mock_store.call_args.args[3]
+    assert use_fee_arg == pytest.approx(0.02 + 0.05)
+
+
+async def test_real_data_coordinator_passes_return_vat_percentage_to_retrieve_day_savings(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 10:03:00")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={"vat_percentage": 21, "apply_vat_on_return": False},
+    )
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    with patch(
+        "custom_components.alpha_ess_local.storage.retrieve_day_savings",
+        MagicMock(return_value=[]),
+    ) as mock_retrieve:
+        await coordinator._async_update_data()
+
+    mock_retrieve.assert_called_once()
+    args = mock_retrieve.call_args.args
+    assert args[4] == 21  # default_vat_percentage, unaffected
+    assert args[5] == 0.0  # return_vat_percentage=0 -- apply_vat_on_return is False
+
+
 async def test_real_data_coordinator_rehydrates_todays_hours_on_startup(
     hass: HomeAssistant, freezer
 ):
@@ -380,7 +625,9 @@ async def test_real_data_coordinator_rehydrates_todays_hours_on_startup(
     modbus_coordinator = SimpleNamespace(
         data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
     )
-    coordinator = AlphaEssLocalRealDataCoordinator(hass, entry, modbus_coordinator)
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
 
     with patch(
         "custom_components.alpha_ess_local.orchestrator.storage.retrieve_day_hours",
@@ -414,7 +661,9 @@ async def test_real_data_coordinator_rehydrates_current_hour_progress_on_startup
     modbus_coordinator = SimpleNamespace(
         data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
     )
-    coordinator = AlphaEssLocalRealDataCoordinator(hass, entry, modbus_coordinator)
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
 
     def _retrieve_hour_progress(_db_path, _year, _month, _day, hour):
         # Only the current hour (14) has an in-progress row -- every earlier
@@ -422,7 +671,7 @@ async def test_real_data_coordinator_rehydrates_current_hour_progress_on_startup
         # return_value here would make every earlier hour look like an
         # orphaned-but-complete hour to the new recovery loop).
         if hour == current_hour:
-            return (500.0, 120.0, 30.0, 400.0, 3, 80.0, 20.0)
+            return (500.0, 120.0, 30.0, 400.0, 3, 80.0, 20.0, 50.0)
         return None
 
     with (
@@ -457,6 +706,10 @@ async def test_real_data_coordinator_rehydrates_current_hour_progress_on_startup
         assert sample.total_active_power == 400.0
         assert sample.solar_to_battery == 80.0
         assert sample.grid_to_battery == 20.0
+    # The pv_total_energy hour-start baseline also survives the restart --
+    # without this, the register-delta fix (see _sample_hour) would fall
+    # back to the sample-averaged value for this hour too.
+    assert coordinator._pv_total_energy_at_hour_start == 50.0
 
 
 async def test_real_data_coordinator_recovers_orphaned_earlier_hour_progress(
@@ -479,11 +732,13 @@ async def test_real_data_coordinator_recovers_orphaned_earlier_hour_progress(
     modbus_coordinator = SimpleNamespace(
         data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
     )
-    coordinator = AlphaEssLocalRealDataCoordinator(hass, entry, modbus_coordinator)
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
 
     def _retrieve_hour_progress(_db_path, _year, _month, _day, hour):
         if hour == orphan_hour:
-            return (2484.0, 0.0, 3659.0, 2484.0, 12, 1428.0, 42.0)
+            return (2484.0, 0.0, 3659.0, 2484.0, 12, 1428.0, 42.0, None)
         return None
 
     with (
@@ -528,6 +783,126 @@ async def test_real_data_coordinator_recovers_orphaned_earlier_hour_progress(
     assert data.day.hour[current_hour].valid is True
 
 
+async def test_real_data_coordinator_recovers_yesterdays_orphaned_last_hour(
+    hass: HomeAssistant, freezer
+):
+    # A restart landed exactly at the day boundary -- yesterday's hour 23
+    # finished (a full-count hour_progress row) but the coordinator never
+    # got a cycle to promote it into hour_data before "today" became a new
+    # day. The current-day-only recovery loop (see the test above) can't
+    # reach it, since it's no longer "today" by the time this runs -- this
+    # is the dedicated yesterday-hour-23 check's job instead.
+    freezer.move_to("2024-01-15 00:03:00")
+    today_local = dt_util.now().date()
+    yesterday_local = today_local - timedelta(days=1)
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    def _retrieve_hour_progress(_db_path, year, month, day, hour):
+        if (year, month, day, hour) == (
+            yesterday_local.year,
+            yesterday_local.month,
+            yesterday_local.day,
+            23,
+        ):
+            return (2484.0, 0.0, 3659.0, 2484.0, 12, 1428.0, 42.0, None)
+        return None
+
+    with (
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.storage.retrieve_day_hours",
+            MagicMock(return_value={}),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.storage.retrieve_hour_progress",
+            MagicMock(side_effect=_retrieve_hour_progress),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.storage.store_hour_progress",
+            MagicMock(),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.storage.store_hour_data",
+            MagicMock(return_value=True),
+        ) as mock_store_hour_data,
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.storage.delete_hour_progress",
+            MagicMock(),
+        ) as mock_delete_hour_progress,
+    ):
+        await coordinator._async_update_data()
+
+    # Stored under *yesterday's* date, hour 23 -- not folded into today.
+    mock_store_hour_data.assert_called_once()
+    stored_day = mock_store_hour_data.call_args.args[1]
+    stored_hour = mock_store_hour_data.call_args.args[2]
+    assert (stored_day.year, stored_day.mon, stored_day.day) == (
+        yesterday_local.year,
+        yesterday_local.month,
+        yesterday_local.day,
+    )
+    assert stored_hour == 23
+    assert stored_day.hour[23].real_house_load == 2484.0
+    assert stored_day.hour[23].real_extra_pv_power == 3659.0
+    assert stored_day.hour[23].real_solar_to_battery == 1428.0
+    assert stored_day.hour[23].real_grid_to_battery == 42.0
+
+    mock_delete_hour_progress.assert_any_call(
+        ANY, yesterday_local.year, yesterday_local.month, yesterday_local.day, 23
+    )
+
+
+async def test_real_data_coordinator_skips_yesterday_recovery_when_already_stored(
+    hass: HomeAssistant, freezer
+):
+    # Yesterday's hour 23 is already present in hour_data (the normal path
+    # worked fine) -- must not re-store or re-touch it.
+    freezer.move_to("2024-01-15 00:03:00")
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    def _retrieve_day_hours(_db_path, _year, _month, _day):
+        return {23: (2000.0, 0.0, 0.0, 0.0, 0.0)}
+
+    with (
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.storage.retrieve_day_hours",
+            MagicMock(side_effect=_retrieve_day_hours),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.storage.retrieve_hour_progress",
+            MagicMock(return_value=None),
+        ) as mock_retrieve_progress,
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.storage.store_hour_progress",
+            MagicMock(),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.storage.store_hour_data",
+            MagicMock(return_value=True),
+        ) as mock_store_hour_data,
+    ):
+        await coordinator._async_update_data()
+
+    # Since retrieve_day_hours already reports hour 23 present, the
+    # yesterday-hour-23 orphan check must skip straight past it -- never
+    # even asking retrieve_hour_progress for hour 23, let alone storing.
+    assert all(call.args[-1] != 23 for call in mock_retrieve_progress.call_args_list)
+    mock_store_hour_data.assert_not_called()
+
+
 async def test_real_data_coordinator_persists_progress_after_each_sample(
     hass: HomeAssistant, freezer
 ):
@@ -538,7 +913,9 @@ async def test_real_data_coordinator_persists_progress_after_each_sample(
     modbus_coordinator = SimpleNamespace(
         data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
     )
-    coordinator = AlphaEssLocalRealDataCoordinator(hass, entry, modbus_coordinator)
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
 
     with patch(
         "custom_components.alpha_ess_local.orchestrator.storage.store_hour_progress",
@@ -554,6 +931,39 @@ async def test_real_data_coordinator_persists_progress_after_each_sample(
     assert args[11] == data.day.hour[current_hour].real_grid_to_battery
 
 
+async def test_real_data_coordinator_persists_new_hours_own_pv_total_energy_baseline(
+    hass: HomeAssistant, freezer
+):
+    """On an hour transition, the progress row persisted for the *new* hour
+    must carry that hour's own fresh baseline, not the just-completed
+    hour's -- store_hour_progress runs after the baseline reset, not
+    before it (see _async_update_data's comment on the ordering)."""
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 500, "battery_power": -200, "grid_power": 50, "pv_total_energy": 10.0}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    freezer.move_to("2024-01-15 10:03:00")
+    await coordinator._async_update_data()  # baseline for hour 10 captured: 10.0 kWh
+
+    modbus_coordinator.data["pv_total_energy"] = 11.6  # new hour's fresh reading
+    freezer.move_to("2024-01-15 11:01:00")
+    with patch(
+        "custom_components.alpha_ess_local.orchestrator.storage.store_hour_progress",
+        MagicMock(),
+    ) as mock_store_progress:
+        await coordinator._async_update_data()
+
+    mock_store_progress.assert_called_once()
+    # Positional arg 12 is pv_total_energy_at_hour_start -- must be hour
+    # 11's own fresh baseline (11.6), not hour 10's stale one (10.0).
+    assert mock_store_progress.call_args.args[12] == 11.6
+
+
 async def test_real_data_coordinator_deletes_progress_when_hour_completes(
     hass: HomeAssistant, freezer
 ):
@@ -562,7 +972,9 @@ async def test_real_data_coordinator_deletes_progress_when_hour_completes(
     modbus_coordinator = SimpleNamespace(
         data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
     )
-    coordinator = AlphaEssLocalRealDataCoordinator(hass, entry, modbus_coordinator)
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
 
     with (
         patch(
@@ -591,7 +1003,9 @@ async def test_real_data_coordinator_rehydration_empty_on_fresh_day(hass: HomeAs
     entry = MockConfigEntry(domain=DOMAIN, options={})
     entry.add_to_hass(hass)
     modbus_coordinator = SimpleNamespace(data={"pv_power": 0, "battery_power": 0, "grid_power": 0})
-    coordinator = AlphaEssLocalRealDataCoordinator(hass, entry, modbus_coordinator)
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
 
     with patch(
         "custom_components.alpha_ess_local.orchestrator.storage.retrieve_day_hours",
@@ -599,7 +1013,18 @@ async def test_real_data_coordinator_rehydration_empty_on_fresh_day(hass: HomeAs
     ) as mock_retrieve:
         data = await coordinator._async_update_data()
 
-    mock_retrieve.assert_called_once()
+    # called for both today (rehydration) and yesterday (day-boundary
+    # orphaned-last-hour recovery -- see the yesterday-hour-23 check in
+    # _async_update_data). Dates derived from dt_util.now() rather than
+    # hardcoded, since the test hass fixture's timezone can shift the frozen
+    # UTC timestamp above onto a different local calendar date.
+    today_local = dt_util.now().date()
+    yesterday_local = today_local - timedelta(days=1)
+    assert mock_retrieve.call_count == 2
+    mock_retrieve.assert_any_call(ANY, today_local.year, today_local.month, today_local.day)
+    mock_retrieve.assert_any_call(
+        ANY, yesterday_local.year, yesterday_local.month, yesterday_local.day
+    )
     # nothing to rehydrate -> only the hour actually sampled just now is valid.
     assert all(h.valid == (i == current_hour) for i, h in enumerate(data.day.hour))
 
@@ -614,7 +1039,9 @@ async def test_real_data_coordinator_ignores_negative_house_load(hass: HomeAssis
         data={"pv_power": 0, "battery_power": 0, "grid_power": -5000}
     )
 
-    coordinator = AlphaEssLocalRealDataCoordinator(hass, entry, modbus_coordinator)
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
     data = await coordinator._async_update_data()
 
     assert data.day.hour[current_hour].five_min_count == 0
@@ -632,7 +1059,9 @@ async def test_real_data_coordinator_uses_house_load_entity_when_configured(
         data={"pv_power": 0, "battery_power": 0, "grid_power": 999}
     )
 
-    coordinator = AlphaEssLocalRealDataCoordinator(hass, entry, modbus_coordinator)
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
     data = await coordinator._async_update_data()
 
     # total_active_power should come from the P1 entity (123), not the
@@ -650,7 +1079,9 @@ async def test_real_data_coordinator_extra_pv_power_none_when_unconfigured(
         data={"pv_power": 1000, "battery_power": 0, "grid_power": 50}
     )
 
-    coordinator = AlphaEssLocalRealDataCoordinator(hass, entry, modbus_coordinator)
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
     data = await coordinator._async_update_data()
 
     assert data.extra_pv_power is None
@@ -667,7 +1098,9 @@ async def test_real_data_coordinator_extra_pv_power_reports_configured_reading(
         data={"pv_power": 1000, "battery_power": 0, "grid_power": 50}
     )
 
-    coordinator = AlphaEssLocalRealDataCoordinator(hass, entry, modbus_coordinator)
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
     data = await coordinator._async_update_data()
 
     assert data.extra_pv_power == 321.0
@@ -796,6 +1229,38 @@ async def test_schedule_coordinator_reads_discharge_enabled_from_live_switch(
 
     config = mock_run_scheduler.call_args.args[4]
     assert config.discharge_enabled is False
+
+
+async def test_schedule_coordinator_resolves_return_vat_percentage_from_apply_vat_on_return(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 14:00:00")
+    entry = MockConfigEntry(
+        domain=DOMAIN, options={"vat_percentage": 21, "apply_vat_on_return": False}
+    )
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(data={"battery_soc": 55.0})
+    prices_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+    solar_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+
+    coordinator = AlphaEssLocalScheduleCoordinator(
+        hass, entry, modbus_coordinator, prices_coordinator, solar_coordinator
+    )
+
+    with (
+        patch(
+            "custom_components.alpha_ess_local.storage.retrieve_mean_data",
+            MagicMock(return_value=None),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.run_scheduler", MagicMock()
+        ) as mock_run_scheduler,
+    ):
+        await coordinator._async_update_data()
+
+    config = mock_run_scheduler.call_args.args[4]
+    assert config.vat_percentage == 21
+    assert config.return_vat_percentage == 0.0
 
 
 async def test_schedule_coordinator_uses_peak_load_sensor_when_higher_than_slider(
@@ -1242,12 +1707,18 @@ async def test_dispatch_coordinator_provider_charging_makes_no_extra_write(
 async def test_dispatch_coordinator_persists_charge_on_grid_used_on_transition_only(
     hass: HomeAssistant, freezer
 ):
+    # schedule.py's DP now maintains charge_on_grid_used itself (including
+    # multi-hour rate-capped sessions -- see schedule.py's
+    # _calculate_best_schedule); the dispatch coordinator's only remaining
+    # job is noticing the False->True transition and persisting it, once.
     freezer.move_to("2024-01-15 06:00:00")
     current_hour = dt_util.now().hour
     entry = MockConfigEntry(domain=DOMAIN, options={CONF_USABLE_BATTERY_CAPACITY: 10000})
     entry.add_to_hass(hass)
 
     day = _schedule_day_with_hour(current_hour, charge=Charge.CHARGING_ON_GRID)
+    day.charge_on_grid_used = True  # as if schedule.py's DP just completed the session
+    day.index_charge = current_hour
     schedule_coordinator = SimpleNamespace(data={"today": day})
 
     cur_param = DispatchParam(
@@ -1271,30 +1742,25 @@ async def test_dispatch_coordinator_persists_charge_on_grid_used_on_transition_o
         MagicMock(),
     ) as mock_store:
         await coordinator._async_update_data()
-        assert day.charge_on_grid_used is True
-        assert day.index_charge == current_hour
         mock_store.assert_called_once()
 
         mock_store.reset_mock()
-        await coordinator._async_update_data()  # still same hour, already used -> no new persist
+        await coordinator._async_update_data()  # still True, no new transition -> no new persist
         mock_store.assert_not_called()
 
 
-async def test_dispatch_coordinator_leaves_charge_on_grid_used_false_when_shortfall_predicted(
-    hass: HomeAssistant, freezer
-):
-    # schedule.py predicted the max_grid_load rate cap will leave this hour
-    # short of its cutoff_soc target (estimated_grid_charge_shortfall_wh >
-    # 0) -- the once-per-day budget must NOT be spent on it, so a later
-    # hour's recompute can still try to make up the difference.
+async def test_dispatch_coordinator_does_not_persist_mid_session(hass: HomeAssistant, freezer):
+    # A multi-hour grid-charge session that schedule.py's DP hasn't marked
+    # complete yet (charge_on_grid_used still False, per
+    # _evaluate_hour_action's rate-capped continuation) must not be persisted
+    # as "used" -- there's no False->True transition to react to.
     freezer.move_to("2024-01-15 06:00:00")
     current_hour = dt_util.now().hour
     entry = MockConfigEntry(domain=DOMAIN, options={CONF_USABLE_BATTERY_CAPACITY: 10000})
     entry.add_to_hass(hass)
 
-    day = _schedule_day_with_hour(
-        current_hour, charge=Charge.CHARGING_ON_GRID, estimated_grid_charge_shortfall_wh=1000.0
-    )
+    day = _schedule_day_with_hour(current_hour, charge=Charge.CHARGING_ON_GRID)
+    day.charge_on_grid_used = False  # session still open
     schedule_coordinator = SimpleNamespace(data={"today": day})
 
     cur_param = DispatchParam(
@@ -1319,8 +1785,6 @@ async def test_dispatch_coordinator_leaves_charge_on_grid_used_false_when_shortf
     ) as mock_store:
         await coordinator._async_update_data()
 
-    assert day.charge_on_grid_used is False
-    assert day.index_charge == -1
     mock_store.assert_not_called()
 
 
@@ -1336,6 +1800,7 @@ async def test_dispatch_coordinator_does_not_persist_when_option_disabled(
     entry.add_to_hass(hass)
 
     day = _schedule_day_with_hour(current_hour, charge=Charge.CHARGING_ON_GRID)
+    day.charge_on_grid_used = True
     schedule_coordinator = SimpleNamespace(data={"today": day})
 
     cur_param = DispatchParam(
@@ -1361,7 +1826,6 @@ async def test_dispatch_coordinator_does_not_persist_when_option_disabled(
         await coordinator._async_update_data()
 
     mock_store.assert_not_called()
-    assert day.charge_on_grid_used is True  # in-memory bookkeeping still happens
 
 
 async def test_dispatch_coordinator_uses_safe_default_when_schedule_not_ready(
@@ -1759,6 +2223,74 @@ async def test_async_handle_daily_rollover_recomputes_means_and_refreshes(hass: 
     schedule_coordinator.async_request_refresh.assert_awaited_once()
 
 
+class _FakeListenerCoordinator:
+    """Minimal stand-in for a DataUpdateCoordinator's listener wiring.
+
+    `watch_for_source_recovery` only touches `.data`, `.hass`, and
+    `.async_add_listener`, so a real `DataUpdateCoordinator` is unnecessary
+    (and, on current HA, requires a config entry to construct without
+    tripping a ContextVar usage warning).
+    """
+
+    def __init__(self, hass: HomeAssistant, data: dict) -> None:
+        self.hass = hass
+        self.data = data
+        self._listeners: list = []
+
+    def async_add_listener(self, callback):
+        self._listeners.append(callback)
+
+        def _remove() -> None:
+            self._listeners.remove(callback)
+
+        return _remove
+
+    def fire(self) -> None:
+        for callback in list(self._listeners):
+            callback()
+
+
+async def test_watch_for_source_recovery_refreshes_schedule_on_valid_transition(
+    hass: HomeAssistant,
+):
+    source_coordinator = _FakeListenerCoordinator(hass, {"today": Day(valid=False)})
+    schedule_coordinator = SimpleNamespace(async_request_refresh=AsyncMock())
+
+    unsub = watch_for_source_recovery(source_coordinator, schedule_coordinator)
+
+    # Still invalid -> a regular refresh must not trigger a recompute.
+    source_coordinator.fire()
+    await hass.async_block_till_done()
+    schedule_coordinator.async_request_refresh.assert_not_awaited()
+
+    # False -> True transition -> triggers exactly once.
+    source_coordinator.data = {"today": Day(valid=True)}
+    source_coordinator.fire()
+    await hass.async_block_till_done()
+    schedule_coordinator.async_request_refresh.assert_awaited_once()
+
+    # Further refreshes while still valid must not trigger again.
+    source_coordinator.fire()
+    await hass.async_block_till_done()
+    schedule_coordinator.async_request_refresh.assert_awaited_once()
+
+    unsub()
+
+
+async def test_watch_for_source_recovery_unsub_stops_further_refreshes(hass: HomeAssistant):
+    source_coordinator = _FakeListenerCoordinator(hass, {"today": Day(valid=False)})
+    schedule_coordinator = SimpleNamespace(async_request_refresh=AsyncMock())
+
+    unsub = watch_for_source_recovery(source_coordinator, schedule_coordinator)
+    unsub()
+
+    source_coordinator.data = {"today": Day(valid=True)}
+    source_coordinator.fire()
+    await hass.async_block_till_done()
+
+    schedule_coordinator.async_request_refresh.assert_not_awaited()
+
+
 # --- house-load resolution (HomeWizard P1 / DSMR) ----------------------------
 
 
@@ -1908,6 +2440,71 @@ def test_house_load_power_resolves_dsmr_reference(hass: HomeAssistant):
 
 def test_house_load_power_none_when_unset():
     assert _house_load_power(None, None) is None
+
+
+def test_dsmr_tariff_indicator_reads_active_tariff_state(hass: HomeAssistant):
+    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
+    config_entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    tariff = registry.async_get_or_create(
+        "sensor", "dsmr", "serial123_electricity_active_tariff", config_entry=config_entry
+    )
+    hass.states.async_set(tariff.entity_id, "low")
+
+    assert _dsmr_tariff_indicator(hass, config_entry.entry_id) == "low"
+
+
+def test_dsmr_tariff_indicator_none_when_unavailable(hass: HomeAssistant):
+    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
+    config_entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    tariff = registry.async_get_or_create(
+        "sensor", "dsmr", "serial123_electricity_active_tariff", config_entry=config_entry
+    )
+    hass.states.async_set(tariff.entity_id, "unavailable")
+
+    assert _dsmr_tariff_indicator(hass, config_entry.entry_id) is None
+
+
+def test_dsmr_tariff_indicator_none_when_sibling_missing(hass: HomeAssistant):
+    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
+    config_entry.add_to_hass(hass)
+
+    assert _dsmr_tariff_indicator(hass, config_entry.entry_id) is None
+
+
+def test_house_load_tariff_resolves_dsmr_reference(hass: HomeAssistant):
+    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
+    config_entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    tariff = registry.async_get_or_create(
+        "sensor", "dsmr", "serial123_electricity_active_tariff", config_entry=config_entry
+    )
+    hass.states.async_set(tariff.entity_id, "normal")
+
+    assert _house_load_tariff(hass, f"dsmr:{config_entry.entry_id}") == "normal"
+
+
+def test_house_load_tariff_none_for_plain_entity_id(hass: HomeAssistant):
+    # HomeWizard P1/plain-entity house-load sources have no known
+    # tariff-indicator convention here -- explicitly out of scope.
+    assert _house_load_tariff(hass, "sensor.p1_power") is None
+
+
+def test_house_load_tariff_none_when_unset():
+    assert _house_load_tariff(None, None) is None
+
+
+def test_effective_use_fee_adds_normal_network_fee_for_normal_tariff():
+    assert _effective_use_fee(0.02, "normal", 0.05, 0.03) == pytest.approx(0.07)
+
+
+def test_effective_use_fee_adds_low_network_fee_for_low_tariff():
+    assert _effective_use_fee(0.02, "low", 0.05, 0.03) == pytest.approx(0.05)
+
+
+def test_effective_use_fee_adds_nothing_when_tariff_unknown():
+    assert _effective_use_fee(0.02, None, 0.05, 0.03) == pytest.approx(0.02)
 
 
 # --- extra-PV resolution (SMA Solar) -----------------------------------------

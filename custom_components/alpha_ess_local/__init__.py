@@ -25,6 +25,7 @@ from .orchestrator import (
     async_handle_daily_rollover,
     async_handle_hourly_rollover,
     migrate_legacy_db_if_needed,
+    watch_for_source_recovery,
 )
 
 PLATFORMS: list[Platform] = [Platform.NUMBER, Platform.SENSOR, Platform.SWITCH]
@@ -103,13 +104,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry
     solar_coordinator = AlphaEssLocalSolarCoordinator(hass, entry)
     await solar_coordinator.async_config_entry_first_refresh()
 
-    real_data_coordinator = AlphaEssLocalRealDataCoordinator(hass, entry, modbus_coordinator)
+    real_data_coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, prices_coordinator
+    )
     await real_data_coordinator.async_config_entry_first_refresh()
 
     schedule_coordinator = AlphaEssLocalScheduleCoordinator(
         hass, entry, modbus_coordinator, prices_coordinator, solar_coordinator
     )
     await schedule_coordinator.async_config_entry_first_refresh()
+    entry.async_on_unload(watch_for_source_recovery(prices_coordinator, schedule_coordinator))
+    entry.async_on_unload(watch_for_source_recovery(solar_coordinator, schedule_coordinator))
 
     dispatch_coordinator = AlphaEssLocalDispatchCoordinator(
         hass, entry, modbus_coordinator, schedule_coordinator

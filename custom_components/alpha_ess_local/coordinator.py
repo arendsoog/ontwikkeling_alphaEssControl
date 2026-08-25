@@ -17,6 +17,7 @@ from .api import (
     AlphaEssLocalApiClientError,
 )
 from .const import (
+    CONF_APPLY_VAT_ON_RETURN,
     CONF_ENTSOE_PRICE_ENTITY,
     CONF_FORECAST_SOLAR_ENTRIES,
     CONF_FRANK_ENERGIE_PRICE_ENTITY,
@@ -24,6 +25,7 @@ from .const import (
     CONF_PROVIDER_USE_FEE,
     CONF_SOLCAST_ENTRIES,
     CONF_VAT_PERCENTAGE,
+    DEFAULT_APPLY_VAT_ON_RETURN,
     DEFAULT_FORECAST_SOLAR_ENTRIES,
     DEFAULT_PROVIDER_RETURN_FEE,
     DEFAULT_PROVIDER_USE_FEE,
@@ -147,6 +149,11 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         use_fee = options.get(CONF_PROVIDER_USE_FEE, DEFAULT_PROVIDER_USE_FEE)
         return_fee = options.get(CONF_PROVIDER_RETURN_FEE, DEFAULT_PROVIDER_RETURN_FEE)
         vat_percentage = options.get(CONF_VAT_PERCENTAGE, DEFAULT_VAT_PERCENTAGE)
+        return_vat_percentage = (
+            vat_percentage
+            if options.get(CONF_APPLY_VAT_ON_RETURN, DEFAULT_APPLY_VAT_ON_RETURN)
+            else 0.0
+        )
 
         today = dt_util.now().date()
         tomorrow = today + timedelta(days=1)
@@ -159,6 +166,7 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             use_fee,
             return_fee,
             vat_percentage,
+            return_vat_percentage,
         )
         tomorrow_day = build_price_day(
             self.hass,
@@ -168,6 +176,7 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             use_fee,
             return_fee,
             vat_percentage,
+            return_vat_percentage,
         )
 
         self._retry_helper.note_result(

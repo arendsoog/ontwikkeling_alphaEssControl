@@ -19,7 +19,8 @@ from __future__ import annotations
 import glob
 import os
 import re
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -35,6 +36,7 @@ from .api import AlphaEssLocalApiClientAuthenticationError, AlphaEssLocalApiClie
 from .config_flow import SMA_PV_POWER_STRING_KEY
 from .const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
+    CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_EXTRA_PV_MODBUS_ADDRESS,
@@ -45,6 +47,8 @@ from .const import (
     CONF_EXTRA_PV_POWER_ENTITY,
     CONF_HOUSE_LOAD_POWER_ENTITY,
     CONF_INVERTER_NOMINAL_POWER,
+    CONF_NETWORK_USE_FEE_LOW,
+    CONF_NETWORK_USE_FEE_NORMAL,
     CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
     CONF_PROVIDER_RETURN_FEE,
@@ -53,6 +57,7 @@ from .const import (
     CONF_USABLE_BATTERY_CAPACITY,
     CONF_VAT_PERCENTAGE,
     DEFAULT_ALLOW_PROVIDER_CONTROL_HOURS,
+    DEFAULT_APPLY_VAT_ON_RETURN,
     DEFAULT_CONTROL_ENABLED,
     DEFAULT_DAILY_MIN_PROFIT,
     DEFAULT_EXTRA_PV_CONTROL_ENABLED,
@@ -64,6 +69,7 @@ from .const import (
     DEFAULT_MAX_SOC_NEGATIVE_PRICE,
     DEFAULT_MAX_SOC_POSITIVE_PRICE,
     DEFAULT_MIN_SOC_DISCHARGE,
+    DEFAULT_NETWORK_USE_FEE,
     DEFAULT_PERSIST_DAILY_CHARGE_LIMIT,
     DEFAULT_PROVIDER_RETURN_FEE,
     DEFAULT_PROVIDER_USE_FEE,
@@ -233,6 +239,24 @@ def _grid_to_battery(sample: FiveMin) -> float:
     return charge_power - _solar_to_battery(sample)
 
 
+def _effective_use_fee(
+    use_fee: float, tariff: str | None, network_use_fee_normal: float, network_use_fee_low: float
+) -> float:
+    """`use_fee` plus the day/night network Afname fee for `tariff` (DSMR's
+    "normal"/"low" indicator) -- no network fee added when tariff is
+    unknown (non-DSMR house-load source, or an orphan-recovered hour that
+    predates Hour.real_tariff).
+    """
+    network_fee = (
+        network_use_fee_normal
+        if tariff == "normal"
+        else network_use_fee_low
+        if tariff == "low"
+        else 0.0
+    )
+    return use_fee + network_fee
+
+
 def _sample_hour(
     hour: Hour,
     pv_roof: float,
@@ -242,8 +266,14 @@ def _sample_hour(
     use_fee: float,
     return_fee: float,
     vat_percentage: float,
+    return_vat_percentage: float | None = None,
 ) -> None:
-    """Port of CalculatePower: accumulate one 5-minute sample into hour.five_min[]."""
+    """Port of CalculatePower: accumulate one 5-minute sample into hour.five_min[].
+
+    `return_vat_percentage` overrides `vat_percentage` for the return-price
+    side of `hour.real_result` only -- defaults to `vat_percentage` when
+    omitted (apply VAT to both sides, prior behavior).
+    """
     real_house_load = pv_roof + extra_pv + total_active_power + battery_power
     if real_house_load < 0.0:
         LOGGER.debug(
@@ -284,8 +314,11 @@ def _sample_hour(
             -active_power * mk_use_price(hour.price, use_fee, vat_percentage) / 1000.0
         )
     else:
+        effective_return_vat = (
+            return_vat_percentage if return_vat_percentage is not None else vat_percentage
+        )
         hour.real_result = (
-            -active_power * mk_return_price(hour.price, return_fee, vat_percentage) / 1000.0
+            -active_power * mk_return_price(hour.price, return_fee, effective_return_vat) / 1000.0
         )
 
 
@@ -444,6 +477,33 @@ def _house_load_power(hass: HomeAssistant, value: str | None) -> float | None:
     return _entity_power(hass, value)
 
 
+def _dsmr_tariff_indicator(hass: HomeAssistant, config_entry_id: str) -> str | None:
+    """DSMR's active-tariff indicator ("normal"/"low") for the day/night
+    network fee -- same sibling-entity lookup pattern as `_dsmr_net_power`,
+    matched by HA core's stable `dsmr` unique_id suffix.
+    """
+    registry = er.async_get(hass)
+    for reg_entry in er.async_entries_for_config_entry(registry, config_entry_id):
+        if reg_entry.unique_id.endswith("_electricity_active_tariff"):
+            state = hass.states.get(reg_entry.entity_id)
+            if state is not None and state.state not in ("unknown", "unavailable"):
+                return state.state
+    return None
+
+
+def _house_load_tariff(hass: HomeAssistant, value: str | None) -> str | None:
+    """Resolve the configured house-load source to a DSMR tariff indicator.
+
+    Only DSMR ("dsmr:<config_entry_id>") is supported -- HomeWizard P1/plain
+    -entity house-load sources have no known tariff-indicator convention in
+    this codebase, so this returns None for those (no day/night network fee
+    applied, same as an installation that hasn't configured one).
+    """
+    if value and value.startswith("dsmr:"):
+        return _dsmr_tariff_indicator(hass, value.removeprefix("dsmr:"))
+    return None
+
+
 def _sma_pv_power(hass: HomeAssistant, config_entry_id: str) -> float | None:
     """Sum pysma's per-MPPT-string power entities for one SMA inverter.
 
@@ -487,10 +547,15 @@ class RealPowerData:
     is configured at all (vs. `0.0` when configured but currently producing
     nothing) — sensor.py uses that distinction to show "unavailable" rather
     than a misleading 0 W for an unconfigured second installation.
+    `yesterday_savings` is `storage.retrieve_day_savings`'s per-hour result
+    for the previous calendar day — re-fetched every cycle (a single cheap
+    SELECT) rather than cached, since a completed day's figures never
+    change under normal operation.
     """
 
     day: Day
     extra_pv_power: float | None
+    yesterday_savings: list[dict[str, float]] = field(default_factory=list)
 
 
 class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
@@ -510,6 +575,7 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         hass: HomeAssistant,
         entry: ConfigEntry,
         modbus_coordinator: AlphaEssLocalDataUpdateCoordinator,
+        prices_coordinator: AlphaEssLocalPricesCoordinator,
     ) -> None:
         """Initialize the coordinator."""
         super().__init__(
@@ -520,8 +586,20 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
             update_interval=timedelta(minutes=5),
         )
         self._modbus_coordinator = modbus_coordinator
+        self._prices_coordinator = prices_coordinator
         self._today: Day | None = None
         self._last_hour: int | None = None
+        # The inverter's own cumulative "Total Energy from PV" register
+        # (modbus_data["pv_total_energy"], PV1/PV2/PV3 strings only),
+        # captured at the start of the current hour -- its delta at the
+        # next hour boundary overrides real_solar_power_roof with the
+        # device's own continuous internal accumulation instead of our
+        # coarse periodic power-sampling average (confirmed to under-count
+        # roof generation by roughly half on days with fluctuating solar).
+        # In-memory only (not persisted); a restart mid-hour loses this
+        # baseline and that one hour silently falls back to the
+        # sample-averaged value -- see _async_update_data.
+        self._pv_total_energy_at_hour_start: float | None = None
 
     async def _async_update_data(self) -> RealPowerData:
         """Sample current power values and roll the hour/day over as needed."""
@@ -530,6 +608,16 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         previous_hour = self._last_hour
         db_path = get_db_path(self.hass, self.config_entry)
         options = self.config_entry.options
+        use_fee = options.get(CONF_PROVIDER_USE_FEE, DEFAULT_PROVIDER_USE_FEE)
+        return_fee = options.get(CONF_PROVIDER_RETURN_FEE, DEFAULT_PROVIDER_RETURN_FEE)
+        vat_percentage = options.get(CONF_VAT_PERCENTAGE, DEFAULT_VAT_PERCENTAGE)
+        return_vat_percentage = (
+            vat_percentage
+            if options.get(CONF_APPLY_VAT_ON_RETURN, DEFAULT_APPLY_VAT_ON_RETURN)
+            else 0.0
+        )
+        network_use_fee_normal = options.get(CONF_NETWORK_USE_FEE_NORMAL, DEFAULT_NETWORK_USE_FEE)
+        network_use_fee_low = options.get(CONF_NETWORK_USE_FEE_LOW, DEFAULT_NETWORK_USE_FEE)
 
         is_new_day = previous_day is None or (
             previous_day.year,
@@ -561,6 +649,72 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                 rehydrated_hour.real_solar_to_battery = solar_to_battery
                 rehydrated_hour.real_grid_to_battery = grid_to_battery
 
+            # Recover *yesterday's* last hour (23) the same way, if a
+            # restart landed exactly at the day boundary -- the loop below
+            # only looks at *today's* earlier hours, so a hung hour_progress
+            # row from the previous calendar date's hour 23 would otherwise
+            # never get promoted into hour_data (it stops being "today" the
+            # moment this block runs, so nothing else ever revisits it).
+            yesterday_date = date(now.year, now.month, now.day) - timedelta(days=1)
+            yesterday_stored_hours = await self.hass.async_add_executor_job(
+                storage.retrieve_day_hours,
+                db_path,
+                yesterday_date.year,
+                yesterday_date.month,
+                yesterday_date.day,
+            )
+            if (MAX_HOURS - 1) not in yesterday_stored_hours:
+                orphaned_yesterday = await self.hass.async_add_executor_job(
+                    storage.retrieve_hour_progress,
+                    db_path,
+                    yesterday_date.year,
+                    yesterday_date.month,
+                    yesterday_date.day,
+                    MAX_HOURS - 1,
+                )
+                if orphaned_yesterday is not None:
+                    (
+                        house_load,
+                        solar_power_roof,
+                        extra_pv,
+                        active_power,
+                        _sample_count,
+                        solar_to_battery,
+                        grid_to_battery,
+                        _pv_total_energy_at_hour_start,
+                    ) = orphaned_yesterday
+                    yesterday_day = Day(
+                        year=yesterday_date.year,
+                        mon=yesterday_date.month,
+                        day=yesterday_date.day,
+                        valid=True,
+                    )
+                    recovered_hour = yesterday_day.hour[MAX_HOURS - 1]
+                    recovered_hour.valid = True
+                    recovered_hour.real_house_load = house_load
+                    recovered_hour.real_solar_power_roof = solar_power_roof
+                    recovered_hour.real_extra_pv_power = extra_pv
+                    recovered_hour.total_active_power = active_power
+                    recovered_hour.real_solar_to_battery = solar_to_battery
+                    recovered_hour.real_grid_to_battery = grid_to_battery
+                    await self.hass.async_add_executor_job(
+                        storage.store_hour_data,
+                        db_path,
+                        yesterday_day,
+                        MAX_HOURS - 1,
+                        use_fee,
+                        return_fee,
+                        vat_percentage,
+                    )
+                    await self.hass.async_add_executor_job(
+                        storage.delete_hour_progress,
+                        db_path,
+                        yesterday_date.year,
+                        yesterday_date.month,
+                        yesterday_date.day,
+                        MAX_HOURS - 1,
+                    )
+
             # Recover any *earlier* hour that finished (a full-count
             # hour_progress row) but never made it into hour_data — this
             # happens if a restart landed exactly between that hour
@@ -591,6 +745,7 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                     _sample_count,
                     solar_to_battery,
                     grid_to_battery,
+                    _pv_total_energy_at_hour_start,
                 ) = orphaned_progress
                 recovered_hour = self._today.hour[hour_index]
                 recovered_hour.valid = True
@@ -605,8 +760,9 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                     db_path,
                     self._today,
                     hour_index,
-                    options.get(CONF_PROVIDER_USE_FEE, DEFAULT_PROVIDER_USE_FEE),
-                    options.get(CONF_PROVIDER_RETURN_FEE, DEFAULT_PROVIDER_RETURN_FEE),
+                    use_fee,
+                    return_fee,
+                    vat_percentage,
                 )
                 await self.hass.async_add_executor_job(
                     storage.delete_hour_progress,
@@ -636,6 +792,7 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                     sample_count,
                     solar_to_battery,
                     grid_to_battery,
+                    pv_total_energy_at_hour_start,
                 ) = hour_progress
                 current_hour = self._today.hour[now.hour]
                 current_hour.valid = True
@@ -646,6 +803,8 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                 current_hour.total_active_power = active_power
                 current_hour.real_solar_to_battery = solar_to_battery
                 current_hour.real_grid_to_battery = grid_to_battery
+                if pv_total_energy_at_hour_start is not None:
+                    self._pv_total_energy_at_hour_start = pv_total_energy_at_hour_start
                 for sample in current_hour.five_min[:sample_count]:
                     sample.real_house_load = house_load
                     sample.real_solar_power_roof = solar_power_roof
@@ -656,6 +815,16 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
 
         hour = self._today.hour[now.hour]
         hour.valid = True
+        # Kept in sync every cycle (not just once) so a same-hour price
+        # correction (e.g. Frank Energie republishing) is picked up before
+        # this hour is persisted via storage.store_hour_data once it
+        # becomes "previous_hour" below -- that's what makes
+        # storage.retrieve_day_savings' EUR figures meaningful; before this,
+        # Hour.price silently stayed at its 0.0 dataclass default forever,
+        # since nothing else in this coordinator ever set it.
+        prices_today = (self._prices_coordinator.data or {}).get("today")
+        if prices_today is not None and prices_today.valid and prices_today.hour[now.hour].valid:
+            hour.price = prices_today.hour[now.hour].price
 
         modbus_data = self._modbus_coordinator.data or {}
         pv_roof = modbus_data.get("pv_power", 0)
@@ -667,17 +836,66 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
             house_load_power if house_load_power is not None else modbus_data.get("grid_power", 0)
         )
 
+        tariff = _house_load_tariff(self.hass, self._house_load_entity_id())
+        if tariff is not None:
+            hour.real_tariff = tariff
+
         _sample_hour(
             hour,
             pv_roof,
             extra_pv_power or 0.0,
             total_active_power,
             battery_power,
-            options.get(CONF_PROVIDER_USE_FEE, DEFAULT_PROVIDER_USE_FEE),
-            options.get(CONF_PROVIDER_RETURN_FEE, DEFAULT_PROVIDER_RETURN_FEE),
-            options.get(CONF_VAT_PERCENTAGE, DEFAULT_VAT_PERCENTAGE),
+            _effective_use_fee(
+                use_fee, hour.real_tariff, network_use_fee_normal, network_use_fee_low
+            ),
+            return_fee,
+            vat_percentage,
+            return_vat_percentage,
         )
 
+        pv_total_energy_kwh = modbus_data.get("pv_total_energy")
+        hour_changed = previous_hour is not None and previous_hour != now.hour
+
+        if previous_hour is not None and previous_hour != now.hour and previous_day is not None:
+            # Override the just-completed hour's sample-averaged roof
+            # generation with the inverter's own cumulative-register delta,
+            # if available -- see _pv_total_energy_at_hour_start's comment.
+            if pv_total_energy_kwh is not None and self._pv_total_energy_at_hour_start is not None:
+                delta_wh = (pv_total_energy_kwh - self._pv_total_energy_at_hour_start) * 1000
+                if delta_wh >= 0:  # guards a register reset/rollover, not just noise
+                    previous_day.hour[previous_hour].real_solar_power_roof = round(delta_wh)
+
+            previous_hour_use_fee = _effective_use_fee(
+                use_fee,
+                previous_day.hour[previous_hour].real_tariff,
+                network_use_fee_normal,
+                network_use_fee_low,
+            )
+            await self.hass.async_add_executor_job(
+                storage.store_hour_data,
+                db_path,
+                previous_day,
+                previous_hour,
+                previous_hour_use_fee,
+                return_fee,
+                vat_percentage,
+            )
+            await self.hass.async_add_executor_job(
+                storage.delete_hour_progress,
+                db_path,
+                previous_day.year,
+                previous_day.mon,
+                previous_day.day,
+                previous_hour,
+            )
+
+        if hour_changed or self._pv_total_energy_at_hour_start is None:
+            self._pv_total_energy_at_hour_start = pv_total_energy_kwh
+
+        # Persisted after the baseline update above (not right after
+        # _sample_hour) so a fresh hour's progress row is always tagged with
+        # *that* hour's own baseline, never the just-completed hour's.
         if hour.five_min_count > 0:
             await self.hass.async_add_executor_job(
                 storage.store_hour_progress,
@@ -693,28 +911,23 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                 hour.five_min_count,
                 hour.real_solar_to_battery,
                 hour.real_grid_to_battery,
-            )
-
-        if previous_hour is not None and previous_hour != now.hour and previous_day is not None:
-            await self.hass.async_add_executor_job(
-                storage.store_hour_data,
-                db_path,
-                previous_day,
-                previous_hour,
-                options.get(CONF_PROVIDER_USE_FEE, DEFAULT_PROVIDER_USE_FEE),
-                options.get(CONF_PROVIDER_RETURN_FEE, DEFAULT_PROVIDER_RETURN_FEE),
-            )
-            await self.hass.async_add_executor_job(
-                storage.delete_hour_progress,
-                db_path,
-                previous_day.year,
-                previous_day.mon,
-                previous_day.day,
-                previous_hour,
+                self._pv_total_energy_at_hour_start,
             )
 
         self._last_hour = now.hour
-        return RealPowerData(day=self._today, extra_pv_power=extra_pv_power)
+        yesterday = now.date() - timedelta(days=1)
+        yesterday_savings = await self.hass.async_add_executor_job(
+            storage.retrieve_day_savings,
+            db_path,
+            yesterday.year,
+            yesterday.month,
+            yesterday.day,
+            vat_percentage,
+            return_vat_percentage,
+        )
+        return RealPowerData(
+            day=self._today, extra_pv_power=extra_pv_power, yesterday_savings=yesterday_savings
+        )
 
     def _extra_pv_entity_id(self) -> str | None:
         return self.config_entry.options.get(CONF_EXTRA_PV_POWER_ENTITY)
@@ -807,12 +1020,18 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
 
         max_grid_load_wh = _effective_max_grid_load_wh(self.hass, self.config_entry)
 
+        vat_percentage = options.get(CONF_VAT_PERCENTAGE, DEFAULT_VAT_PERCENTAGE)
         config = ScheduleConfig(
             inverter_nominal_power=options.get(CONF_INVERTER_NOMINAL_POWER, 0),
             usable_battery_capacity=options.get(CONF_USABLE_BATTERY_CAPACITY, 0),
             use_fee=options.get(CONF_PROVIDER_USE_FEE, DEFAULT_PROVIDER_USE_FEE),
             return_fee=options.get(CONF_PROVIDER_RETURN_FEE, DEFAULT_PROVIDER_RETURN_FEE),
-            vat_percentage=options.get(CONF_VAT_PERCENTAGE, DEFAULT_VAT_PERCENTAGE),
+            vat_percentage=vat_percentage,
+            return_vat_percentage=(
+                vat_percentage
+                if options.get(CONF_APPLY_VAT_ON_RETURN, DEFAULT_APPLY_VAT_ON_RETURN)
+                else 0.0
+            ),
             # Read live from this integration's own `number` entities
             # (number.py — sliders on the device itself, e.g. the
             # "Bediening"/Controls section) rather than a stored option
@@ -915,6 +1134,8 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         self._provider_charging_power = 0
         self._manual_override: tuple[Charge, int | None] | None = None
         self._last_extra_pv_state: dispatch.ExtraPvState | None = None
+        self._last_charge_on_grid_used = False
+        self._last_discharge_used = False
 
     def set_manual_override(self, charge: Charge | None, cutoff_soc: int | None = None) -> None:
         """Force the next decision to use `charge` (and optionally its
@@ -1005,30 +1226,19 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
                     )
                 self._last_extra_pv_state = extra_pv_state
 
-        # Once-per-day budget bookkeeping — always runs, reflects the
-        # schedule's *intent* for this hour, not whether a write actually
-        # happened (matches DoMinuteWork's unconditional bookkeeping). Only
-        # persists on the actual False->True transition, not every cycle
-        # for the rest of the day.
+        # Once-per-day budget persistence — schedule.py's DP now maintains
+        # charge_on_grid_used/discharge_used itself (see
+        # _calculate_best_schedule's forward trace), including deciding
+        # when a rate-capped, multi-hour grid-charge session has actually
+        # completed (see _evaluate_hour_action). This just detects the
+        # False->True transition and persists it, so a restart doesn't
+        # forget it already happened today.
         if schedule_day is not None:
-            budget_newly_used = False
-            if (
-                hour.charge == Charge.CHARGING_ON_GRID
-                and not schedule_day.charge_on_grid_used
-                # If schedule.py already predicted the max_grid_load rate cap
-                # will leave this hour short of its own cutoff_soc target,
-                # don't spend the once-per-day budget on it -- leave it free
-                # so a later hour's recompute can still try to make up the
-                # difference (see data.Hour.estimated_grid_charge_shortfall_wh).
-                and hour.estimated_grid_charge_shortfall_wh <= 0.0
-            ):
-                schedule_day.charge_on_grid_used = True
-                schedule_day.index_charge = now.hour
-                budget_newly_used = True
-            if hour.charge == Charge.CHARGING_DISCHARGE and not schedule_day.discharge_used:
-                schedule_day.discharge_used = True
-                schedule_day.index_discharge = now.hour
-                budget_newly_used = True
+            budget_newly_used = (
+                schedule_day.charge_on_grid_used and not self._last_charge_on_grid_used
+            ) or (schedule_day.discharge_used and not self._last_discharge_used)
+            self._last_charge_on_grid_used = schedule_day.charge_on_grid_used
+            self._last_discharge_used = schedule_day.discharge_used
             if persist_daily_limit and budget_newly_used:
                 await self.hass.async_add_executor_job(
                     storage.store_dispatch_daily_state,
@@ -1172,6 +1382,40 @@ async def async_handle_hourly_rollover(
 ) -> None:
     """Port of DoHourlyWork's re-schedule trigger."""
     await schedule_coordinator.async_request_refresh()
+
+
+def watch_for_source_recovery(
+    source_coordinator: DataUpdateCoordinator[dict[str, Day]],
+    schedule_coordinator: AlphaEssLocalScheduleCoordinator,
+) -> Callable[[], None]:
+    """Re-trigger a schedule recompute the first time `source_coordinator`
+    (prices or solar) goes from "no valid today" to "valid today".
+
+    Covers the startup race where schedule_coordinator's own first refresh
+    runs before prices/solar have real data yet (their own
+    `_StartupRaceRetryHelper` retries and recovers within seconds, but that
+    only refreshes *their* data -- nothing otherwise tells schedule_coordinator
+    to look again, so it would silently keep planning around a
+    partial/empty day until the next natural hourly trigger, up to an hour
+    later). Only fires on that specific False->True transition, not on
+    every regular ~30-minute refresh, so schedule.py's deliberately-not-
+    polled DP doesn't start rerunning on that cadence too.
+
+    Returns the unsubscribe callable (pass to `entry.async_on_unload`).
+    """
+    had_valid = bool(
+        (source_coordinator.data or {}).get("today") and source_coordinator.data["today"].valid
+    )
+
+    def _on_source_updated() -> None:
+        nonlocal had_valid
+        today = (source_coordinator.data or {}).get("today")
+        now_valid = bool(today and today.valid)
+        if now_valid and not had_valid:
+            source_coordinator.hass.async_create_task(schedule_coordinator.async_request_refresh())
+        had_valid = now_valid
+
+    return source_coordinator.async_add_listener(_on_source_updated)
 
 
 async def async_handle_daily_rollover(
