@@ -531,6 +531,107 @@ async def test_real_data_coordinator_ignores_negative_pv_total_energy_delta(
     assert previous_day.hour[first_hour].real_solar_power_roof == 500  # sample average, unaffected
 
 
+async def test_real_data_coordinator_uses_battery_energy_register_deltas_when_available(
+    hass: HomeAssistant, freezer
+):
+    # Same pattern as pv_total_energy -- the inverter's own cumulative
+    # charge/discharge counters override the sample-averaged battery_power
+    # split, and unlike that split they're gross (not netted).
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={
+            "pv_power": 500,
+            "battery_power": -200,
+            "grid_power": 50,
+            "battery_total_energy_charge": 10.0,
+            "battery_total_energy_discharge": 5.0,
+        }
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    with patch(
+        "custom_components.alpha_ess_local.storage.store_hour_data", MagicMock(return_value=True)
+    ) as mock_store:
+        freezer.move_to("2024-01-15 10:03:00")
+        first_hour = dt_util.now().hour
+        await coordinator._async_update_data()  # baselines captured: 10.0 / 5.0 kWh
+
+        modbus_coordinator.data["battery_total_energy_charge"] = 11.6  # +1.6 kWh charged
+        modbus_coordinator.data["battery_total_energy_discharge"] = 5.3  # +0.3 kWh discharged
+        freezer.move_to("2024-01-15 11:01:00")
+        await coordinator._async_update_data()
+
+    previous_day = mock_store.call_args.args[1]
+    assert previous_day.hour[first_hour].real_battery_charge_energy == 1600
+    assert previous_day.hour[first_hour].real_battery_discharge_energy == 300
+
+
+async def test_real_data_coordinator_falls_back_to_zero_battery_energy_without_registers(
+    hass: HomeAssistant, freezer
+):
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    with patch(
+        "custom_components.alpha_ess_local.storage.store_hour_data", MagicMock(return_value=True)
+    ) as mock_store:
+        freezer.move_to("2024-01-15 10:03:00")
+        first_hour = dt_util.now().hour
+        await coordinator._async_update_data()
+
+        freezer.move_to("2024-01-15 11:01:00")
+        await coordinator._async_update_data()
+
+    previous_day = mock_store.call_args.args[1]
+    assert previous_day.hour[first_hour].real_battery_charge_energy == 0
+    assert previous_day.hour[first_hour].real_battery_discharge_energy == 0
+
+
+async def test_real_data_coordinator_ignores_negative_battery_energy_deltas(
+    hass: HomeAssistant, freezer
+):
+    """A register reset/rollover must not silently produce a nonsense negative Wh."""
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={
+            "pv_power": 500,
+            "battery_power": -200,
+            "grid_power": 50,
+            "battery_total_energy_charge": 10.0,
+            "battery_total_energy_discharge": 5.0,
+        }
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    with patch(
+        "custom_components.alpha_ess_local.storage.store_hour_data", MagicMock(return_value=True)
+    ) as mock_store:
+        freezer.move_to("2024-01-15 10:03:00")
+        first_hour = dt_util.now().hour
+        await coordinator._async_update_data()
+
+        modbus_coordinator.data["battery_total_energy_charge"] = 9.0  # reset/rollover
+        modbus_coordinator.data["battery_total_energy_discharge"] = 4.0  # reset/rollover
+        freezer.move_to("2024-01-15 11:01:00")
+        await coordinator._async_update_data()
+
+    previous_day = mock_store.call_args.args[1]
+    assert previous_day.hour[first_hour].real_battery_charge_energy == 0
+    assert previous_day.hour[first_hour].real_battery_discharge_energy == 0
+
+
 async def test_real_data_coordinator_stores_hour_with_network_fee_blended_by_tariff(
     hass: HomeAssistant, freezer
 ):
@@ -671,7 +772,7 @@ async def test_real_data_coordinator_rehydrates_current_hour_progress_on_startup
         # return_value here would make every earlier hour look like an
         # orphaned-but-complete hour to the new recovery loop).
         if hour == current_hour:
-            return (500.0, 120.0, 30.0, 400.0, 3, 80.0, 20.0, 50.0)
+            return (500.0, 120.0, 30.0, 400.0, 3, 80.0, 20.0, 50.0, 5.0, 2.0)
         return None
 
     with (
@@ -710,6 +811,9 @@ async def test_real_data_coordinator_rehydrates_current_hour_progress_on_startup
     # without this, the register-delta fix (see _sample_hour) would fall
     # back to the sample-averaged value for this hour too.
     assert coordinator._pv_total_energy_at_hour_start == 50.0
+    # Same for the battery charge/discharge baselines.
+    assert coordinator._battery_charge_energy_at_hour_start == 5.0
+    assert coordinator._battery_discharge_energy_at_hour_start == 2.0
 
 
 async def test_real_data_coordinator_recovers_orphaned_earlier_hour_progress(
@@ -738,7 +842,7 @@ async def test_real_data_coordinator_recovers_orphaned_earlier_hour_progress(
 
     def _retrieve_hour_progress(_db_path, _year, _month, _day, hour):
         if hour == orphan_hour:
-            return (2484.0, 0.0, 3659.0, 2484.0, 12, 1428.0, 42.0, None)
+            return (2484.0, 0.0, 3659.0, 2484.0, 12, 1428.0, 42.0, None, None, None)
         return None
 
     with (
@@ -811,7 +915,7 @@ async def test_real_data_coordinator_recovers_yesterdays_orphaned_last_hour(
             yesterday_local.day,
             23,
         ):
-            return (2484.0, 0.0, 3659.0, 2484.0, 12, 1428.0, 42.0, None)
+            return (2484.0, 0.0, 3659.0, 2484.0, 12, 1428.0, 42.0, None, None, None)
         return None
 
     with (

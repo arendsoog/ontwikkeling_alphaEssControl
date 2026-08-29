@@ -195,20 +195,71 @@ def test_retrieve_day_savings_computes_solar_and_battery_savings(tmp_path):
     hour.real_solar_power_roof = 600
     hour.total_active_power = -200
     hour.price = 0.20
+    hour.real_battery_charge_energy = 700
+    hour.real_battery_discharge_energy = 100
     store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21)
 
     result = retrieve_day_savings(db_path, 2024, 1, 15, default_vat_percentage=21)
 
-    assert result == [
-        {
-            "hour": 10,
-            "solar_wh": 600,
-            "solar_wh_roof": 600,
+    assert len(result) == 24  # zero-filled for every other hour of the day
+    assert result[10] == {
+        "hour": 10,
+        "solar_wh": 600,
+        "solar_wh_roof": 600,
+        "solar_wh_extra": 0,
+        "battery_charge_wh": 700,
+        "battery_discharge_wh": 100,
+        "savings_solar_eur": pytest.approx(0.1572, abs=1e-4),
+        "savings_battery_eur": pytest.approx(0.1552, abs=1e-4),
+    }
+    assert result[0] == {
+        "hour": 0,
+        "solar_wh": 0,
+        "solar_wh_roof": 0,
+        "solar_wh_extra": 0,
+        "battery_charge_wh": 0,
+        "battery_discharge_wh": 0,
+        "savings_solar_eur": 0.0,
+        "savings_battery_eur": 0.0,
+    }
+
+
+def test_retrieve_day_savings_zero_fills_hours_missing_from_storage(tmp_path):
+    # A devcontainer/host suspend (or any multi-hour gap in polling) can
+    # leave some hours with no stored row at all. The dashboard table built
+    # from this list expects a contiguous 0-23 hour column, so missing hours
+    # must come back zeroed rather than simply being absent from the list.
+    db_path = str(tmp_path / "test.db")
+    day = _valid_day(year=2024, mon=1, day=15)
+    hour = day.hour[8]
+    hour.valid = True
+    hour.real_house_load = 1000
+    hour.real_solar_power_roof = 600
+    hour.total_active_power = -200
+    hour.price = 0.20
+    store_hour_data(db_path, day, 8, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+    # Hours 9, 10, 11 never got stored (simulating the frozen gap).
+    hour2 = day.hour[12]
+    hour2.valid = True
+    hour2.real_house_load = 500
+    hour2.total_active_power = 500
+    hour2.price = 0.20
+    store_hour_data(db_path, day, 12, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+
+    result = retrieve_day_savings(db_path, 2024, 1, 15, default_vat_percentage=21)
+
+    assert [r["hour"] for r in result] == list(range(24))
+    for gap_hour in (9, 10, 11):
+        assert result[gap_hour] == {
+            "hour": gap_hour,
+            "solar_wh": 0,
+            "solar_wh_roof": 0,
             "solar_wh_extra": 0,
-            "savings_solar_eur": pytest.approx(0.1572, abs=1e-4),
-            "savings_battery_eur": pytest.approx(0.1552, abs=1e-4),
+            "battery_charge_wh": 0,
+            "battery_discharge_wh": 0,
+            "savings_solar_eur": 0.0,
+            "savings_battery_eur": 0.0,
         }
-    ]
 
 
 def test_retrieve_day_savings_return_vat_percentage_overrides_export_side(tmp_path):
@@ -234,16 +285,16 @@ def test_retrieve_day_savings_return_vat_percentage_overrides_export_side(tmp_pa
         db_path, 2024, 1, 15, default_vat_percentage=21, return_vat_percentage=0
     )
 
-    assert result == [
-        {
-            "hour": 10,
-            "solar_wh": 600,
-            "solar_wh_roof": 600,
-            "solar_wh_extra": 0,
-            "savings_solar_eur": pytest.approx(0.1572, abs=1e-4),
-            "savings_battery_eur": pytest.approx(0.1468, abs=1e-4),
-        }
-    ]
+    assert result[10] == {
+        "hour": 10,
+        "solar_wh": 600,
+        "solar_wh_roof": 600,
+        "solar_wh_extra": 0,
+        "battery_charge_wh": 0,
+        "battery_discharge_wh": 0,
+        "savings_solar_eur": pytest.approx(0.1572, abs=1e-4),
+        "savings_battery_eur": pytest.approx(0.1468, abs=1e-4),
+    }
 
 
 def test_retrieve_day_savings_includes_extra_pv_power_in_solar_total(tmp_path):
@@ -264,16 +315,16 @@ def test_retrieve_day_savings_includes_extra_pv_power_in_solar_total(tmp_path):
 
     result = retrieve_day_savings(db_path, 2024, 1, 15, default_vat_percentage=21)
 
-    assert result == [
-        {
-            "hour": 10,
-            "solar_wh": 600,  # 250 + 350
-            "solar_wh_roof": 250,
-            "solar_wh_extra": 350,
-            "savings_solar_eur": pytest.approx(0.1572, abs=1e-4),
-            "savings_battery_eur": pytest.approx(0.1552, abs=1e-4),
-        }
-    ]
+    assert result[10] == {
+        "hour": 10,
+        "solar_wh": 600,  # 250 + 350
+        "solar_wh_roof": 250,
+        "solar_wh_extra": 350,
+        "battery_charge_wh": 0,
+        "battery_discharge_wh": 0,
+        "savings_solar_eur": pytest.approx(0.1572, abs=1e-4),
+        "savings_battery_eur": pytest.approx(0.1552, abs=1e-4),
+    }
 
 
 def test_retrieve_day_savings_can_be_negative_when_battery_loses_money(tmp_path):
@@ -293,8 +344,8 @@ def test_retrieve_day_savings_can_be_negative_when_battery_loses_money(tmp_path)
 
     result = retrieve_day_savings(db_path, 2024, 1, 15, default_vat_percentage=21)
 
-    assert result[0]["savings_solar_eur"] == 0.0
-    assert result[0]["savings_battery_eur"] < 0.0
+    assert result[10]["savings_solar_eur"] == 0.0
+    assert result[10]["savings_battery_eur"] < 0.0
 
 
 def test_retrieve_day_savings_falls_back_to_default_vat_for_rows_missing_it(tmp_path):
@@ -319,8 +370,8 @@ def test_retrieve_day_savings_falls_back_to_default_vat_for_rows_missing_it(tmp_
 
     # Same numbers as test_retrieve_day_savings_computes_solar_and_battery_savings,
     # proving the 21% default was actually applied, not treated as 0%.
-    assert result[0]["savings_solar_eur"] == pytest.approx(0.1572, abs=1e-4)
-    assert result[0]["savings_battery_eur"] == pytest.approx(0.1552, abs=1e-4)
+    assert result[10]["savings_solar_eur"] == pytest.approx(0.1572, abs=1e-4)
+    assert result[10]["savings_battery_eur"] == pytest.approx(0.1552, abs=1e-4)
 
 
 def test_retrieve_day_savings_empty_on_fresh_db(tmp_path):
@@ -344,6 +395,8 @@ def test_store_and_retrieve_hour_progress_roundtrip(tmp_path):
         60.0,
         15.0,
         None,
+        None,
+        None,
     )
 
 
@@ -360,6 +413,8 @@ def test_store_hour_progress_overwrites_same_key(tmp_path):
         4,
         65.0,
         18.0,
+        None,
+        None,
         None,
     )
 
@@ -385,6 +440,31 @@ def test_store_and_retrieve_hour_progress_includes_pv_total_energy_baseline(tmp_
     result = retrieve_hour_progress(db_path, 2024, 1, 15, 14)
 
     assert result[7] == 42.5
+
+
+def test_store_and_retrieve_hour_progress_includes_battery_energy_baselines(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    store_hour_progress(
+        db_path,
+        2024,
+        1,
+        15,
+        14,
+        400.0,
+        100.0,
+        20.0,
+        350.0,
+        3,
+        60.0,
+        15.0,
+        battery_charge_energy_at_hour_start=12.5,
+        battery_discharge_energy_at_hour_start=3.5,
+    )
+
+    result = retrieve_hour_progress(db_path, 2024, 1, 15, 14)
+
+    assert result[8] == 12.5
+    assert result[9] == 3.5
 
 
 def test_retrieve_hour_progress_none_when_nothing_stored(tmp_path):
@@ -455,6 +535,8 @@ def test_ensure_schema_migrates_pre_existing_db_without_new_columns(tmp_path):
         2,
         40.0,
         5.0,
+        None,
+        None,
         None,
     )
 

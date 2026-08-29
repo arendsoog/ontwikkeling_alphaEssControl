@@ -408,13 +408,22 @@ def test_grid_to_battery_today_sensor_none_when_coordinator_has_no_data_yet():
 
 
 def _savings_hour(
-    hour, solar_wh, savings_solar_eur, savings_battery_eur, solar_wh_roof=None, solar_wh_extra=0
+    hour,
+    solar_wh,
+    savings_solar_eur,
+    savings_battery_eur,
+    solar_wh_roof=None,
+    solar_wh_extra=0,
+    battery_charge_wh=0,
+    battery_discharge_wh=0,
 ):
     return {
         "hour": hour,
         "solar_wh": solar_wh,
         "solar_wh_roof": solar_wh - solar_wh_extra if solar_wh_roof is None else solar_wh_roof,
         "solar_wh_extra": solar_wh_extra,
+        "battery_charge_wh": battery_charge_wh,
+        "battery_discharge_wh": battery_discharge_wh,
         "savings_solar_eur": savings_solar_eur,
         "savings_battery_eur": savings_battery_eur,
     }
@@ -453,8 +462,26 @@ def test_yesterday_savings_sensor_none_when_coordinator_has_no_data_yet():
 
 def test_yesterday_savings_sensor_attributes_include_hours_and_totals():
     hours = [
-        _savings_hour(10, 600, 0.15, 0.10, solar_wh_roof=250, solar_wh_extra=350),
-        _savings_hour(11, 800, 0.20, -0.05, solar_wh_roof=800, solar_wh_extra=0),
+        _savings_hour(
+            10,
+            600,
+            0.15,
+            0.10,
+            solar_wh_roof=250,
+            solar_wh_extra=350,
+            battery_charge_wh=900,
+            battery_discharge_wh=100,
+        ),
+        _savings_hour(
+            11,
+            800,
+            0.20,
+            -0.05,
+            solar_wh_roof=800,
+            solar_wh_extra=0,
+            battery_charge_wh=300,
+            battery_discharge_wh=700,
+        ),
     ]
     coordinator = _fake_coordinator(
         RealPowerData(day=Day(), extra_pv_power=None, yesterday_savings=hours)
@@ -467,6 +494,8 @@ def test_yesterday_savings_sensor_attributes_include_hours_and_totals():
     assert attributes["solar_wh_total"] == 1400
     assert attributes["solar_wh_roof_total"] == 1050
     assert attributes["solar_wh_extra_total"] == 350
+    assert attributes["battery_charge_wh_total"] == 1200
+    assert attributes["battery_discharge_wh_total"] == 800
     assert attributes["savings_solar_eur_total"] == pytest.approx(0.35)
     assert attributes["savings_battery_eur_total"] == pytest.approx(0.05)
 

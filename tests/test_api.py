@@ -92,6 +92,26 @@ async def test_async_get_pv_total_energy_uses_point_one_scale(client, mock_modbu
     assert energy == pytest.approx(61.6)
 
 
+async def test_async_get_battery_total_energy_charge_uses_point_one_scale(
+    client, mock_modbus_client
+):
+    mock_modbus_client.read_holding_registers.return_value = _ok_result([0, 12345])
+
+    energy = await client.async_get_battery_total_energy_charge()
+
+    assert energy == pytest.approx(1234.5)
+
+
+async def test_async_get_battery_total_energy_discharge_uses_point_one_scale(
+    client, mock_modbus_client
+):
+    mock_modbus_client.read_holding_registers.return_value = _ok_result([0, 54321])
+
+    energy = await client.async_get_battery_total_energy_discharge()
+
+    assert energy == pytest.approx(5432.1)
+
+
 async def test_read_registers_retries_once_after_reconnect(client, mock_modbus_client):
     mock_modbus_client.read_holding_registers.side_effect = [
         _error_result(),

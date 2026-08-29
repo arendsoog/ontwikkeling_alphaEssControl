@@ -111,6 +111,20 @@ MODBUS_SENSOR_DESCRIPTIONS: tuple[AlphaEssLocalSensorDescription, ...] = (
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
     ),
+    AlphaEssLocalSensorDescription(
+        key="battery_total_energy_charge",
+        translation_key="battery_total_energy_charge",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+    ),
+    AlphaEssLocalSensorDescription(
+        key="battery_total_energy_discharge",
+        translation_key="battery_total_energy_discharge",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+    ),
 )
 
 
@@ -676,6 +690,8 @@ class AlphaEssLocalYesterdaySavingsSensor(AlphaEssLocalEntity, SensorEntity):
             "solar_wh_total": sum(h["solar_wh"] for h in hours),
             "solar_wh_roof_total": sum(h["solar_wh_roof"] for h in hours),
             "solar_wh_extra_total": sum(h["solar_wh_extra"] for h in hours),
+            "battery_charge_wh_total": sum(h["battery_charge_wh"] for h in hours),
+            "battery_discharge_wh_total": sum(h["battery_discharge_wh"] for h in hours),
             "savings_solar_eur_total": round(sum(h["savings_solar_eur"] for h in hours), 2),
             "savings_battery_eur_total": round(sum(h["savings_battery_eur"] for h in hours), 2),
         }

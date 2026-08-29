@@ -45,6 +45,17 @@ REG_PV_TOTAL_ENERGY_CONSUME_FROM_GRID = 0x0092
 # periodic power samples (confirmed to under-count on days with fluctuating
 # solar -- roughly half of the true daily total).
 REG_PV_TOTAL_ENERGY = 0x043E
+# The inverter's own cumulative battery charge/discharge counters, in kWh
+# (scale 0.1, same as REG_PV_TOTAL_ENERGY) -- confirmed against the
+# community `modbus:` YAML's AlphaESS_Total_Energy_Charge_Battery/
+# _Discharge_Battery. Used the same way as REG_PV_TOTAL_ENERGY: hour-
+# boundary deltas instead of averaging 5-minute REG_BATTERY_POWER samples,
+# which was found to both under-count gross charging and over-count gross
+# discharging -- averaging one signed power sample per 5 minutes nets out
+# any charge-then-discharge (or vice versa) that happens within the same
+# hour, which these two separately-metered cumulative counters don't.
+REG_BATTERY_TOTAL_ENERGY_CHARGE = 0x0120
+REG_BATTERY_TOTAL_ENERGY_DISCHARGE = 0x0122
 REG_TIME_PERIOD_CONTROL = 0x084F
 REG_TIME_PERIOD_CONTROL_COUNT = 17
 

@@ -140,6 +140,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # silently fall back to the coarser sample-averaged value. Nullable:
     # None until the coordinator's first sample of an hour.
     _add_column_if_missing(conn, "hour_progress", "pv_total_energy_at_hour_start", "REAL")
+    # Gross battery charge/discharge for the hour (register-delta based, see
+    # orchestrator._battery_charge_energy_at_hour_start), plus the same
+    # restart-resilience baseline persistence as pv_total_energy_at_hour_start.
+    _add_column_if_missing(conn, "hour_data", "battery_charge_energy", "REAL DEFAULT 0")
+    _add_column_if_missing(conn, "hour_data", "battery_discharge_energy", "REAL DEFAULT 0")
+    _add_column_if_missing(conn, "hour_progress", "battery_charge_energy_at_hour_start", "REAL")
+    _add_column_if_missing(conn, "hour_progress", "battery_discharge_energy_at_hour_start", "REAL")
 
 
 def store_hour_data(
@@ -188,8 +195,9 @@ def store_hour_data(
             INSERT INTO hour_data
                 (year, mon, day, hour, house_load, solar_power_roof,
                  estimated_solar_power_raw, extra_pv_power, feed_in, price, use_fee, return_fee,
-                 solar_to_battery, grid_to_battery, vat_percentage)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 solar_to_battery, grid_to_battery, vat_percentage,
+                 battery_charge_energy, battery_discharge_energy)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (year, mon, day, hour) DO UPDATE SET
                 house_load=excluded.house_load,
                 solar_power_roof=excluded.solar_power_roof,
@@ -201,7 +209,9 @@ def store_hour_data(
                 return_fee=excluded.return_fee,
                 solar_to_battery=excluded.solar_to_battery,
                 grid_to_battery=excluded.grid_to_battery,
-                vat_percentage=excluded.vat_percentage
+                vat_percentage=excluded.vat_percentage,
+                battery_charge_energy=excluded.battery_charge_energy,
+                battery_discharge_energy=excluded.battery_discharge_energy
             """,
             (
                 day.year,
@@ -219,6 +229,8 @@ def store_hour_data(
                 the_hour.real_solar_to_battery,
                 the_hour.real_grid_to_battery,
                 vat_percentage,
+                the_hour.real_battery_charge_energy,
+                the_hour.real_battery_discharge_energy,
             ),
         )
         conn.commit()
@@ -309,21 +321,35 @@ def retrieve_day_savings(
       total active power — already reflects whatever the battery actually
       did that hour, not an estimate)
 
-    Returns one dict per stored hour, sorted by hour: `{hour, solar_wh,
-    solar_wh_roof, solar_wh_extra, savings_solar_eur, savings_battery_eur}`.
-    `solar_wh` is the combined total (both installations); `solar_wh_roof`/
-    `solar_wh_extra` are its two components, exposed separately so a
-    dashboard can show generation per installation instead of only the
-    combined figure. `savings_battery_eur` is the extra saved (or, if
-    negative, lost) beyond solar alone — e.g. from grid-charging cheap and
-    using/selling that later.
+    Returns one dict per hour 0-23, sorted by hour, as long as at least one
+    hour was actually stored that day (an empty day returns `[]`, not 24
+    zeroed rows). `{hour, solar_wh, solar_wh_roof, solar_wh_extra,
+    battery_charge_wh, battery_discharge_wh, savings_solar_eur,
+    savings_battery_eur}`. `solar_wh` is the combined total (both
+    installations); `solar_wh_roof`/`solar_wh_extra` are its two components,
+    exposed separately so a dashboard can show generation per installation
+    instead of only the combined figure. `battery_charge_wh`/
+    `battery_discharge_wh` are that hour's gross battery flow, from
+    hour-boundary deltas of the inverter's own cumulative charge/discharge
+    counters (see orchestrator.Hour.real_battery_charge_energy) -- kept as
+    two separate non-negative numbers rather than one net figure, since an
+    hour can genuinely contain both real charging and real discharging that
+    a net average would wash out. `savings_battery_eur` is the extra saved
+    (or, if negative, lost) beyond solar alone — e.g. from grid-charging
+    cheap and using/selling that later.
+
+    Hours with no stored row (e.g. a devcontainer/host suspend that froze
+    the integration for a few hours) are zero-filled rather than omitted, so
+    a dashboard table built from this list keeps a full, contiguous 0-23
+    hour column instead of silently skipping rows.
     """
     with _connection(db_path) as conn:
         _ensure_schema(conn)
         rows = conn.execute(
             """
             SELECT hour, house_load, solar_power_roof, extra_pv_power, feed_in,
-                   price, use_fee, return_fee, vat_percentage
+                   price, use_fee, return_fee, vat_percentage,
+                   battery_charge_energy, battery_discharge_energy
             FROM hour_data
             WHERE year = ? AND mon = ? AND day = ?
             ORDER BY hour
@@ -342,6 +368,8 @@ def retrieve_day_savings(
         use_fee,
         return_fee,
         vat,
+        battery_charge_energy,
+        battery_discharge_energy,
     ) in rows:
         vat = vat if vat is not None else default_vat_percentage
         effective_return_vat = return_vat_percentage if return_vat_percentage is not None else vat
@@ -366,11 +394,33 @@ def retrieve_day_savings(
                 "solar_wh": round(total_solar),
                 "solar_wh_roof": round(solar_power_roof or 0.0),
                 "solar_wh_extra": round(extra_pv_power or 0.0),
+                "battery_charge_wh": round(battery_charge_energy or 0.0),
+                "battery_discharge_wh": round(battery_discharge_energy or 0.0),
                 "savings_solar_eur": round(cost_no_solar - cost_solar_only, 4),
                 "savings_battery_eur": round(cost_solar_only - cost_actual, 4),
             }
         )
-    return results
+
+    if not results:
+        return results
+
+    by_hour = {r["hour"]: r for r in results}
+    return [
+        by_hour.get(
+            hour,
+            {
+                "hour": hour,
+                "solar_wh": 0,
+                "solar_wh_roof": 0,
+                "solar_wh_extra": 0,
+                "battery_charge_wh": 0,
+                "battery_discharge_wh": 0,
+                "savings_solar_eur": 0.0,
+                "savings_battery_eur": 0.0,
+            },
+        )
+        for hour in range(24)
+    ]
 
 
 def store_hour_progress(
@@ -387,6 +437,8 @@ def store_hour_progress(
     solar_to_battery: float,
     grid_to_battery: float,
     pv_total_energy_at_hour_start: float | None = None,
+    battery_charge_energy_at_hour_start: float | None = None,
+    battery_discharge_energy_at_hour_start: float | None = None,
 ) -> None:
     """Persist the still-in-progress hour's running averages + sample count.
 
@@ -396,9 +448,10 @@ def store_hour_progress(
     practice — `delete_hour_progress` clears it once the hour completes and
     lands in `hour_data` instead.
 
-    `pv_total_energy_at_hour_start` persists orchestrator.
-    AlphaEssLocalRealDataCoordinator's cumulative-register baseline for this
-    hour, so a restart doesn't lose it (see that coordinator's docstring).
+    `pv_total_energy_at_hour_start`/`battery_charge_energy_at_hour_start`/
+    `battery_discharge_energy_at_hour_start` persist orchestrator.
+    AlphaEssLocalRealDataCoordinator's cumulative-register baselines for this
+    hour, so a restart doesn't lose them (see that coordinator's docstring).
     """
     with _connection(db_path) as conn:
         _ensure_schema(conn)
@@ -407,8 +460,9 @@ def store_hour_progress(
             INSERT INTO hour_progress
                 (year, mon, day, hour, house_load, solar_power_roof,
                  extra_pv_power, total_active_power, sample_count,
-                 solar_to_battery, grid_to_battery, pv_total_energy_at_hour_start)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 solar_to_battery, grid_to_battery, pv_total_energy_at_hour_start,
+                 battery_charge_energy_at_hour_start, battery_discharge_energy_at_hour_start)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (year, mon, day, hour) DO UPDATE SET
                 house_load=excluded.house_load,
                 solar_power_roof=excluded.solar_power_roof,
@@ -417,7 +471,9 @@ def store_hour_progress(
                 sample_count=excluded.sample_count,
                 solar_to_battery=excluded.solar_to_battery,
                 grid_to_battery=excluded.grid_to_battery,
-                pv_total_energy_at_hour_start=excluded.pv_total_energy_at_hour_start
+                pv_total_energy_at_hour_start=excluded.pv_total_energy_at_hour_start,
+                battery_charge_energy_at_hour_start=excluded.battery_charge_energy_at_hour_start,
+                battery_discharge_energy_at_hour_start=excluded.battery_discharge_energy_at_hour_start
             """,
             (
                 year,
@@ -432,6 +488,8 @@ def store_hour_progress(
                 solar_to_battery,
                 grid_to_battery,
                 pv_total_energy_at_hour_start,
+                battery_charge_energy_at_hour_start,
+                battery_discharge_energy_at_hour_start,
             ),
         )
         conn.commit()
@@ -439,15 +497,20 @@ def store_hour_progress(
 
 def retrieve_hour_progress(
     db_path: str, year: int, mon: int, day: int, hour: int
-) -> tuple[float, float, float, float, int, float, float, float | None] | None:
+) -> (
+    tuple[float, float, float, float, int, float, float, float | None, float | None, float | None]
+    | None
+):
     """Read back one hour's in-progress running averages + sample count.
 
     Returns `(house_load, solar_power_roof, extra_pv_power,
     total_active_power, sample_count, solar_to_battery, grid_to_battery,
-    pv_total_energy_at_hour_start)`, or `None` if nothing was persisted for
-    that hour yet (e.g. its very first sample hasn't landed).
-    `pv_total_energy_at_hour_start` is `None` for rows stored before that
-    column existed, or when the cumulative register wasn't available yet.
+    pv_total_energy_at_hour_start, battery_charge_energy_at_hour_start,
+    battery_discharge_energy_at_hour_start)`, or `None` if nothing was
+    persisted for that hour yet (e.g. its very first sample hasn't landed).
+    The three `*_at_hour_start` baselines are `None` for rows stored before
+    those columns existed, or when the cumulative register wasn't available
+    yet.
     """
     with _connection(db_path) as conn:
         _ensure_schema(conn)
@@ -455,7 +518,8 @@ def retrieve_hour_progress(
             """
             SELECT house_load, solar_power_roof, extra_pv_power, total_active_power,
                    sample_count, solar_to_battery, grid_to_battery,
-                   pv_total_energy_at_hour_start
+                   pv_total_energy_at_hour_start, battery_charge_energy_at_hour_start,
+                   battery_discharge_energy_at_hour_start
             FROM hour_progress
             WHERE year = ? AND mon = ? AND day = ? AND hour = ?
             """,
@@ -463,7 +527,18 @@ def retrieve_hour_progress(
         ).fetchone()
     if row is None:
         return None
-    return (row[0], row[1], row[2], row[3], row[4], row[5] or 0.0, row[6] or 0.0, row[7])
+    return (
+        row[0],
+        row[1],
+        row[2],
+        row[3],
+        row[4],
+        row[5] or 0.0,
+        row[6] or 0.0,
+        row[7],
+        row[8],
+        row[9],
+    )
 
 
 def delete_hour_progress(db_path: str, year: int, mon: int, day: int, hour: int) -> None:

@@ -66,6 +66,8 @@
             "pv_total_energy_feed_to_grid": { "name": "PV totale energie geleverd aan net" },
             "pv_total_energy_consume_from_grid": { "name": "PV totale energie verbruikt van net" },
             "pv_total_energy": { "name": "PV totale energie" },
+            "battery_total_energy_charge": { "name": "Batterij totale energie opgeladen" },
+            "battery_total_energy_discharge": { "name": "Batterij totale energie ontladen" },
             "price_current_hour": { "name": "Prijs huidig uur" },
             "price_lowest_today": { "name": "Laagste prijs vandaag" },
             "price_highest_today": { "name": "Hoogste prijs vandaag" },

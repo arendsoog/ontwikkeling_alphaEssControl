@@ -66,6 +66,8 @@
             "pv_total_energy_feed_to_grid": { "name": "PV total energy fed to grid" },
             "pv_total_energy_consume_from_grid": { "name": "PV total energy consumed from grid" },
             "pv_total_energy": { "name": "PV total energy" },
+            "battery_total_energy_charge": { "name": "Battery total energy charge" },
+            "battery_total_energy_discharge": { "name": "Battery total energy discharge" },
             "price_current_hour": { "name": "Current hour price" },
             "price_lowest_today": { "name": "Lowest price today" },
             "price_highest_today": { "name": "Highest price today" },

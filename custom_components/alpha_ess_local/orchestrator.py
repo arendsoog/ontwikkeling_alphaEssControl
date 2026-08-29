@@ -600,6 +600,16 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         # baseline and that one hour silently falls back to the
         # sample-averaged value -- see _async_update_data.
         self._pv_total_energy_at_hour_start: float | None = None
+        # Same pattern as _pv_total_energy_at_hour_start, for the inverter's
+        # own cumulative battery charge/discharge counters
+        # (modbus_data["battery_total_energy_charge"/"_discharge"]) -- their
+        # deltas at the next hour boundary become
+        # real_battery_charge_energy/real_battery_discharge_energy, instead
+        # of the sample-averaged battery_power, which both under-counts
+        # charging and over-counts discharging (see protocol.py's
+        # REG_BATTERY_TOTAL_ENERGY_CHARGE comment). Also in-memory only.
+        self._battery_charge_energy_at_hour_start: float | None = None
+        self._battery_discharge_energy_at_hour_start: float | None = None
 
     async def _async_update_data(self) -> RealPowerData:
         """Sample current power values and roll the hour/day over as needed."""
@@ -682,6 +692,8 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                         solar_to_battery,
                         grid_to_battery,
                         _pv_total_energy_at_hour_start,
+                        _battery_charge_energy_at_hour_start,
+                        _battery_discharge_energy_at_hour_start,
                     ) = orphaned_yesterday
                     yesterday_day = Day(
                         year=yesterday_date.year,
@@ -746,6 +758,8 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                     solar_to_battery,
                     grid_to_battery,
                     _pv_total_energy_at_hour_start,
+                    _battery_charge_energy_at_hour_start,
+                    _battery_discharge_energy_at_hour_start,
                 ) = orphaned_progress
                 recovered_hour = self._today.hour[hour_index]
                 recovered_hour.valid = True
@@ -793,6 +807,8 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                     solar_to_battery,
                     grid_to_battery,
                     pv_total_energy_at_hour_start,
+                    battery_charge_energy_at_hour_start,
+                    battery_discharge_energy_at_hour_start,
                 ) = hour_progress
                 current_hour = self._today.hour[now.hour]
                 current_hour.valid = True
@@ -805,6 +821,12 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                 current_hour.real_grid_to_battery = grid_to_battery
                 if pv_total_energy_at_hour_start is not None:
                     self._pv_total_energy_at_hour_start = pv_total_energy_at_hour_start
+                if battery_charge_energy_at_hour_start is not None:
+                    self._battery_charge_energy_at_hour_start = battery_charge_energy_at_hour_start
+                if battery_discharge_energy_at_hour_start is not None:
+                    self._battery_discharge_energy_at_hour_start = (
+                        battery_discharge_energy_at_hour_start
+                    )
                 for sample in current_hour.five_min[:sample_count]:
                     sample.real_house_load = house_load
                     sample.real_solar_power_roof = solar_power_roof
@@ -855,6 +877,8 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         )
 
         pv_total_energy_kwh = modbus_data.get("pv_total_energy")
+        battery_charge_energy_kwh = modbus_data.get("battery_total_energy_charge")
+        battery_discharge_energy_kwh = modbus_data.get("battery_total_energy_discharge")
         hour_changed = previous_hour is not None and previous_hour != now.hour
 
         if previous_hour is not None and previous_hour != now.hour and previous_day is not None:
@@ -865,6 +889,31 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                 delta_wh = (pv_total_energy_kwh - self._pv_total_energy_at_hour_start) * 1000
                 if delta_wh >= 0:  # guards a register reset/rollover, not just noise
                     previous_day.hour[previous_hour].real_solar_power_roof = round(delta_wh)
+
+            # Same override for gross battery charge/discharge -- see
+            # _battery_charge_energy_at_hour_start's comment.
+            if (
+                battery_charge_energy_kwh is not None
+                and self._battery_charge_energy_at_hour_start is not None
+            ):
+                charge_delta_wh = (
+                    battery_charge_energy_kwh - self._battery_charge_energy_at_hour_start
+                ) * 1000
+                if charge_delta_wh >= 0:
+                    previous_day.hour[previous_hour].real_battery_charge_energy = round(
+                        charge_delta_wh
+                    )
+            if (
+                battery_discharge_energy_kwh is not None
+                and self._battery_discharge_energy_at_hour_start is not None
+            ):
+                discharge_delta_wh = (
+                    battery_discharge_energy_kwh - self._battery_discharge_energy_at_hour_start
+                ) * 1000
+                if discharge_delta_wh >= 0:
+                    previous_day.hour[previous_hour].real_battery_discharge_energy = round(
+                        discharge_delta_wh
+                    )
 
             previous_hour_use_fee = _effective_use_fee(
                 use_fee,
@@ -892,6 +941,10 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
 
         if hour_changed or self._pv_total_energy_at_hour_start is None:
             self._pv_total_energy_at_hour_start = pv_total_energy_kwh
+        if hour_changed or self._battery_charge_energy_at_hour_start is None:
+            self._battery_charge_energy_at_hour_start = battery_charge_energy_kwh
+        if hour_changed or self._battery_discharge_energy_at_hour_start is None:
+            self._battery_discharge_energy_at_hour_start = battery_discharge_energy_kwh
 
         # Persisted after the baseline update above (not right after
         # _sample_hour) so a fresh hour's progress row is always tagged with
@@ -912,6 +965,8 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                 hour.real_solar_to_battery,
                 hour.real_grid_to_battery,
                 self._pv_total_energy_at_hour_start,
+                self._battery_charge_energy_at_hour_start,
+                self._battery_discharge_energy_at_hour_start,
             )
 
         self._last_hour = now.hour

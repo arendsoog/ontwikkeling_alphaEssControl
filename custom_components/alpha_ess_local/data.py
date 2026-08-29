@@ -96,6 +96,15 @@ class Hour:
     # per-source charge split.
     real_solar_to_battery: int = 0
     real_grid_to_battery: int = 0
+    # Gross battery charge/discharge for the hour, from hour-boundary deltas
+    # of the inverter's own cumulative counters (see protocol.py's
+    # REG_BATTERY_TOTAL_ENERGY_CHARGE/_DISCHARGE) -- unlike
+    # real_solar_to_battery/real_grid_to_battery above, not split by source,
+    # but not netted against each other either, so charging and discharging
+    # that both happen within the same hour show up as two real, separate
+    # numbers instead of one misleadingly small net average.
+    real_battery_charge_energy: int = 0
+    real_battery_discharge_energy: int = 0
     estimated_result: float = 0.0
     real_result: float = 0.0
     five_min_count: int = 0
