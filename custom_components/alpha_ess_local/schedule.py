@@ -102,16 +102,19 @@ class ScheduleConfig:
     # "capaciteitstarief"/capaciteitskost, which bills on your highest
     # 15-minute grid-import peak per month.
     #
-    # Deliberately does NOT constrain _evaluate_hour_action's CHARGING_ON_GRID
-    # math (cutoff_soc, i.e. *how far* to charge, is purely
-    # solar-reservation-driven — see _finalise_schedule) — this cap only
-    # throttles *how fast* dispatch.py's live ~20s power command gets there
-    # (see dispatch.DispatchConfig.max_grid_load, orchestrator.py's shared
-    # _effective_max_grid_load_wh). Kept on ScheduleConfig anyway because
-    # _apply_grid_load_shortfall (below) uses it to warn — and flag to
-    # orchestrator.py's bookkeeping — when that rate cap may leave a single
-    # grid-charge hour short of its own planned target.
+    # Applied in _evaluate_hour_action's CHARGING_ON_GRID math as a per-hour
+    # rate limit on *how much* of the (solar-reservation-driven) target a
+    # single hour can deliver — the same cap dispatch.py's live ~20s power
+    # command throttles by (see dispatch.DispatchConfig.max_grid_load,
+    # orchestrator.py's shared _effective_max_grid_load_wh). When it binds,
+    # the once-per-day charge/discharge "used" flag only flips once the
+    # target is actually reached, so the DP's own search naturally spreads
+    # a grid-charge session across however many hours that takes.
     max_grid_load: float = CHARGE_LIMIT
+    # Overrides vat_percentage for the return-price side only (e.g. a
+    # BTW-exempt teruglevering formula) -- None means "no override, apply
+    # vat_percentage to both sides", same as prior behavior.
+    return_vat_percentage: float | None = None
 
 
 @dataclass(frozen=True)
@@ -195,8 +198,13 @@ def _evaluate_hour_action(
     earning = the_hour.earning
 
     price_use = mk_use_price(the_hour.price, config.use_fee, config.vat_percentage) / 1000.0
+    return_vat_percentage = (
+        config.return_vat_percentage
+        if config.return_vat_percentage is not None
+        else config.vat_percentage
+    )
     price_return = (
-        mk_return_price(the_hour.price, config.return_fee, config.vat_percentage) / 1000.0
+        mk_return_price(the_hour.price, config.return_fee, return_vat_percentage) / 1000.0
     )
 
     if earning == Earning.EARNING_ON_USE:
@@ -275,15 +283,20 @@ def _evaluate_hour_action(
 
     elif action == Charge.CHARGING_ON_GRID:
         if not charge_used:
-            # max_grid_load is deliberately NOT applied here: it only
-            # throttles how fast dispatch.py actually gets there (see
-            # decide_dispatch), never how far the DP plans to charge. The
-            # target itself (what _finalise_schedule turns into cutoff_soc)
-            # is purely solar-reservation-driven, below.
+            # The target itself (what _finalise_schedule turns into
+            # cutoff_soc) is purely solar-reservation-driven. max_grid_load
+            # *does* throttle how much of that target a single hour can
+            # actually deliver (same cap dispatch.py's decide_dispatch
+            # applies live) -- when it binds, next_charge_used stays False
+            # below so a later hour's DP state can pick up where this one
+            # left off, letting the backward-induction search itself weigh
+            # a multi-hour session against a single expensive hour.
             max_capacity = max_soc_eou if earning == Earning.EARNING_ON_USE else max_soc
             available_gap = max_capacity - soc_wh
             reserved_for_solar = min(future_solar_surplus_wh, max(available_gap, 0.0))
-            charge_soc = min(available_gap - reserved_for_solar, CHARGE_LIMIT)
+            target_soc = available_gap - reserved_for_solar
+            rate_cap_soc = max(0.0, config.max_grid_load - house_load)
+            charge_soc = min(target_soc, CHARGE_LIMIT, rate_cap_soc)
             if charge_soc > 0.0:
                 charge_ac_est = charge_soc / ETA_GRID_TO_BATT
                 batt_eff = _battery_efficiency(charge_ac_est, battery_capacity)
@@ -293,7 +306,7 @@ def _evaluate_hour_action(
                     new_soc_wh = soc_wh + charge_soc
                     feed_in -= charge_ac
                     profit = feed_in * (price_return if feed_in > 0.0 else price_use)
-                    next_charge_used = True
+                    next_charge_used = charge_soc >= target_soc - 1e-6
 
     elif (
         action == Charge.CHARGING_DISCHARGE
@@ -446,6 +459,17 @@ def _calculate_best_schedule(
         cu = entry.next_charge_used
         du = entry.next_discharge_used
 
+        if hour == start_hour:
+            # The DP's own answer to "is the once-per-day grid-charge/
+            # discharge session still open after this hour" -- a
+            # multi-hour session (see _evaluate_hour_action's rate cap)
+            # only "spends" the slot once its target is actually reached,
+            # so this is the live/persisted charge_on_grid_used's source
+            # of truth going forward, replacing the old post-hoc shortfall
+            # check that only ever understood single-hour sessions.
+            today.charge_on_grid_used = cu
+            today.discharge_used = du
+
     if forced_action is not None and today.hour[start_hour].charge != forced_action:
         return False, dp_result
     if dp_result < -100000:
@@ -572,55 +596,25 @@ def _assign_day(dest: Day, src: Day) -> None:
     dest.__dict__.update(src.__dict__)
 
 
-def _apply_grid_load_shortfall(today: Day, tomorrow: Day, config: ScheduleConfig) -> None:
-    """Estimates, for each CHARGING_ON_GRID hour, whether the max_grid_load
-    rate cap will leave it short of its own cutoff_soc target — and if so,
-    records the shortfall on `hour.estimated_grid_charge_shortfall_wh` (read
-    by orchestrator.py's dispatch coordinator, see that field's docstring)
-    and logs it. Does not change the chosen schedule itself.
-
-    cutoff_soc (how far a CHARGING_ON_GRID hour targets, see
-    _finalise_schedule) is purely solar-reservation-driven and knows nothing
-    about max_grid_load — that cap only throttles dispatch.py's live power
-    command, i.e. how *fast* the battery can actually get there within that
-    single hour. This estimates the resulting shortfall (ignoring inverter/
-    battery efficiency losses — a rough, conservative check, not a re-run of
-    the DP).
+def _select_baseline(
+    today: Day,
+    tomorrow: Day,
+    today_bl: Day,
+    tomorrow_bl: Day,
+    real_charge_on_grid_used: bool,
+    real_discharge_used: bool,
+) -> None:
+    """Adopt today_bl/tomorrow_bl as the chosen schedule, without letting
+    their DP's hardcoded "as if the once-per-day levers are already spent"
+    charge_used_before/discharge_used_before (see set_schedule's baseline
+    call) leak into the *real* charge_on_grid_used/discharge_used -- opting
+    not to deviate from baseline this recompute must never itself spend the
+    budget.
     """
-    if math.isinf(config.max_grid_load):
-        return
-
-    end_hour = MAX_HOURS if today.valid else 0
-    if tomorrow.valid:
-        end_hour = MAX_HOURS * 2
-
-    def _hour_at(index: int) -> Hour:
-        return tomorrow.hour[index - MAX_HOURS] if index >= MAX_HOURS else today.hour[index]
-
-    for charge_hour in range(end_hour):
-        hour = _hour_at(charge_hour)
-        if hour.charge != Charge.CHARGING_ON_GRID:
-            continue
-
-        start_wh = hour.estimated_start_soc / SOC_STEPS * config.usable_battery_capacity
-        target_wh = hour.cutoff_soc / SOC_MAX_BATTERY * config.usable_battery_capacity
-        needed_wh = target_wh - start_wh
-        if needed_wh <= 0.0:
-            continue
-
-        available_power_w = max(0.0, config.max_grid_load - hour.estimated_house_load)
-        shortfall = needed_wh - available_power_w  # 1-hour DP step: Wh == W here
-        if shortfall > 1.0:  # ignore floating-point noise
-            hour.estimated_grid_charge_shortfall_wh = shortfall
-            LOGGER.info(
-                "set_schedule: max_grid_load cap may leave grid-charge at hour %s short of "
-                "its target: needs %.0f Wh, only ~%.0f Wh reachable at the capped rate "
-                "(~%.0f Wh short) — not marking the once-per-day budget used",
-                charge_hour % MAX_HOURS,
-                needed_wh,
-                available_power_w,
-                shortfall,
-            )
+    _assign_day(today, today_bl)
+    _assign_day(tomorrow, tomorrow_bl)
+    today.charge_on_grid_used = real_charge_on_grid_used
+    today.discharge_used = real_discharge_used
 
 
 def set_schedule(
@@ -639,6 +633,8 @@ def set_schedule(
     with the chosen schedule.
     """
     cur_soc_index = int(_clamp(round(cur_soc / SOC_MAX_BATTERY * SOC_STEPS), 0, SOC_STEPS))
+    real_charge_on_grid_used = today.charge_on_grid_used
+    real_discharge_used = today.discharge_used
 
     today_bl = copy.deepcopy(today)
     tomorrow_bl = copy.deepcopy(tomorrow)
@@ -656,8 +652,9 @@ def set_schedule(
 
     if today.charge_on_grid_used and today.discharge_used:
         LOGGER.debug("set_schedule: charge and discharge already used today, selecting baseline")
-        _assign_day(today, today_bl)
-        _assign_day(tomorrow, tomorrow_bl)
+        _select_baseline(
+            today, tomorrow, today_bl, tomorrow_bl, real_charge_on_grid_used, real_discharge_used
+        )
         _finalise_schedule(today, tomorrow, config)
         return
 
@@ -703,8 +700,9 @@ def set_schedule(
 
     if not have_valid_action:
         LOGGER.debug("set_schedule: no valid action/scenario found, selecting baseline")
-        _assign_day(today, today_bl)
-        _assign_day(tomorrow, tomorrow_bl)
+        _select_baseline(
+            today, tomorrow, today_bl, tomorrow_bl, real_charge_on_grid_used, real_discharge_used
+        )
         _finalise_schedule(today, tomorrow, config)
         return
 
@@ -736,8 +734,14 @@ def set_schedule(
                 opt_extra,
                 config.daily_min_profit,
             )
-            _assign_day(today, today_bl)
-            _assign_day(tomorrow, tomorrow_bl)
+            _select_baseline(
+                today,
+                tomorrow,
+                today_bl,
+                tomorrow_bl,
+                real_charge_on_grid_used,
+                real_discharge_used,
+            )
         else:
             LOGGER.debug(
                 "set_schedule: optimum extra %.2f >= minimum %.2f, selecting optimum (%s)",
@@ -749,8 +753,8 @@ def set_schedule(
             _assign_day(tomorrow, tomorrow_opt)
     else:
         LOGGER.debug("set_schedule: final schedule failed, selecting baseline")
-        _assign_day(today, today_bl)
-        _assign_day(tomorrow, tomorrow_bl)
+        _select_baseline(
+            today, tomorrow, today_bl, tomorrow_bl, real_charge_on_grid_used, real_discharge_used
+        )
 
     _finalise_schedule(today, tomorrow, config)
-    _apply_grid_load_shortfall(today, tomorrow, config)

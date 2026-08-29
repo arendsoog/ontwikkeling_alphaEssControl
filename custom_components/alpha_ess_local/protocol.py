@@ -17,14 +17,45 @@ REG_DISPATCH_PARAM = 0x0880
 REG_DISPATCH_PARAM_COUNT = 11
 REG_MAX_FEED_INTO_GRID = 0x0800
 REG_SOC = 0x0102
+# PV1 power = regs 0-1, PV2 voltage/current = regs 2-3, PV2 power = regs
+# 4-5, PV3 voltage/current = regs 6-7, PV3 power = regs 8-9 -- confirmed
+# against both AlphaESS's public register map and the community `modbus:`
+# YAML targeting this same inverter (config/packages/
+# integration_alpha_ess.yaml's AlphaESS_PV1_Power/_PV2_Power/_PV3_Power,
+# addresses 0x041F/0x0423/0x0427). This AlphaESS model has exactly three PV
+# inputs (confirmed by the user -- no PV4 register block exists on this
+# hardware); api.py's async_get_pv_power sums all three.
 REG_PV_POWER = 0x041F
-REG_PV_POWER_COUNT = 6
+REG_PV_POWER_COUNT = 10
 REG_BATTERY_POWER = 0x0126
 REG_TOTAL_ACTIVE_POWER = 0x0021
 REG_TOTAL_ENERGY_FEED_TO_GRID = 0x0010
 REG_TOTAL_ENERGY_CONSUME_FROM_GRID = 0x0012
 REG_PV_TOTAL_ENERGY_FEED_TO_GRID = 0x0090
 REG_PV_TOTAL_ENERGY_CONSUME_FROM_GRID = 0x0092
+# The inverter's own cumulative total PV generation, in kWh -- covers the
+# PV1/PV2/PV3 *string* side only (confirmed: matches the community `modbus:`
+# YAML's AlphaESS_Total_Energy_from_PV, and cross-checked against the
+# device's separate "PV Meter" CT-clamp reading, which together account for
+# the full system total). Scale is 0.1 here, not 0.01 like the other
+# total-energy registers above -- verified against that same YAML; don't
+# "fix" it to match the others. Used by orchestrator.py to derive
+# real_solar_power_roof from hour-boundary deltas of the device's own
+# continuous internal accumulation, rather than averaging our own coarse
+# periodic power samples (confirmed to under-count on days with fluctuating
+# solar -- roughly half of the true daily total).
+REG_PV_TOTAL_ENERGY = 0x043E
+# The inverter's own cumulative battery charge/discharge counters, in kWh
+# (scale 0.1, same as REG_PV_TOTAL_ENERGY) -- confirmed against the
+# community `modbus:` YAML's AlphaESS_Total_Energy_Charge_Battery/
+# _Discharge_Battery. Used the same way as REG_PV_TOTAL_ENERGY: hour-
+# boundary deltas instead of averaging 5-minute REG_BATTERY_POWER samples,
+# which was found to both under-count gross charging and over-count gross
+# discharging -- averaging one signed power sample per 5 minutes nets out
+# any charge-then-discharge (or vice versa) that happens within the same
+# hour, which these two separately-metered cumulative counters don't.
+REG_BATTERY_TOTAL_ENERGY_CHARGE = 0x0120
+REG_BATTERY_TOTAL_ENERGY_DISCHARGE = 0x0122
 REG_TIME_PERIOD_CONTROL = 0x084F
 REG_TIME_PERIOD_CONTROL_COUNT = 17
 

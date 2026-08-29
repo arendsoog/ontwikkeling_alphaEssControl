@@ -10,6 +10,8 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime
 
+import pytest
+
 from custom_components.alpha_ess_local.data import Day, Earning
 from custom_components.alpha_ess_local.storage import (
     LOAD_TAU_DAYS,
@@ -21,6 +23,7 @@ from custom_components.alpha_ess_local.storage import (
     calculate_and_store_mean_data,
     delete_hour_progress,
     retrieve_day_hours,
+    retrieve_day_savings,
     retrieve_dispatch_daily_state,
     retrieve_hour_progress,
     retrieve_mean_data,
@@ -50,16 +53,18 @@ def test_store_hour_data_persists_row(tmp_path):
     hour.real_solar_to_battery = 120
     hour.real_grid_to_battery = 30
 
-    assert store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01) is True
+    assert (
+        store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21) is True
+    )
 
     with closing(sqlite3.connect(db_path)) as conn:
         row = conn.execute(
             "SELECT house_load, solar_power_roof, estimated_solar_power_raw, use_fee, return_fee, "
-            "solar_to_battery, grid_to_battery "
+            "solar_to_battery, grid_to_battery, vat_percentage "
             "FROM hour_data WHERE year=2024 AND mon=1 AND day=15 AND hour=10"
         ).fetchone()
 
-    assert row == (500, 300, 250.0, 0.02, 0.01, 120, 30)
+    assert row == (500, 300, 250.0, 0.02, 0.01, 120, 30, 21)
 
 
 def test_store_hour_data_skips_zero_house_load(tmp_path):
@@ -70,7 +75,9 @@ def test_store_hour_data_skips_zero_house_load(tmp_path):
 
     # Faithful to the original: houseLoad == 0 skips the DB entirely, so the
     # file is never even created.
-    assert store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01) is True
+    assert (
+        store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21) is True
+    )
     assert not (tmp_path / "test.db").exists()
 
 
@@ -81,7 +88,9 @@ def test_store_hour_data_returns_false_when_day_invalid(tmp_path):
     day.hour[10].valid = True
     day.hour[10].real_house_load = 500
 
-    assert store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01) is False
+    assert (
+        store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21) is False
+    )
 
 
 def test_store_hour_data_returns_false_when_hour_invalid(tmp_path):
@@ -89,7 +98,9 @@ def test_store_hour_data_returns_false_when_hour_invalid(tmp_path):
     day = _valid_day()
     day.hour[10].valid = False
 
-    assert store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01) is False
+    assert (
+        store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21) is False
+    )
 
 
 def test_store_hour_data_overwrites_same_key(tmp_path):
@@ -97,10 +108,10 @@ def test_store_hour_data_overwrites_same_key(tmp_path):
     day = _valid_day()
     day.hour[10].valid = True
     day.hour[10].real_house_load = 500
-    store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01)
+    store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21)
 
     day.hour[10].real_house_load = 700
-    store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01)
+    store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21)
 
     with closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute("SELECT house_load FROM hour_data").fetchall()
@@ -117,7 +128,7 @@ def test_store_hour_data_zeroes_solar_on_earning_on_use(tmp_path):
     hour.real_extra_pv_power = 150
     hour.earning = Earning.EARNING_ON_USE
 
-    store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01)
+    store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21)
 
     with closing(sqlite3.connect(db_path)) as conn:
         row = conn.execute(
@@ -140,7 +151,7 @@ def test_retrieve_day_hours_returns_stored_hours_for_the_date(tmp_path):
         hour.real_extra_pv_power = 20
         hour.real_solar_to_battery = 50
         hour.real_grid_to_battery = 10
-        store_hour_data(db_path, day, hour_index, use_fee=0.02, return_fee=0.01)
+        store_hour_data(db_path, day, hour_index, use_fee=0.02, return_fee=0.01, vat_percentage=21)
 
     result = retrieve_day_hours(db_path, 2024, 1, 15)
 
@@ -152,7 +163,7 @@ def test_retrieve_day_hours_excludes_other_dates(tmp_path):
     day = _valid_day(year=2024, mon=1, day=15)
     day.hour[8].valid = True
     day.hour[8].real_house_load = 400
-    store_hour_data(db_path, day, 8, use_fee=0.02, return_fee=0.01)
+    store_hour_data(db_path, day, 8, use_fee=0.02, return_fee=0.01, vat_percentage=21)
 
     assert retrieve_day_hours(db_path, 2024, 1, 16) == {}
 
@@ -160,6 +171,212 @@ def test_retrieve_day_hours_excludes_other_dates(tmp_path):
 def test_retrieve_day_hours_empty_on_fresh_db(tmp_path):
     db_path = str(tmp_path / "test.db")
     assert retrieve_day_hours(db_path, 2024, 1, 15) == {}
+
+
+# --- retrieve_day_savings ------------------------------------------------------
+
+
+def test_retrieve_day_savings_computes_solar_and_battery_savings(tmp_path):
+    # house_load=1000 W, solar_power_roof=600 W, actual net grid exchange
+    # (feed_in/total_active_power) = -200 W (net export, after whatever the
+    # battery did). price=0.20, use_fee=0.02, return_fee=0.01, vat=21%:
+    #   price_use = 0.20*1.21 + 0.02 = 0.262 EUR/kWh
+    #   price_return = 0.20*1.21 + 0.01 = 0.252 EUR/kWh
+    #   cost_no_solar   = 1000 W import  -> 1000 * 0.262 / 1000 = 0.2620
+    #   cost_solar_only = 400 W import   ->  400 * 0.262 / 1000 = 0.1048
+    #   cost_actual     = 200 W *export* -> -200 * 0.252 / 1000 = -0.0504
+    #   savings_solar   = 0.2620 - 0.1048 = 0.1572
+    #   savings_battery = 0.1048 - (-0.0504) = 0.1552
+    db_path = str(tmp_path / "test.db")
+    day = _valid_day(year=2024, mon=1, day=15)
+    hour = day.hour[10]
+    hour.valid = True
+    hour.real_house_load = 1000
+    hour.real_solar_power_roof = 600
+    hour.total_active_power = -200
+    hour.price = 0.20
+    hour.real_battery_charge_energy = 700
+    hour.real_battery_discharge_energy = 100
+    store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+
+    result = retrieve_day_savings(db_path, 2024, 1, 15, default_vat_percentage=21)
+
+    assert len(result) == 24  # zero-filled for every other hour of the day
+    assert result[10] == {
+        "hour": 10,
+        "solar_wh": 600,
+        "solar_wh_roof": 600,
+        "solar_wh_extra": 0,
+        "battery_charge_wh": 700,
+        "battery_discharge_wh": 100,
+        "savings_solar_eur": pytest.approx(0.1572, abs=1e-4),
+        "savings_battery_eur": pytest.approx(0.1552, abs=1e-4),
+    }
+    assert result[0] == {
+        "hour": 0,
+        "solar_wh": 0,
+        "solar_wh_roof": 0,
+        "solar_wh_extra": 0,
+        "battery_charge_wh": 0,
+        "battery_discharge_wh": 0,
+        "savings_solar_eur": 0.0,
+        "savings_battery_eur": 0.0,
+    }
+
+
+def test_retrieve_day_savings_zero_fills_hours_missing_from_storage(tmp_path):
+    # A devcontainer/host suspend (or any multi-hour gap in polling) can
+    # leave some hours with no stored row at all. The dashboard table built
+    # from this list expects a contiguous 0-23 hour column, so missing hours
+    # must come back zeroed rather than simply being absent from the list.
+    db_path = str(tmp_path / "test.db")
+    day = _valid_day(year=2024, mon=1, day=15)
+    hour = day.hour[8]
+    hour.valid = True
+    hour.real_house_load = 1000
+    hour.real_solar_power_roof = 600
+    hour.total_active_power = -200
+    hour.price = 0.20
+    store_hour_data(db_path, day, 8, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+    # Hours 9, 10, 11 never got stored (simulating the frozen gap).
+    hour2 = day.hour[12]
+    hour2.valid = True
+    hour2.real_house_load = 500
+    hour2.total_active_power = 500
+    hour2.price = 0.20
+    store_hour_data(db_path, day, 12, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+
+    result = retrieve_day_savings(db_path, 2024, 1, 15, default_vat_percentage=21)
+
+    assert [r["hour"] for r in result] == list(range(24))
+    for gap_hour in (9, 10, 11):
+        assert result[gap_hour] == {
+            "hour": gap_hour,
+            "solar_wh": 0,
+            "solar_wh_roof": 0,
+            "solar_wh_extra": 0,
+            "battery_charge_wh": 0,
+            "battery_discharge_wh": 0,
+            "savings_solar_eur": 0.0,
+            "savings_battery_eur": 0.0,
+        }
+
+
+def test_retrieve_day_savings_return_vat_percentage_overrides_export_side(tmp_path):
+    # Same scenario as test_retrieve_day_savings_computes_solar_and_battery_savings
+    # (house_load=1000, solar_power_roof=600, feed_in=-200 export), but with
+    # return_vat_percentage=0 (VAT-exempt export/teruglevering):
+    #   price_return' = mk_return_price(0.20, 0.01, 0) = 0.21 EUR/kWh
+    #   cost_actual = -200 * 0.21 / 1000 = -0.042 (vs -0.0504 with VAT)
+    #   savings_battery = cost_solar_only - cost_actual = 0.1048 - (-0.042) = 0.1468
+    # savings_solar is unaffected -- both cost_no_solar/cost_solar_only are
+    # imports (positive power), so only use-side pricing applies there.
+    db_path = str(tmp_path / "test.db")
+    day = _valid_day(year=2024, mon=1, day=15)
+    hour = day.hour[10]
+    hour.valid = True
+    hour.real_house_load = 1000
+    hour.real_solar_power_roof = 600
+    hour.total_active_power = -200
+    hour.price = 0.20
+    store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+
+    result = retrieve_day_savings(
+        db_path, 2024, 1, 15, default_vat_percentage=21, return_vat_percentage=0
+    )
+
+    assert result[10] == {
+        "hour": 10,
+        "solar_wh": 600,
+        "solar_wh_roof": 600,
+        "solar_wh_extra": 0,
+        "battery_charge_wh": 0,
+        "battery_discharge_wh": 0,
+        "savings_solar_eur": pytest.approx(0.1572, abs=1e-4),
+        "savings_battery_eur": pytest.approx(0.1468, abs=1e-4),
+    }
+
+
+def test_retrieve_day_savings_includes_extra_pv_power_in_solar_total(tmp_path):
+    # Same scenario as test_retrieve_day_savings_computes_solar_and_battery_savings,
+    # but the 600 W is split across the AlphaESS's own roof panels (250 W)
+    # and a separate second installation (350 W, e.g. an SMA Tripower) --
+    # solar_wh and savings_solar_eur must count *both*, not just roof.
+    db_path = str(tmp_path / "test.db")
+    day = _valid_day(year=2024, mon=1, day=15)
+    hour = day.hour[10]
+    hour.valid = True
+    hour.real_house_load = 1000
+    hour.real_solar_power_roof = 250
+    hour.real_extra_pv_power = 350
+    hour.total_active_power = -200
+    hour.price = 0.20
+    store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+
+    result = retrieve_day_savings(db_path, 2024, 1, 15, default_vat_percentage=21)
+
+    assert result[10] == {
+        "hour": 10,
+        "solar_wh": 600,  # 250 + 350
+        "solar_wh_roof": 250,
+        "solar_wh_extra": 350,
+        "battery_charge_wh": 0,
+        "battery_discharge_wh": 0,
+        "savings_solar_eur": pytest.approx(0.1572, abs=1e-4),
+        "savings_battery_eur": pytest.approx(0.1552, abs=1e-4),
+    }
+
+
+def test_retrieve_day_savings_can_be_negative_when_battery_loses_money(tmp_path):
+    # No solar at all; battery (somehow) made the actual grid cost *worse*
+    # than just buying house_load directly (e.g. inefficiency, or charged
+    # expensive and never got to use it) -- savings_battery_eur should
+    # reflect that honestly as a negative number, not floor at 0.
+    db_path = str(tmp_path / "test.db")
+    day = _valid_day(year=2024, mon=1, day=15)
+    hour = day.hour[10]
+    hour.valid = True
+    hour.real_house_load = 1000
+    hour.real_solar_power_roof = 0
+    hour.total_active_power = 1500  # imported *more* than house_load alone would need
+    hour.price = 0.20
+    store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+
+    result = retrieve_day_savings(db_path, 2024, 1, 15, default_vat_percentage=21)
+
+    assert result[10]["savings_solar_eur"] == 0.0
+    assert result[10]["savings_battery_eur"] < 0.0
+
+
+def test_retrieve_day_savings_falls_back_to_default_vat_for_rows_missing_it(tmp_path):
+    # Simulates a row stored before the vat_percentage column existed:
+    # written directly (bypassing store_hour_data), vat_percentage left
+    # NULL -- retrieve_day_savings must fall back to the given default
+    # rather than treating a NULL/0% VAT as real.
+    db_path = str(tmp_path / "test.db")
+    day = _valid_day(year=2024, mon=1, day=15)
+    hour = day.hour[10]
+    hour.valid = True
+    hour.real_house_load = 1000
+    hour.real_solar_power_roof = 600
+    hour.total_active_power = -200
+    hour.price = 0.20
+    store_hour_data(db_path, day, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("UPDATE hour_data SET vat_percentage = NULL WHERE hour = 10")
+        conn.commit()
+
+    result = retrieve_day_savings(db_path, 2024, 1, 15, default_vat_percentage=21)
+
+    # Same numbers as test_retrieve_day_savings_computes_solar_and_battery_savings,
+    # proving the 21% default was actually applied, not treated as 0%.
+    assert result[10]["savings_solar_eur"] == pytest.approx(0.1572, abs=1e-4)
+    assert result[10]["savings_battery_eur"] == pytest.approx(0.1552, abs=1e-4)
+
+
+def test_retrieve_day_savings_empty_on_fresh_db(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    assert retrieve_day_savings(db_path, 2024, 1, 15, default_vat_percentage=21) == []
 
 
 # --- hour_progress -------------------------------------------------------------
@@ -177,6 +394,9 @@ def test_store_and_retrieve_hour_progress_roundtrip(tmp_path):
         3,
         60.0,
         15.0,
+        None,
+        None,
+        None,
     )
 
 
@@ -193,7 +413,58 @@ def test_store_hour_progress_overwrites_same_key(tmp_path):
         4,
         65.0,
         18.0,
+        None,
+        None,
+        None,
     )
+
+
+def test_store_and_retrieve_hour_progress_includes_pv_total_energy_baseline(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    store_hour_progress(
+        db_path,
+        2024,
+        1,
+        15,
+        14,
+        400.0,
+        100.0,
+        20.0,
+        350.0,
+        3,
+        60.0,
+        15.0,
+        pv_total_energy_at_hour_start=42.5,
+    )
+
+    result = retrieve_hour_progress(db_path, 2024, 1, 15, 14)
+
+    assert result[7] == 42.5
+
+
+def test_store_and_retrieve_hour_progress_includes_battery_energy_baselines(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    store_hour_progress(
+        db_path,
+        2024,
+        1,
+        15,
+        14,
+        400.0,
+        100.0,
+        20.0,
+        350.0,
+        3,
+        60.0,
+        15.0,
+        battery_charge_energy_at_hour_start=12.5,
+        battery_discharge_energy_at_hour_start=3.5,
+    )
+
+    result = retrieve_hour_progress(db_path, 2024, 1, 15, 14)
+
+    assert result[8] == 12.5
+    assert result[9] == 3.5
 
 
 def test_retrieve_hour_progress_none_when_nothing_stored(tmp_path):
@@ -264,6 +535,9 @@ def test_ensure_schema_migrates_pre_existing_db_without_new_columns(tmp_path):
         2,
         40.0,
         5.0,
+        None,
+        None,
+        None,
     )
 
 
@@ -385,7 +659,7 @@ def _store(db_path, year, mon, day, hour, house_load, solar_roof=0, solar_raw=0.
     the_day.hour[hour].real_house_load = house_load
     the_day.hour[hour].real_solar_power_roof = solar_roof
     the_day.hour[hour].estimated_solar_power_raw = solar_raw
-    store_hour_data(db_path, the_day, hour, use_fee=0.02, return_fee=0.01)
+    store_hour_data(db_path, the_day, hour, use_fee=0.02, return_fee=0.01, vat_percentage=21)
 
 
 def test_weighted_mean_favors_recent_samples(tmp_path, freezer):

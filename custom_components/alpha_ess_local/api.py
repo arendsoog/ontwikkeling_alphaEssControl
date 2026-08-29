@@ -117,11 +117,19 @@ class AlphaEssLocalApiClient:
         return registers[0] / 10.0
 
     async def async_get_pv_power(self) -> int:
-        """Total PV generated power, in Watts (roof + garage strings)."""
+        """Roof PV generated power, in Watts (PV1 + PV2 + PV3 -- this
+        AlphaESS model has exactly three PV inputs, confirmed directly by
+        the user; no PV4 exists on this hardware. PV1/PV2 are both real
+        Alpha-owned roof strings (an earlier "PV2 is actually the separate
+        SMA installation" theory was wrong and has been retracted). PV3
+        reads 0 on this specific installation (unused input) but is
+        included for correctness -- see protocol.py's REG_PV_POWER comment.
+        """
         registers = await self._read_registers(protocol.REG_PV_POWER, protocol.REG_PV_POWER_COUNT)
         pv1 = protocol.to_unsigned_int(registers[0], registers[1])
         pv2 = protocol.to_unsigned_int(registers[4], registers[5])
-        return pv1 + pv2
+        pv3 = protocol.to_unsigned_int(registers[8], registers[9])
+        return pv1 + pv2 + pv3
 
     async def async_get_battery_power(self) -> int:
         """Battery power, in Watts. Negative = charge, positive = discharge."""
@@ -152,6 +160,33 @@ class AlphaEssLocalApiClient:
         """Total PV energy consumed from grid, in kWh."""
         registers = await self._read_registers(protocol.REG_PV_TOTAL_ENERGY_CONSUME_FROM_GRID, 2)
         return protocol.to_unsigned_int(registers[0], registers[1]) * 0.01
+
+    async def async_get_pv_total_energy(self) -> float:
+        """The inverter's own cumulative PV1/PV2/PV3 string generation, in kWh.
+
+        Scale is 0.1 here, not 0.01 like the other total-energy registers
+        above -- see protocol.py's REG_PV_TOTAL_ENERGY comment.
+        """
+        registers = await self._read_registers(protocol.REG_PV_TOTAL_ENERGY, 2)
+        return protocol.to_unsigned_int(registers[0], registers[1]) * 0.1
+
+    async def async_get_battery_total_energy_charge(self) -> float:
+        """The inverter's own cumulative battery charge energy, in kWh.
+
+        Scale is 0.1 -- see protocol.py's REG_BATTERY_TOTAL_ENERGY_CHARGE
+        comment.
+        """
+        registers = await self._read_registers(protocol.REG_BATTERY_TOTAL_ENERGY_CHARGE, 2)
+        return protocol.to_unsigned_int(registers[0], registers[1]) * 0.1
+
+    async def async_get_battery_total_energy_discharge(self) -> float:
+        """The inverter's own cumulative battery discharge energy, in kWh.
+
+        Scale is 0.1 -- see protocol.py's REG_BATTERY_TOTAL_ENERGY_DISCHARGE
+        comment.
+        """
+        registers = await self._read_registers(protocol.REG_BATTERY_TOTAL_ENERGY_DISCHARGE, 2)
+        return protocol.to_unsigned_int(registers[0], registers[1]) * 0.1
 
     async def async_get_dispatch_param(self) -> DispatchParam:
         """Read the current dispatch mode/power/cutoff-SOC/duration."""
@@ -204,5 +239,10 @@ class AlphaEssLocalApiClient:
             "pv_total_energy_feed_to_grid": (await self.async_get_pv_total_energy_feed_to_grid()),
             "pv_total_energy_consume_from_grid": (
                 await self.async_get_pv_total_energy_consume_from_grid()
+            ),
+            "pv_total_energy": await self.async_get_pv_total_energy(),
+            "battery_total_energy_charge": (await self.async_get_battery_total_energy_charge()),
+            "battery_total_energy_discharge": (
+                await self.async_get_battery_total_energy_discharge()
             ),
         }

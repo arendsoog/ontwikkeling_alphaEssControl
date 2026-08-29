@@ -8,6 +8,7 @@ they're the first sensors this integration has direct tests for.
 
 from types import SimpleNamespace
 
+import pytest
 from homeassistant.const import EntityCategory
 from homeassistant.util import dt as dt_util
 
@@ -20,6 +21,7 @@ from custom_components.alpha_ess_local.sensor import (
     PRICE_SENSOR_DESCRIPTIONS,
     SCHEDULE_SENSOR_DESCRIPTIONS,
     SOLAR_SENSOR_DESCRIPTIONS,
+    AlphaEssLocalDaySensor,
     AlphaEssLocalDispatchModeSensor,
     AlphaEssLocalExtraPvPowerSensor,
     AlphaEssLocalGridToBatteryTodaySensor,
@@ -27,14 +29,20 @@ from custom_components.alpha_ess_local.sensor import (
     AlphaEssLocalSolarEnergyTodaySensor,
     AlphaEssLocalSolarToBatteryTodaySensor,
     AlphaEssLocalTotalPvPowerSensor,
+    AlphaEssLocalYesterdaySavingsSensor,
     _current_hour_action,
+    _day_plan_attributes,
+    _day_plan_hour_count,
+    _hour_plan_entries,
     _next_hour_action,
     _remaining_solar_surplus_today,
 )
 
 
 def _fake_coordinator(data=None):
-    return SimpleNamespace(data=data, config_entry=SimpleNamespace(entry_id="test-entry"))
+    return SimpleNamespace(
+        data=data, config_entry=SimpleNamespace(entry_id="test-entry", options={})
+    )
 
 
 def _description(key: str):
@@ -79,6 +87,7 @@ def test_schedule_sensor_descriptions_cover_current_and_next_hour():
         "schedule_current_hour_action",
         "schedule_next_hour_action",
         "schedule_remaining_solar_surplus_today",
+        "schedule_today_plan",
     }
     assert _description("schedule_current_hour_action").value_fn is _current_hour_action
     assert _description("schedule_next_hour_action").value_fn is _next_hour_action
@@ -86,6 +95,8 @@ def test_schedule_sensor_descriptions_cover_current_and_next_hour():
         _description("schedule_remaining_solar_surplus_today").value_fn
         is _remaining_solar_surplus_today
     )
+    assert _description("schedule_today_plan").value_fn is _day_plan_hour_count
+    assert _description("schedule_today_plan").attributes_fn is _day_plan_attributes
 
 
 # --- _remaining_solar_surplus_today -------------------------------------------
@@ -127,6 +138,88 @@ def test_remaining_solar_surplus_today_skips_invalid_hours(freezer):
 
 def test_remaining_solar_surplus_today_none_when_day_invalid():
     assert _remaining_solar_surplus_today(Day(valid=False), {}) is None
+
+
+# --- schedule_today_plan (_hour_plan_entries / _day_plan_hour_count / _day_plan_attributes) --
+
+
+def test_hour_plan_entries_covers_only_valid_hours_in_order():
+    day = Day(valid=True)
+    day.hour[5].valid = True
+    day.hour[5].price = 0.15
+    day.hour[5].estimated_solar_power = 0
+    day.hour[5].estimated_house_load = 300
+    day.hour[5].charge = Charge.NO_DISCHARGING
+    day.hour[9].valid = True
+    day.hour[9].price = 0.05
+    day.hour[9].estimated_solar_power = 1200
+    day.hour[9].estimated_house_load = 400
+    day.hour[9].charge = Charge.CHARGING_ON_GRID
+    # hour 6-8 stay invalid -> excluded entirely, not padded with zeros
+
+    entries = _hour_plan_entries(day)
+
+    assert entries == [
+        {
+            "hour": 5,
+            "price": 0.15,
+            "solar_forecast_w": 0,
+            "house_load_w": 300,
+            "action": "No-discharging",
+        },
+        {
+            "hour": 9,
+            "price": 0.05,
+            "solar_forecast_w": 1200,
+            "house_load_w": 400,
+            "action": "Charge-grid",
+        },
+    ]
+
+
+def test_day_plan_hour_count_matches_number_of_valid_hours():
+    day = Day(valid=True)
+    for hour in day.hour[:4]:
+        hour.valid = True
+
+    assert _day_plan_hour_count(day, {}) == 4
+
+
+def test_day_plan_hour_count_none_when_day_invalid():
+    assert _day_plan_hour_count(Day(valid=False), {}) is None
+
+
+def test_day_plan_attributes_wraps_hour_plan_entries_under_hours_key():
+    day = Day(valid=True)
+    day.hour[0].valid = True
+
+    attributes = _day_plan_attributes(day, {})
+
+    assert attributes == {"hours": _hour_plan_entries(day)}
+
+
+def test_day_plan_attributes_none_when_day_invalid():
+    assert _day_plan_attributes(Day(valid=False), {}) is None
+
+
+def test_day_sensor_extra_state_attributes_uses_attributes_fn():
+    description = _description("schedule_today_plan")
+    day = Day(valid=True)
+    day.hour[0].valid = True
+    coordinator = _fake_coordinator({"today": day})
+
+    sensor = AlphaEssLocalDaySensor(coordinator, description)
+
+    assert sensor.extra_state_attributes == {"hours": _hour_plan_entries(day)}
+
+
+def test_day_sensor_extra_state_attributes_none_without_attributes_fn():
+    description = _description("schedule_current_hour_action")
+    coordinator = _fake_coordinator({"today": Day(valid=True)})
+
+    sensor = AlphaEssLocalDaySensor(coordinator, description)
+
+    assert sensor.extra_state_attributes is None
 
 
 # --- AlphaEssLocalExtraPvPowerSensor / AlphaEssLocalTotalPvPowerSensor -------
@@ -309,6 +402,102 @@ def test_grid_to_battery_today_sensor_none_when_coordinator_has_no_data_yet():
     sensor = AlphaEssLocalGridToBatteryTodaySensor(coordinator)
 
     assert sensor.native_value is None
+
+
+# --- AlphaEssLocalYesterdaySavingsSensor ---------------------------------------
+
+
+def _savings_hour(
+    hour,
+    solar_wh,
+    savings_solar_eur,
+    savings_battery_eur,
+    solar_wh_roof=None,
+    solar_wh_extra=0,
+    battery_charge_wh=0,
+    battery_discharge_wh=0,
+):
+    return {
+        "hour": hour,
+        "solar_wh": solar_wh,
+        "solar_wh_roof": solar_wh - solar_wh_extra if solar_wh_roof is None else solar_wh_roof,
+        "solar_wh_extra": solar_wh_extra,
+        "battery_charge_wh": battery_charge_wh,
+        "battery_discharge_wh": battery_discharge_wh,
+        "savings_solar_eur": savings_solar_eur,
+        "savings_battery_eur": savings_battery_eur,
+    }
+
+
+def test_yesterday_savings_sensor_sums_solar_and_battery_savings():
+    hours = [
+        _savings_hour(10, 600, 0.15, 0.10),
+        _savings_hour(11, 800, 0.20, -0.05),  # battery lost money this hour
+    ]
+    coordinator = _fake_coordinator(
+        RealPowerData(day=Day(), extra_pv_power=None, yesterday_savings=hours)
+    )
+    sensor = AlphaEssLocalYesterdaySavingsSensor(coordinator)
+
+    assert sensor.native_value == pytest.approx(0.40)  # (0.15+0.10) + (0.20-0.05)
+
+
+def test_yesterday_savings_sensor_none_when_no_hours_stored():
+    coordinator = _fake_coordinator(
+        RealPowerData(day=Day(), extra_pv_power=None, yesterday_savings=[])
+    )
+    sensor = AlphaEssLocalYesterdaySavingsSensor(coordinator)
+
+    assert sensor.native_value is None
+    assert sensor.extra_state_attributes is None
+
+
+def test_yesterday_savings_sensor_none_when_coordinator_has_no_data_yet():
+    coordinator = _fake_coordinator(None)
+    sensor = AlphaEssLocalYesterdaySavingsSensor(coordinator)
+
+    assert sensor.native_value is None
+    assert sensor.extra_state_attributes is None
+
+
+def test_yesterday_savings_sensor_attributes_include_hours_and_totals():
+    hours = [
+        _savings_hour(
+            10,
+            600,
+            0.15,
+            0.10,
+            solar_wh_roof=250,
+            solar_wh_extra=350,
+            battery_charge_wh=900,
+            battery_discharge_wh=100,
+        ),
+        _savings_hour(
+            11,
+            800,
+            0.20,
+            -0.05,
+            solar_wh_roof=800,
+            solar_wh_extra=0,
+            battery_charge_wh=300,
+            battery_discharge_wh=700,
+        ),
+    ]
+    coordinator = _fake_coordinator(
+        RealPowerData(day=Day(), extra_pv_power=None, yesterday_savings=hours)
+    )
+    sensor = AlphaEssLocalYesterdaySavingsSensor(coordinator)
+
+    attributes = sensor.extra_state_attributes
+
+    assert attributes["hours"] == hours
+    assert attributes["solar_wh_total"] == 1400
+    assert attributes["solar_wh_roof_total"] == 1050
+    assert attributes["solar_wh_extra_total"] == 350
+    assert attributes["battery_charge_wh_total"] == 1200
+    assert attributes["battery_discharge_wh_total"] == 800
+    assert attributes["savings_solar_eur_total"] == pytest.approx(0.35)
+    assert attributes["savings_battery_eur_total"] == pytest.approx(0.05)
 
 
 # --- Diagnostic grouping ------------------------------------------------------

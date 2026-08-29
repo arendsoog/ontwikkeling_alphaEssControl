@@ -226,6 +226,30 @@ def test_apply_earning_classification_ignores_invalid_hours():
             assert hour.lowest is False
 
 
+def test_apply_earning_classification_return_vat_percentage_overrides_return_side():
+    # price=0.10, return_fee=-0.12: with the full 21% VAT on the return side
+    # (baseline/no override), profit_on_return = 0.10*1.21 - 0.12 = 0.001 >
+    # 0 -> EARNING_ON_RETURN.
+    day = Day(valid=True)
+    day.hour[5].valid = True
+    day.hour[5].price = 0.10
+    apply_earning_classification(day, use_fee=0.0, return_fee=-0.12, vat_percentage=21)
+    assert day.hour[5].earning == Earning.EARNING_ON_RETURN
+
+    # Same numbers, but the return side is VAT-exempt (return_vat_percentage
+    # =0): profit_on_return = 0.10 - 0.12 = -0.02 <= 0, and cost_on_use
+    # (still normally VAT'd) stays positive -- neither branch fires, so
+    # earning stays at its NO_EARNING default instead of flipping to
+    # EARNING_ON_RETURN.
+    day2 = Day(valid=True)
+    day2.hour[5].valid = True
+    day2.hour[5].price = 0.10
+    apply_earning_classification(
+        day2, use_fee=0.0, return_fee=-0.12, vat_percentage=21, return_vat_percentage=0
+    )
+    assert day2.hour[5].earning == Earning.NO_EARNING
+
+
 def test_build_day_populates_and_classifies(hass: HomeAssistant):
     today = dt_util.now().date()
     hass.states.async_set(
@@ -252,6 +276,19 @@ def test_build_day_stays_invalid_when_no_source_configured(hass: HomeAssistant):
     day = build_day(hass, dt_util.now().date(), None, None, 0.02, 0.02, 21)
 
     assert day.valid is False
+
+
+def test_build_day_threads_return_vat_percentage_through(hass: HomeAssistant):
+    today = dt_util.now().date()
+    hass.states.async_set(
+        ENTSOE_ENTITY_ID,
+        "0.10",
+        {"prices_today": [{"time": _local_iso(5), "price": 0.10}]},
+    )
+
+    day = build_day(hass, today, ENTSOE_ENTITY_ID, None, 0.0, -0.12, 21, return_vat_percentage=0)
+
+    assert day.hour[5].earning == Earning.NO_EARNING
 
 
 def test_parse_entsoe_prices_none_state_handled_by_caller(hass: HomeAssistant):

@@ -68,13 +68,48 @@ async def test_async_get_battery_power_decodes_signed_short(client, mock_modbus_
     assert power == -100
 
 
-async def test_async_get_pv_power_sums_both_strings(client, mock_modbus_client):
-    # pv1 = regs[0:2] = 1000, pv2 = regs[4:6] = 2000
-    mock_modbus_client.read_holding_registers.return_value = _ok_result([0, 1000, 0, 0, 0, 2000])
+async def test_async_get_pv_power_sums_all_three_strings(client, mock_modbus_client):
+    # pv1 = regs[0:2] = 1000, pv2 = regs[4:6] = 2000, pv3 = regs[8:10] = 4000
+    # (regs 2-3/6-7 are PV2/PV3's voltage/current, not power -- must be
+    # ignored, not summed in). This AlphaESS model has exactly three PV
+    # inputs -- no PV4 register block exists on this hardware.
+    mock_modbus_client.read_holding_registers.return_value = _ok_result(
+        [0, 1000, 0, 0, 0, 2000, 0, 0, 0, 4000]
+    )
 
     power = await client.async_get_pv_power()
 
-    assert power == 3000
+    assert power == 7000
+
+
+async def test_async_get_pv_total_energy_uses_point_one_scale(client, mock_modbus_client):
+    # Scale here is 0.1, not 0.01 like the other total-energy registers --
+    # 616 raw -> 61.6 kWh.
+    mock_modbus_client.read_holding_registers.return_value = _ok_result([0, 616])
+
+    energy = await client.async_get_pv_total_energy()
+
+    assert energy == pytest.approx(61.6)
+
+
+async def test_async_get_battery_total_energy_charge_uses_point_one_scale(
+    client, mock_modbus_client
+):
+    mock_modbus_client.read_holding_registers.return_value = _ok_result([0, 12345])
+
+    energy = await client.async_get_battery_total_energy_charge()
+
+    assert energy == pytest.approx(1234.5)
+
+
+async def test_async_get_battery_total_energy_discharge_uses_point_one_scale(
+    client, mock_modbus_client
+):
+    mock_modbus_client.read_holding_registers.return_value = _ok_result([0, 54321])
+
+    energy = await client.async_get_battery_total_energy_discharge()
+
+    assert energy == pytest.approx(5432.1)
 
 
 async def test_read_registers_retries_once_after_reconnect(client, mock_modbus_client):

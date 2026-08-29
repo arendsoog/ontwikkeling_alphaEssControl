@@ -154,14 +154,26 @@ def read_hour_prices(
 
 
 def apply_earning_classification(
-    day: Day, use_fee: float, return_fee: float, vat_percentage: float
+    day: Day,
+    use_fee: float,
+    return_fee: float,
+    vat_percentage: float,
+    return_vat_percentage: float | None = None,
 ) -> None:
-    """Port of ReadPricesAfterMath: classify earning per hour, find highest/lowest."""
+    """Port of ReadPricesAfterMath: classify earning per hour, find highest/lowest.
+
+    `return_vat_percentage` overrides `vat_percentage` for the return-price
+    side only (e.g. a BTW-exempt teruglevering formula) -- defaults to
+    `vat_percentage` (apply VAT to both sides, prior behavior) when omitted.
+    """
+    effective_return_vat = (
+        return_vat_percentage if return_vat_percentage is not None else vat_percentage
+    )
     for hour in day.hour:
         if not hour.valid:
             continue
 
-        profit_on_return = mk_return_price(hour.price, return_fee, vat_percentage)
+        profit_on_return = mk_return_price(hour.price, return_fee, effective_return_vat)
         cost_on_use = mk_use_price(hour.price, use_fee, vat_percentage)
 
         if profit_on_return > 0 and cost_on_use < 0:
@@ -199,6 +211,7 @@ def build_day(
     use_fee: float,
     return_fee: float,
     vat_percentage: float,
+    return_vat_percentage: float | None = None,
 ) -> Day:
     """Build a Day of prices for target_date from the configured source entities."""
     day = Day(year=target_date.year, mon=target_date.month, day=target_date.day)
@@ -214,6 +227,6 @@ def build_day(
         day.hour[hour_index].valid = True
         day.hour[hour_index].price = price
 
-    apply_earning_classification(day, use_fee, return_fee, vat_percentage)
+    apply_earning_classification(day, use_fee, return_fee, vat_percentage, return_vat_percentage)
     day.valid = True
     return day
