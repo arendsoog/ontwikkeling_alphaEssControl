@@ -21,10 +21,6 @@ jobs:
       - run: pytest --cov=custom_components.alpha_ess_local tests
 
   hacs-validate:
-    # Disabled while the repo is private: hacs/action can't reliably read
-    # file contents (hacs.json/manifest.json) on a private repo with the
-    # default GITHUB_TOKEN. Re-enable once the repo is public again.
-    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
