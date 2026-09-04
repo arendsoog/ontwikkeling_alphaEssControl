@@ -20,14 +20,12 @@ jobs:
       - run: ruff format --check custom_components tests
       - run: pytest --cov=custom_components.alpha_ess_local tests
 
-  hacs-validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hacs/action@main
-        with:
-          category: integration
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+  # hacs-validate (hacs/action) removed: its "brands" check requires
+  # submitting artwork to the external home-assistant/brands repo and
+  # getting it approved there, which only matters for listing in the
+  # official HACS store -- not needed to install this as a HACS custom
+  # repository. Left permanently failing, it also silently blocked
+  # release.yaml (which only runs after a fully successful CI run).
 
   hassfest:
     runs-on: ubuntu-latest
