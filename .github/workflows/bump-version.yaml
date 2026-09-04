@@ -1,0 +1,38 @@
+name: Bump Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New version (e.g. 0.1.4)"
+        required: true
+        type: string
+
+jobs:
+  bump-version:
+    # Writes the given version into manifest.json and pushes that commit
+    # back to whichever branch this was run from (never master directly --
+    # master's ruleset blocks direct pushes even from GITHUB_TOKEN, so the
+    # version bump has to land on a branch and go through a normal PR like
+    # everything else). Run this from the branch you're about to merge,
+    # then open/merge a PR as usual.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update manifest.json version
+        run: |
+          set -e
+          jq --arg v "${{ inputs.version }}" '.version = $v' custom_components/alpha_ess_local/manifest.json > /tmp/manifest.json
+          mv /tmp/manifest.json custom_components/alpha_ess_local/manifest.json
+
+      - name: Commit and push to the triggering branch
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add custom_components/alpha_ess_local/manifest.json
+          git commit -m "chore: bump version to ${{ inputs.version }}"
+          git push origin HEAD:${{ github.ref_name }}
