@@ -20,6 +20,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Guard against running from master
+        run: |
+          if [ "${{ github.ref_name }}" = "master" ]; then
+            echo "::error::Pick your feature branch under 'Use workflow from' -- not master. Master's ruleset blocks direct pushes, even from this workflow."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - name: Update manifest.json version
