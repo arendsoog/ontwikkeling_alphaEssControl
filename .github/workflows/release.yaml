@@ -1,47 +1,36 @@
 name: Release
 
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: [master]
+  workflow_dispatch:
 
 jobs:
   release:
-    # Runs after CI succeeds on master (i.e. after a PR merge). Bumps the
-    # patch version in manifest.json (unless the merge itself already
-    # changed the version, e.g. a manual minor/major bump), tags the
-    # release, and publishes it.
-    if: github.event.workflow_run.conclusion == 'success'
+    # Manual only. This used to auto-run after every CI success on master
+    # and bump+push a version commit straight to master, but master's
+    # ruleset blocks direct pushes even from GITHUB_TOKEN (rulesets can't
+    # be bypassed by the default token, by GitHub design), so that step
+    # always failed once the ruleset was added. Bump manifest.json's
+    # version first with the "Bump Version" workflow + a normal PR, then
+    # run this to tag + publish a release for that version.
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
 
       - name: Determine release version
         id: version
         run: |
           set -e
-          current_version=$(jq -r '.version' custom_components/alpha_ess_local/manifest.json)
+          version=$(jq -r '.version' custom_components/alpha_ess_local/manifest.json)
           git fetch --tags --quiet
-          if git rev-parse "v$current_version" >/dev/null 2>&1; then
-            IFS='.' read -r major minor patch <<< "$current_version"
-            new_version="$major.$minor.$((patch + 1))"
-            jq --arg v "$new_version" '.version = $v' custom_components/alpha_ess_local/manifest.json > /tmp/manifest.json
-            mv /tmp/manifest.json custom_components/alpha_ess_local/manifest.json
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add custom_components/alpha_ess_local/manifest.json
-            git commit -m "chore: bump version to $new_version"
-            git push origin HEAD:master
-          else
-            new_version="$current_version"
+          if git rev-parse "v$version" >/dev/null 2>&1; then
+            echo "::error::v$version is already tagged -- bump manifest.json's version (via the Bump Version workflow + a PR) first."
+            exit 1
           fi
-          echo "version=$new_version" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Tag release
         run: |
