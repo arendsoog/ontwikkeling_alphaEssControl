@@ -308,108 +308,30 @@ function barChart(o, metaStore) {
 
 // ---------------------------------------------------------------- house scene
 
-// Isometric projection for the energy-flow illustration (viewBox 400x400).
-const ISO = { s: 34, cx: 185, cy: 172 };
-const iso = (x, y, z) => [ISO.cx + (x - y) * 0.866 * ISO.s, ISO.cy + (x + y) * 0.5 * ISO.s - z * ISO.s];
-const poly = (pts, attrs) =>
-  `<polygon points="${pts.map((p) => iso(...p).map((n) => n.toFixed(1)).join(",")).join(" ")}" ${attrs}/>`;
+// Cut-away house illustration (house.webp, 1260x848) with the flow paths
+// traced over its drawn cables in the same pixel coordinates.
+const SCENE_IMAGE = "/alpha_ess_local/frontend/house.webp";
+const SCENE_PATHS = {
+  // roof panels -> battery
+  solar: ["M566,272 L566,349 L521,349 L521,566"],
+  // garage-roof panels (the extra PV installation) -> battery
+  extraPv: ["M883,494 L877,518 L528,518 L528,566"],
+  // battery -> upstairs and downstairs rooms
+  house: ["M506,566 L506,443 L360,443", "M486,622 L423,622 L423,581 L362,581 L362,592"],
+  // battery -> pylon (export); reversed for import
+  grid: ["M552,566 L552,534 L1130,534 Q1175,526 1205,478"],
+};
+const SCENE_COLOR = { solar: "#2fd25a", extraPv: "#2fd25a", house: "#5aa8ff", grid: "#f2c230" };
 
-function houseStatic() {
-  const out = [];
-  // ground slab
-  out.push(poly([[-1.6, -1.6, 0], [5.6, -1.6, 0], [5.6, 4.6, 0], [-1.6, 4.6, 0]], 'fill="#1f2937"'));
-  out.push(poly([[5.6, -1.6, 0], [5.6, 4.6, 0], [5.6, 4.6, -0.35], [5.6, -1.6, -0.35]], 'fill="#111827"'));
-  out.push(poly([[-1.6, 4.6, 0], [5.6, 4.6, 0], [5.6, 4.6, -0.35], [-1.6, 4.6, -0.35]], 'fill="#0b1220"'));
-  // lawn + path
-  out.push(poly([[-1.3, 3.3, 0], [3.0, 3.3, 0], [3.0, 4.3, 0], [-1.3, 4.3, 0]], 'fill="#14532d" opacity="0.8"'));
-  out.push(poly([[3.1, 3.0, 0], [3.7, 3.0, 0], [3.7, 4.6, 0], [3.1, 4.6, 0]], 'fill="#4b5563"'));
-  // trees behind the house, drawn before it so it overlaps them
-  out.push(...[[4.9, -0.7, 15], [-1.2, 0.1, 12], [2.0, -1.2, 11]].map(([x, y, r]) => tree(x, y, r)));
-  // back roof plane (mostly hidden, drawn first)
-  out.push(poly([[-0.2, -0.3, 1.9], [4.2, -0.3, 1.9], [4.2, 1.5, 3.2], [-0.2, 1.5, 3.2]], 'fill="#374151"'));
-  // walls
-  out.push(poly([[0, 3, 0], [4, 3, 0], [4, 3, 2], [0, 3, 2]], 'fill="#e5e7eb"'));
-  out.push(poly([[4, 0, 0], [4, 3, 0], [4, 3, 2], [4, 0, 2]], 'fill="#cbd5e1"'));
-  // gable end
-  out.push(poly([[4, 0, 2], [4, 3, 2], [4, 1.5, 3.1]], 'fill="#cbd5e1"'));
-  // wood cladding strip
-  out.push(poly([[4, 0.2, 0.9], [4, 1.0, 0.9], [4, 1.0, 1.9], [4, 0.2, 1.9]], 'fill="#b45309" opacity="0.85"'));
-  // windows (front) + door
-  for (const [x0, x1] of [[0.35, 1.25], [1.7, 2.6]]) {
-    out.push(poly([[x0, 3, 0.9], [x1, 3, 0.9], [x1, 3, 1.65], [x0, 3, 1.65]], 'fill="#0f172a"'));
-    out.push(poly([[x0, 3, 0.15], [x1, 3, 0.15], [x1, 3, 0.7], [x0, 3, 0.7]], 'fill="#1e293b"'));
-  }
-  out.push(poly([[3.1, 3, 0], [3.7, 3, 0], [3.7, 3, 1.35], [3.1, 3, 1.35]], 'fill="#334155"'));
-  // window (side)
-  out.push(poly([[4, 1.4, 0.9], [4, 2.6, 0.9], [4, 2.6, 1.6], [4, 1.4, 1.6]], 'fill="#0f172a"'));
-  // front roof plane with panels
-  out.push(poly([[-0.2, 3.3, 1.9], [4.2, 3.3, 1.9], [4.2, 1.5, 3.2], [-0.2, 1.5, 3.2]], 'fill="#4b5563"'));
-  const roof = (u, v) => [u, 3.3 - 1.8 * v, 1.9 + 1.3 * v];
-  const cols = 5;
-  const rows = 2;
-  for (let c = 0; c < cols; c++) {
-    for (let r = 0; r < rows; r++) {
-      const u0 = 0.15 + c * 0.78;
-      const u1 = u0 + 0.72;
-      const v0 = 0.1 + r * 0.42;
-      const v1 = v0 + 0.38;
-      out.push(poly([roof(u0, v0), roof(u1, v0), roof(u1, v1), roof(u0, v1)], 'fill="#1d4ed8" stroke="#93c5fd" stroke-width="0.4"'));
-    }
-  }
-  // ridge
-  const [rx0, ry0] = iso(-0.2, 1.5, 3.2);
-  const [rx1, ry1] = iso(4.2, 1.5, 3.2);
-  out.push(`<line x1="${rx0}" y1="${ry0}" x2="${rx1}" y2="${ry1}" stroke="#9ca3af" stroke-width="1.5"/>`);
-  // battery box on the side wall
-  out.push(poly([[4, 2.05, 0], [4.45, 2.05, 0], [4.45, 2.05, 1.15], [4, 2.05, 1.15]], 'fill="#9ca3af"'));
-  out.push(poly([[4.45, 2.05, 0], [4.45, 2.75, 0], [4.45, 2.75, 1.15], [4.45, 2.05, 1.15]], 'fill="#f8fafc"'));
-  out.push(poly([[4, 2.75, 0], [4.45, 2.75, 0], [4.45, 2.75, 1.15], [4, 2.75, 1.15]], 'fill="#e2e8f0"'));
-  out.push(poly([[4, 2.05, 1.15], [4.45, 2.05, 1.15], [4.45, 2.75, 1.15], [4, 2.75, 1.15]], 'fill="#ffffff"'));
-  out.push(poly([[4.45, 2.2, 0.75], [4.45, 2.6, 0.75], [4.45, 2.6, 0.8], [4.45, 2.2, 0.8]], 'fill="#2dd4bf"'));
-  // grid pylon (front-left)
-  const base = [-0.9, 3.9];
-  const [px, py] = iso(base[0], base[1], 0);
-  const [tx, ty] = iso(base[0], base[1], 3.1);
-  out.push(
-    `<path d="M${px - 9},${py} L${tx},${ty} L${px + 9},${py} M${px - 6},${py - 30} H${px + 6} M${tx - 14},${ty + 14} H${tx + 14} M${tx - 10},${ty + 26} H${tx + 10} M${px - 7},${py - 18} L${px + 4},${py - 50} M${px + 7},${py - 18} L${px - 4},${py - 50}" stroke="#6b7280" stroke-width="1.6" fill="none"/>`
-  );
-  // trees in front, clear of the flow lines
-  out.push(...[[1.0, 4.4, 12], [5.4, 0.8, 11]].map(([x, y, r]) => tree(x, y, r)));
-  return out.join("");
-}
-
-function tree(x, y, r) {
-  const [cx, cy] = iso(x, y, 0.5);
-  return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#166534"/><circle cx="${cx - r / 3}" cy="${cy - r / 3}" r="${r / 2.2}" fill="#22c55e" opacity="0.45"/>`;
-}
-
-const HOUSE_STATIC = houseStatic();
-
-// Anchor points (label end -> device) for the four flow lines.
-const FLOW_PATHS = (() => {
-  const pylonTop = iso(-0.9, 3.9, 3.0);
-  const houseLeft = iso(0.4, 3, 1.25);
-  const panels = iso(2.0, 2.45, 2.55);
-  const houseSide = iso(4, 0.6, 1.4);
-  const battery = iso(4.45, 2.4, 0.55);
-  return {
-    grid: `M44,64 V${pylonTop[1]} L${pylonTop[0]},${pylonTop[1]} L${houseLeft[0]},${houseLeft[1]}`,
-    solar: `M200,64 V${panels[1] - 30} L${panels[0]},${panels[1]}`,
-    house: `M${houseSide[0]},${houseSide[1]} L356,${houseSide[1] - 60} V64`,
-    battery: `M${battery[0]},${battery[1]} L${battery[0]},${battery[1] + 30} L200,336 V340`,
-  };
-})();
-
-function flowLine(key, color, watts, forward) {
-  const active = watts !== null && Math.abs(watts) >= 15;
-  const speed = active ? Math.max(0.5, 2.6 - Math.log10(Math.abs(watts)) * 0.5) : 0;
-  return `
-    <path d="${FLOW_PATHS[key]}" stroke="${color}" stroke-width="2" fill="none" opacity="${active ? 0.35 : 0.12}"/>
-    ${
-      active
-        ? `<path d="${FLOW_PATHS[key]}" stroke="${color}" stroke-width="3" fill="none" class="flow ${forward ? "" : "rev"}" style="animation-duration:${speed.toFixed(2)}s" filter="url(#glow)"/>`
-        : ""
-    }`;
+// One flow group: hidden below ~15 W, faster pulses for more power.
+function sceneFlow(key, watts, reverse = false) {
+  if (watts === null || Math.abs(watts) < 15) return "";
+  const dur = Math.max(1.2, 4 - Math.log10(Math.abs(watts)) * 0.8).toFixed(2);
+  return `<g class="flow ${reverse ? "rev" : ""}" style="--c:${SCENE_COLOR[key]};--dur:${dur}s" filter="url(#scene-glow)">${SCENE_PATHS[
+    key
+  ]
+    .map((d) => `<path class="pulse" pathLength="100" d="${d}"/><path class="pulse core" pathLength="100" d="${d}"/>`)
+    .join("")}</g>`;
 }
 
 // ---------------------------------------------------------------- panel
@@ -740,12 +662,15 @@ class AlphaEssPanel extends HTMLElement {
   }
 
   _renderFlow() {
-    const pv = this._value("total_pv_power") ?? this._value("pv_power");
+    const roofPv = this._value("pv_power");
+    const extraPv = this._value("extra_pv_power");
+    const pv = this._value("total_pv_power") ?? roofPv;
     const grid = this._value("grid_power");
     const battery = this._value("battery_power");
     const soc = this._value("battery_soc");
     const house = pv !== null && grid !== null && battery !== null ? pv + grid + battery : null;
     const capacity = this._status ? num(this._status.usable_battery_capacity) : null;
+    const hasExtraPv = Boolean(this._entities.extra_pv_power) && (extraPv !== null || (this._status && this._status.extra_pv_configured));
 
     const solarToday = this._value("solar_energy_today");
     const exportedToday = this._todayTotal("exported");
@@ -754,42 +679,47 @@ class AlphaEssPanel extends HTMLElement {
         ? Math.max(0, Math.min(100, ((solarToday - exportedToday) / solarToday) * 100))
         : null;
 
-    const gridLabel = grid === null ? "NET" : grid < 0 ? "TERUGLEVERING" : "INVOER";
-    const batteryLabel = battery === null ? "BATTERIJ" : battery < 0 ? "LADEN" : battery > 0 ? "ONTLADEN" : "RUST";
-    const batterySub =
-      soc === null
-        ? ""
-        : `${Math.round(soc)}%${capacity ? ` · ${fmtNum((soc / 100) * (capacity / 1000), 1)} kWh` : ""}`;
+    let gridName = "NET";
+    if (grid !== null && grid < 0) gridName = "TERUGLEVERING";
+    else if (grid !== null && grid > 0) gridName = "AFNAME";
+    let batteryName = "BATTERIJ";
+    if (battery !== null && battery < 0) batteryName = "LADEN";
+    else if (battery !== null && battery > 0) batteryName = "ONTLADEN";
+    let batterySub = "";
+    if (soc !== null) {
+      batterySub = `${Math.round(soc)}%`;
+      if (capacity) batterySub += ` · ${fmtNum((soc / 100) * (capacity / 1000), 1)} kWh`;
+    }
 
-    const label = (x, y, value, name, entity, sub = "") => `
-      <g class="flow-label" data-entity="${esc(this._entities[entity] || "")}">
-        <text x="${x}" y="${y}" class="flow-value" text-anchor="middle">${esc(value)}</text>
-        <text x="${x}" y="${y + 14}" class="flow-name" text-anchor="middle">${esc(name)}</text>
-        ${sub ? `<text x="${x}" y="${y + 27}" class="flow-sub" text-anchor="middle">${esc(sub)}</text>` : ""}
-      </g>`;
+    // Positions in % of the scene, anchored to the nearest edge so labels
+    // never spill out of it: e.g. {left: 4, top: 4} or {right: 1, bottom: 2}.
+    const label = (pos, color, value, name, key, sub = "") => `
+      <div class="scene-label" style="${Object.entries(pos)
+        .map(([side, pct]) => `${side}:${pct}%`)
+        .join(";")}" data-entity="${esc(this._entities[key] || "")}">
+        <div class="scene-value"><span class="dot" style="background:${color}"></span>${esc(value)}</div>
+        <div class="scene-name">${esc(name)}</div>
+        ${sub ? `<div class="scene-sub">${esc(sub)}</div>` : ""}
+      </div>`;
 
     return `
       ${this._header("mdi:transit-connection-variant", "Energiestroom", '<span class="live"><span class="dot"></span>Live</span>')}
       <div class="scene">
-        <svg viewBox="0 0 400 400">
-          <defs>
-            <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-              <feGaussianBlur stdDeviation="2.2" result="b"/>
-              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-            </filter>
-          </defs>
-          ${HOUSE_STATIC}
-          ${flowLine("grid", COLOR.grid, grid, grid !== null && grid > 0)}
-          ${flowLine("solar", COLOR.solar, pv, true)}
-          ${flowLine("house", COLOR.discharge, house, true)}
-          ${flowLine("battery", COLOR.battery, battery, battery !== null && battery < 0)}
-          ${label(44, 34, fmtW(grid === null ? null : Math.abs(grid)), gridLabel, "grid_power")}
-          ${label(200, 34, fmtW(pv), "ZON", this._entities.total_pv_power ? "total_pv_power" : "pv_power")}
-          ${label(356, 34, fmtW(house), "HUIS", "house_load_today")}
-          ${label(200, 356, fmtW(battery === null ? null : Math.abs(battery)), batteryLabel, "battery_soc", batterySub)}
+        <img src="${SCENE_IMAGE}" alt="" draggable="false">
+        <svg viewBox="0 0 1260 848" aria-hidden="true">
+          <defs><filter id="scene-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="1260" height="848"><feGaussianBlur stdDeviation="3.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+          ${sceneFlow("solar", roofPv)}
+          ${hasExtraPv ? sceneFlow("extraPv", extraPv) : ""}
+          ${sceneFlow("house", house)}
+          ${sceneFlow("grid", grid, grid !== null && grid > 0)}
         </svg>
-        <div class="scene-foot">${selfUse === null ? "&nbsp;" : `<b>${Math.round(selfUse)}%</b> zelfconsumptie vandaag`}</div>
-      </div>`;
+        ${label({ left: 45, top: 2 }, SCENE_COLOR.solar, fmtW(roofPv), "ZON DAK", "pv_power")}
+        ${hasExtraPv ? label({ left: 57, top: 33 }, SCENE_COLOR.extraPv, fmtW(extraPv), "ZON GARAGE", "extra_pv_power") : ""}
+        ${label({ left: 3, top: 4 }, SCENE_COLOR.house, fmtW(house), "HUIS", "house_load_today")}
+        ${label({ right: 1, top: 40 }, SCENE_COLOR.grid, fmtW(grid === null ? null : Math.abs(grid)), gridName, "grid_power")}
+        ${label({ left: 22, bottom: 1 }, COLOR.battery, fmtW(battery === null ? null : Math.abs(battery)), batteryName, "battery_soc", batterySub)}
+      </div>
+      <div class="scene-foot">${selfUse === null ? "&nbsp;" : `<b>${Math.round(selfUse)}%</b> zelfconsumptie vandaag`}</div>`;
   }
 
   _renderToday() {
@@ -1603,18 +1533,46 @@ const STYLE = `
   .live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 2s infinite; }
   @keyframes pulse { 50% { opacity: 0.3; } }
 
-  /* energy flow scene */
-  .scene { background: #0b0f17; border-radius: 14px; overflow: hidden; }
-  .scene svg { display: block; width: 100%; height: auto; }
-  .flow-value { fill: #fff; font-size: 17px; font-weight: 600; }
-  .flow-name { fill: #cbd5e1; font-size: 8.5px; letter-spacing: 0.12em; font-weight: 600; }
-  .flow-sub { fill: #94a3b8; font-size: 8.5px; }
-  .flow-label:hover .flow-value { fill: var(--accent); }
-  .flow { stroke-dasharray: 3 9; animation: flow 1.4s linear infinite; stroke-linecap: round; }
-  .flow.rev { animation-direction: reverse; }
-  @keyframes flow { to { stroke-dashoffset: -24; } }
-  .scene-foot { color: #cbd5e1; font-size: 13px; text-align: center; padding: 0 0 14px; }
+  /* energy flow scene (photo + traced flow paths) */
+  .scene { position: relative; background: #fff; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+  .scene img { display: block; width: 100%; height: auto; user-select: none; }
+  .scene svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .pulse {
+    fill: none;
+    stroke: var(--c);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 5;
+    stroke-dasharray: 7 93;
+    animation: run var(--dur, 2.4s) linear infinite;
+  }
+  .pulse.core { stroke: #fff; stroke-width: 2.2; }
+  .flow.rev .pulse { animation-direction: reverse; }
+  @keyframes run { from { stroke-dashoffset: 100; } to { stroke-dashoffset: 0; } }
+  @media (prefers-reduced-motion: reduce) { .pulse { animation-duration: 6s; } }
+  .scene-label {
+    position: absolute;
+    padding: 6px 10px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.86);
+    backdrop-filter: blur(4px);
+    color: #1d2321;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+  .scene-label:hover { box-shadow: 0 0 0 2px var(--accent); }
+  .scene-value { display: flex; align-items: center; gap: 6px; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .scene-value .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .scene-name { font-size: 10px; letter-spacing: 0.1em; color: #66706c; font-weight: 600; margin-top: 2px; }
+  .scene-sub { font-size: 11px; color: #66706c; }
+  .scene-foot { color: var(--muted); font-size: 13px; text-align: center; padding-top: 10px; }
   .scene-foot b { color: var(--accent); }
+  @media (max-width: 500px) {
+    .scene-label { padding: 3px 6px; }
+    .scene-value { font-size: 12px; }
+    .scene-name, .scene-sub { font-size: 8px; }
+  }
 
   /* energy today */
   .energy-row { padding: 6px 0; }
