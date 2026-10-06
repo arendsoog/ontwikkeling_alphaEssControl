@@ -21,12 +21,30 @@
     "options": {
         "step": {
             "init": {
-                "description": "Tune pricing, forecasting, and scheduler settings. All fields are optional and only used once the corresponding feature is built.{solar_forecast_note}",
+                "description": "Select the section you want to configure. Each section is saved on its own.",
+                "menu_options": {
+                    "installation": "Installation",
+                    "prices": "Prices",
+                    "solar_forecast": "Solar forecast",
+                    "extra_pv": "Additional PV installation",
+                    "meter": "Smart meter",
+                    "control": "Control"
+                }
+            },
+            "installation": {
+                "title": "Installation",
+                "description": "Physical specs of the roof PV, battery and inverter.",
                 "data": {
                     "pv_panel_wp": "Roof PV: Wp per panel",
                     "pv_panel_count": "Roof PV: number of panels",
                     "usable_battery_capacity": "Usable battery capacity",
-                    "inverter_nominal_power": "Inverter nominal power",
+                    "inverter_nominal_power": "Inverter nominal power"
+                }
+            },
+            "prices": {
+                "title": "Prices",
+                "description": "Supplier and network costs, VAT and the price source.{missing_source_note}",
+                "data": {
                     "provider_use_fee": "Provider use fee",
                     "provider_return_fee": "Provider return fee",
                     "vat_percentage": "VAT",
@@ -34,21 +52,45 @@
                     "network_use_fee_normal": "Network cost, normal tariff",
                     "network_use_fee_low": "Network cost, low/night tariff",
                     "entsoe_price_entity": "ENTSO-E entity",
-                    "frank_energie_price_entity": "Frank Energie entity",
+                    "frank_energie_price_entity": "Frank Energie entity"
+                }
+            },
+            "solar_forecast": {
+                "title": "Solar forecast",
+                "description": "Solar forecast locations; forecasts of all ticked locations are summed.{missing_source_note}",
+                "data": {
                     "forecast_solar_entries": "Forecast.Solar locations",
-                    "solcast_entries": "Solcast locations",
+                    "solcast_entries": "Solcast locations"
+                }
+            },
+            "extra_pv": {
+                "title": "Additional PV installation",
+                "description": "A second PV installation and its optional Modbus price control.",
+                "data": {
                     "extra_pv_power_entity": "Additional PV installation: power sensor",
                     "extra_pv_panel_wp": "Additional PV installation: Wp per panel",
                     "extra_pv_panel_count": "Additional PV installation: number of panels",
                     "extra_pv_control_enabled": "Extra PV: enable price control",
-                    "house_load_power_entity": "House load power sensor (P1)",
-                    "peak_load_this_month_entity": "Peak load this month sensor (capaciteitstarief)",
-                    "allow_provider_control_hours": "Hours where the provider may override the schedule",
                     "extra_pv_modbus_hub": "Extra PV: Modbus hub name (empty = disabled)",
                     "extra_pv_modbus_slave": "Extra PV: Modbus slave ID",
                     "extra_pv_modbus_address": "Extra PV: Modbus register address",
                     "extra_pv_modbus_on_value": "Extra PV: register value for \"on\"",
-                    "extra_pv_modbus_off_value": "Extra PV: register value for \"off\" (curtail)",
+                    "extra_pv_modbus_off_value": "Extra PV: register value for \"off\" (curtail)"
+                }
+            },
+            "meter": {
+                "title": "Smart meter",
+                "description": "P1/smart-meter sensors for live house load and the monthly peak.",
+                "data": {
+                    "house_load_power_entity": "House load power sensor (P1)",
+                    "peak_load_this_month_entity": "Peak load this month sensor (capaciteitstarief)"
+                }
+            },
+            "control": {
+                "title": "Control",
+                "description": "Scheduler behaviour and the master switch for battery control.",
+                "data": {
+                    "allow_provider_control_hours": "Hours where the provider may override the schedule",
                     "persist_daily_charge_limit": "Keep the once-per-day grid-charge/discharge limit after a restart",
                     "control_enabled": "Enable battery control (writes real commands to the inverter)"
                 }

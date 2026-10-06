@@ -12,8 +12,8 @@ SCAN_INTERVAL = timedelta(seconds=30)
 
 # Options flow: device physical specs (config.ini [General])
 # CONF_PV_POWER is not itself a form field -- it's computed from
-# CONF_PV_PANEL_WP * CONF_PV_PANEL_COUNT each time the options form is
-# submitted (config_flow.py's async_step_init) and stored alongside them, so
+# CONF_PV_PANEL_WP * CONF_PV_PANEL_COUNT each time an options section is
+# submitted (config_flow.py's _async_section) and stored alongside them, so
 # every other reader (e.g. orchestrator.py's solar-regression calibration)
 # keeps consuming a single total wattage. Entering Wp-per-panel and panel
 # count separately is much harder to fat-finger than one raw watt total.
