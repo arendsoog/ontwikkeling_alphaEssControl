@@ -66,6 +66,9 @@ const RANGES = [
 
 const WEEKDAYS = ["zo", "ma", "di", "wo", "do", "vr", "za"];
 
+// Sensors whose live readings the panel buffers itself (see _recordLive).
+const LIVE_KEYS = ["battery_soc", "pv_power", "total_pv_power", "grid_power", "battery_power", "extra_pv_power"];
+
 const TABS = [
   { key: "overview", label: "Overzicht", icon: "mdi:view-dashboard-outline" },
   { key: "devices", label: "Omvormers", icon: "mdi:solar-power-variant-outline" },
@@ -429,7 +432,27 @@ class AlphaEssPanel extends HTMLElement {
       return;
     }
     this._lastStates = states;
+    this._recordLive();
     this._renderAll();
+  }
+
+  // Keep the live power/SOC readings while the panel is open, so the
+  // charts still fill for sensors the recorder excludes (no history).
+  _recordLive() {
+    this._live = this._live || {};
+    for (const key of LIVE_KEYS) {
+      for (const device of this._devices) {
+        const id = device.entities[key];
+        const state = id && this._hass.states[id];
+        const value = state ? num(state.state) : null;
+        if (!state || value === null) continue;
+        const t = Date.parse(state.last_updated);
+        const buf = (this._live[id] = this._live[id] || []);
+        if (buf.length && buf[buf.length - 1][0] >= t) continue;
+        buf.push([t, value]);
+        if (buf.length > 3000) buf.splice(0, buf.length - 3000);
+      }
+    }
   }
 
   _state(key) {
@@ -516,8 +539,23 @@ class AlphaEssPanel extends HTMLElement {
   }
 
   _series(key) {
+    return this._seriesById(this._entities[key]);
+  }
+
+  // Recorder history, extended with live readings newer than its last point.
+  _seriesById(id) {
+    if (!id) return [];
+    const history = (this._history && this._history[id]) || [];
+    const live = (this._live && this._live[id]) || [];
+    const last = history.length ? history[history.length - 1][0] : -Infinity;
+    return [...history, ...live.filter((p) => p[0] > last)];
+  }
+
+  // True when the recorder returned nothing for this sensor today, which
+  // usually means it is excluded in configuration.yaml.
+  _noHistory(key) {
     const id = this._entities[key];
-    return (id && this._history && this._history[id]) || [];
+    return Boolean(id && this._history && !(this._history[id] || []).length);
   }
 
   // Per-day totals for a counter: {dayStartMs: kWh}.
@@ -886,6 +924,15 @@ class AlphaEssPanel extends HTMLElement {
       { label: "Batterij (+ laden)", color: COLOR.battery },
       { label: "Net (+ afname)", color: COLOR.grid },
     ]);
+    const unrecorded = [
+      ["grid_power", "net"],
+      ["battery_power", "batterij"],
+    ]
+      .filter(([key]) => this._noHistory(key))
+      .map(([, name]) => name);
+    const note = unrecorded.length
+      ? `<p class="hint">Geen geschiedenis voor ${unrecorded.join(" en ")}: deze sensor wordt niet door de recorder opgeslagen (uitgesloten in configuration.yaml). De lijn vult zich zolang dit paneel open staat.</p>`
+      : "";
     if (!values.length) {
       return `${header}<div class="card-body">${legend}<div class="empty">${this._history === null ? "Laden…" : "Geen geschiedenis beschikbaar."}</div>${this._rangeButtons()}</div>`;
     }
@@ -911,7 +958,7 @@ class AlphaEssPanel extends HTMLElement {
       },
       this._charts
     );
-    return `${header}<div class="card-body">${legend}${chart}${this._rangeButtons()}</div>`;
+    return `${header}<div class="card-body">${legend}${chart}${note}${this._rangeButtons()}</div>`;
   }
 
   _renderSoc() {
@@ -1067,8 +1114,7 @@ class AlphaEssPanel extends HTMLElement {
   }
 
   _historyOf(entities, key) {
-    const id = entities[key];
-    return (id && this._history && this._history[id]) || [];
+    return this._seriesById(entities[key]);
   }
 
   _energyRows(rows) {
