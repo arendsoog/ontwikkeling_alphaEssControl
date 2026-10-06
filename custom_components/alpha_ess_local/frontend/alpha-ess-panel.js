@@ -1230,6 +1230,8 @@ class AlphaEssPanel extends HTMLElement {
           </div>
         </div>
 
+        ${this._healthSection(e)}
+
         <div class="section-title">Ingangen &amp; net</div>
         <div class="kv-grid">
           <div class="kv" data-entity="${esc(e.pv_power || "")}"><span>Zon (PV-ingang)</span><span>${fmtW(pv)}</span></div>
@@ -1254,6 +1256,48 @@ class AlphaEssPanel extends HTMLElement {
           <div class="kv-grid">${info || '<div class="muted">Geen apparaatinformatie.</div>'}</div>
         </details>
       </section>`;
+  }
+
+  // Battery health from the BMS registers (sensor.py's battery_* sensors).
+  _healthSection(e) {
+    if (!e.battery_soh && !e.battery_voltage) return "";
+    const v = (key) => this._valueOf(e, key);
+    const fmt = (key, digits, unit) => (v(key) === null ? "–" : `${fmtNum(v(key), digits)} ${unit}`);
+    const tMin = v("battery_min_cell_temperature");
+    const tMax = v("battery_max_cell_temperature");
+    const temp =
+      tMin === null || tMax === null
+        ? "–"
+        : tMin === tMax
+          ? `${fmtNum(tMax, 1)} °C`
+          : `${fmtNum(tMin, 1)} – ${fmtNum(tMax, 1)} °C`;
+    const delta = v("battery_cell_voltage_delta");
+    // Near full the spread is naturally larger while the BMS top-balances
+    // (~70 mV at 99.6% here); only flag it well beyond that.
+    const deltaClass = delta !== null && delta > 100 ? "warn" : "";
+    const modules = v("battery_module_count");
+    const capacity = v("battery_capacity");
+    const item = (label, value, key, cls = "") =>
+      `<div class="kv" ${key && e[key] ? `data-entity="${esc(e[key])}"` : ""}><span>${label}</span><span class="${cls}">${esc(value)}</span></div>`;
+
+    return `
+      <div class="section-title">Gezondheid &amp; cellen</div>
+      <div class="kv-grid">
+        ${item("Temperatuur (cellen)", temp, "battery_max_cell_temperature")}
+        ${item("Omvormer", fmt("inverter_temperature", 1, "°C"), "inverter_temperature")}
+        ${item("Spanning", fmt("battery_voltage", 1, "V"), "battery_voltage")}
+        ${item("Stroom", fmt("battery_current", 1, "A"), "battery_current")}
+        ${item("Cel max", fmt("battery_max_cell_voltage", 3, "V"), "battery_max_cell_voltage")}
+        ${item("Cel min", fmt("battery_min_cell_voltage", 3, "V"), "battery_min_cell_voltage")}
+        ${item("Δ cel", delta === null ? "–" : `${Math.round(delta)} mV`, "battery_cell_voltage_delta", deltaClass)}
+        ${item("Gezondheid (SOH)", fmt("battery_soh", 1, "%"), "battery_soh", "accent")}
+        ${item("Cycli (geschat)", fmt("battery_cycles", 1, ""), "battery_cycles")}
+        ${item(
+          "Modules · capaciteit",
+          `${modules === null ? "–" : modules} · ${capacity === null ? "–" : `${fmtNum(capacity, 1)} kWh`}`,
+          "battery_capacity"
+        )}
+      </div>`;
   }
 
   _extraPvCard(device) {

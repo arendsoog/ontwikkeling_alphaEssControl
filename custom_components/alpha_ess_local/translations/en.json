@@ -135,7 +135,19 @@
             "solar_to_battery_today": { "name": "Today solar to battery" },
             "grid_to_battery_today": { "name": "Today grid to battery" },
             "yesterday_savings": { "name": "Yesterday's savings" },
-            "dispatch_current_mode": { "name": "Dispatch current mode" }
+            "dispatch_current_mode": { "name": "Dispatch current mode" },
+            "battery_voltage": { "name": "Battery voltage" },
+            "battery_current": { "name": "Battery current" },
+            "battery_min_cell_voltage": { "name": "Battery lowest cell voltage" },
+            "battery_max_cell_voltage": { "name": "Battery highest cell voltage" },
+            "battery_cell_voltage_delta": { "name": "Battery cell voltage spread" },
+            "battery_min_cell_temperature": { "name": "Battery lowest cell temperature" },
+            "battery_max_cell_temperature": { "name": "Battery highest cell temperature" },
+            "battery_soh": { "name": "Battery state of health" },
+            "battery_capacity": { "name": "Battery nominal capacity" },
+            "battery_module_count": { "name": "Battery modules" },
+            "battery_cycles": { "name": "Battery cycles (estimated)" },
+            "inverter_temperature": { "name": "Inverter temperature" }
         },
         "number": {
             "max_soc_positive_price": { "name": "Max SOC on positive-price hours" },

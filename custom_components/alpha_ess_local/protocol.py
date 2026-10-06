@@ -56,6 +56,15 @@ REG_PV_TOTAL_ENERGY = 0x043E
 # hour, which these two separately-metered cumulative counters don't.
 REG_BATTERY_TOTAL_ENERGY_CHARGE = 0x0120
 REG_BATTERY_TOTAL_ENERGY_DISCHARGE = 0x0122
+# Battery health block, read in one go (0x0100-0x011B). Layout and scales
+# per AlphaESS's register map; voltage/current/temperature/SOH scales also
+# match the community `modbus:` YAML, and every field was sanity-checked
+# against a live read on this installation (6 modules x 30 cells: pack
+# 598.8 V, cells 3.325-3.331 V, 22-25 degC, 23.0 kWh, SOH 100.0%).
+REG_BATTERY_INFO = 0x0100
+REG_BATTERY_INFO_COUNT = 0x1C
+# 0.1 degC on this model; AlphaESS documents 0.01 for SMILE-B3/-B3-PLUS.
+REG_INVERTER_TEMPERATURE = 0x0435
 REG_TIME_PERIOD_CONTROL = 0x084F
 REG_TIME_PERIOD_CONTROL_COUNT = 17
 
@@ -112,6 +121,21 @@ def to_signed_short(word: int) -> int:
     """Interpret a single 16-bit register as a signed 16-bit int."""
     word &= 0xFFFF
     return word - 0x10000 if word >= 0x8000 else word
+
+
+def decode_battery_info(registers: list[int]) -> dict[str, float | int]:
+    """Decode the REG_BATTERY_INFO block (offsets relative to 0x0100)."""
+    return {
+        "battery_voltage": registers[0x00] * 0.1,
+        "battery_current": to_signed_short(registers[0x01]) * 0.1,
+        "battery_min_cell_voltage": registers[0x07] * 0.001,
+        "battery_max_cell_voltage": registers[0x0A] * 0.001,
+        "battery_min_cell_temperature": to_signed_short(registers[0x0D]) * 0.1,
+        "battery_max_cell_temperature": to_signed_short(registers[0x10]) * 0.1,
+        "battery_module_count": registers[0x18],
+        "battery_capacity": registers[0x19] * 0.1,
+        "battery_soh": registers[0x1B] * 0.1,
+    }
 
 
 def decode_dispatch_power(raw: int) -> int:

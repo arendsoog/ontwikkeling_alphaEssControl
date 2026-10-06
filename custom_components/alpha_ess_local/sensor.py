@@ -20,7 +20,15 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfEnergy, UnitOfPower
+from homeassistant.const import (
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfElectricCurrent,
+    UnitOfElectricPotential,
+    UnitOfEnergy,
+    UnitOfPower,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -44,7 +52,35 @@ PRICE_UNIT = "EUR/kWh"
 
 @dataclass(frozen=True, kw_only=True)
 class AlphaEssLocalSensorDescription(SensorEntityDescription):
-    """Describes an AlphaESS sensor backed by a coordinator data key."""
+    """Describes an AlphaESS sensor backed by a coordinator data key.
+
+    `value_fn` derives the value from the whole data dict instead, for
+    sensors computed from several registers.
+    """
+
+    value_fn: Callable[[Mapping[str, Any]], Any] | None = None
+
+
+def _cell_voltage_delta(data: Mapping[str, Any]) -> float | None:
+    """Spread between the highest and lowest cell voltage, in mV."""
+    low = data.get("battery_min_cell_voltage")
+    high = data.get("battery_max_cell_voltage")
+    if low is None or high is None:
+        return None
+    return round((high - low) * 1000)
+
+
+def _equivalent_cycles(data: Mapping[str, Any]) -> float | None:
+    """Estimated full cycles: lifetime discharge divided by nominal capacity.
+
+    AlphaESS exposes no cycle counter register, so this is the usual
+    "equivalent full cycles" approximation, not a BMS-reported count.
+    """
+    discharged = data.get("battery_total_energy_discharge")
+    capacity = data.get("battery_capacity")
+    if discharged is None or not capacity:
+        return None
+    return round(discharged / capacity, 1)
 
 
 MODBUS_SENSOR_DESCRIPTIONS: tuple[AlphaEssLocalSensorDescription, ...] = (
@@ -124,6 +160,95 @@ MODBUS_SENSOR_DESCRIPTIONS: tuple[AlphaEssLocalSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
+    ),
+    # Battery health (REG_BATTERY_INFO block) and inverter temperature.
+    AlphaEssLocalSensorDescription(
+        key="battery_voltage",
+        translation_key="battery_voltage",
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    AlphaEssLocalSensorDescription(
+        key="battery_current",
+        translation_key="battery_current",
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        device_class=SensorDeviceClass.CURRENT,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    AlphaEssLocalSensorDescription(
+        key="battery_min_cell_voltage",
+        translation_key="battery_min_cell_voltage",
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=3,
+    ),
+    AlphaEssLocalSensorDescription(
+        key="battery_max_cell_voltage",
+        translation_key="battery_max_cell_voltage",
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=3,
+    ),
+    AlphaEssLocalSensorDescription(
+        key="battery_cell_voltage_delta",
+        translation_key="battery_cell_voltage_delta",
+        native_unit_of_measurement=UnitOfElectricPotential.MILLIVOLT,
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=_cell_voltage_delta,
+    ),
+    AlphaEssLocalSensorDescription(
+        key="battery_min_cell_temperature",
+        translation_key="battery_min_cell_temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    AlphaEssLocalSensorDescription(
+        key="battery_max_cell_temperature",
+        translation_key="battery_max_cell_temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    AlphaEssLocalSensorDescription(
+        key="battery_soh",
+        translation_key="battery_soh",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    AlphaEssLocalSensorDescription(
+        key="battery_capacity",
+        translation_key="battery_capacity",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY_STORAGE,
+        suggested_display_precision=1,
+    ),
+    AlphaEssLocalSensorDescription(
+        key="battery_module_count",
+        translation_key="battery_module_count",
+    ),
+    AlphaEssLocalSensorDescription(
+        key="battery_cycles",
+        translation_key="battery_cycles",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        value_fn=_equivalent_cycles,
+    ),
+    AlphaEssLocalSensorDescription(
+        key="inverter_temperature",
+        translation_key="inverter_temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
     ),
 )
 
@@ -424,6 +549,8 @@ class AlphaEssLocalSensor(AlphaEssLocalEntity, SensorEntity):
     @property
     def native_value(self):
         """Return the current value from the coordinator's data dict."""
+        if self.entity_description.value_fn is not None:
+            return self.entity_description.value_fn(self.coordinator.data)
         return self.coordinator.data.get(self.entity_description.key)
 
 

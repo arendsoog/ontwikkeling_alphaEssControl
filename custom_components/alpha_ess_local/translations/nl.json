@@ -135,7 +135,19 @@
             "solar_to_battery_today": { "name": "Vandaag zonne-energie in batterij" },
             "grid_to_battery_today": { "name": "Vandaag netstroom batterij" },
             "yesterday_savings": { "name": "Besparing gisteren" },
-            "dispatch_current_mode": { "name": "Dispatch huidige modus" }
+            "dispatch_current_mode": { "name": "Dispatch huidige modus" },
+            "battery_voltage": { "name": "Batterijspanning" },
+            "battery_current": { "name": "Batterijstroom" },
+            "battery_min_cell_voltage": { "name": "Batterij laagste celspanning" },
+            "battery_max_cell_voltage": { "name": "Batterij hoogste celspanning" },
+            "battery_cell_voltage_delta": { "name": "Batterij celspanningsverschil" },
+            "battery_min_cell_temperature": { "name": "Batterij laagste celtemperatuur" },
+            "battery_max_cell_temperature": { "name": "Batterij hoogste celtemperatuur" },
+            "battery_soh": { "name": "Batterijgezondheid (SOH)" },
+            "battery_capacity": { "name": "Batterij nominale capaciteit" },
+            "battery_module_count": { "name": "Batterijmodules" },
+            "battery_cycles": { "name": "Batterijcycli (geschat)" },
+            "inverter_temperature": { "name": "Omvormertemperatuur" }
         },
         "number": {
             "max_soc_positive_price": { "name": "Max SOC bij positieve prijzen" },

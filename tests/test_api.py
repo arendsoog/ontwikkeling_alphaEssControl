@@ -112,6 +112,49 @@ async def test_async_get_battery_total_energy_discharge_uses_point_one_scale(
     assert energy == pytest.approx(5432.1)
 
 
+async def test_async_get_battery_info_decodes_block(client, mock_modbus_client):
+    # A real read from the user's 6-module pack (0x0100-0x011B).
+    registers = [0] * 0x1C
+    registers[0x00] = 5988  # 598.8 V
+    registers[0x01] = 65468  # -6.8 A (charging)
+    registers[0x07] = 3325  # 3.325 V
+    registers[0x0A] = 3331  # 3.331 V
+    registers[0x0D] = 220  # 22.0 degC
+    registers[0x10] = 250  # 25.0 degC
+    registers[0x18] = 6
+    registers[0x19] = 230  # 23.0 kWh
+    registers[0x1B] = 1000  # 100.0 %
+    mock_modbus_client.read_holding_registers.return_value = _ok_result(registers)
+
+    info = await client.async_get_battery_info()
+
+    assert info["battery_voltage"] == pytest.approx(598.8)
+    assert info["battery_current"] == pytest.approx(-6.8)
+    assert info["battery_min_cell_voltage"] == pytest.approx(3.325)
+    assert info["battery_max_cell_voltage"] == pytest.approx(3.331)
+    assert info["battery_min_cell_temperature"] == pytest.approx(22.0)
+    assert info["battery_max_cell_temperature"] == pytest.approx(25.0)
+    assert info["battery_module_count"] == 6
+    assert info["battery_capacity"] == pytest.approx(23.0)
+    assert info["battery_soh"] == pytest.approx(100.0)
+
+
+async def test_async_get_battery_info_decodes_negative_temperature(client, mock_modbus_client):
+    registers = [0] * 0x1C
+    registers[0x0D] = 0xFFCE  # -5.0 degC
+    mock_modbus_client.read_holding_registers.return_value = _ok_result(registers)
+
+    info = await client.async_get_battery_info()
+
+    assert info["battery_min_cell_temperature"] == pytest.approx(-5.0)
+
+
+async def test_async_get_inverter_temperature_uses_point_one_scale(client, mock_modbus_client):
+    mock_modbus_client.read_holding_registers.return_value = _ok_result([480])
+
+    assert await client.async_get_inverter_temperature() == pytest.approx(48.0)
+
+
 async def test_read_registers_retries_once_after_reconnect(client, mock_modbus_client):
     mock_modbus_client.read_holding_registers.side_effect = [
         _error_result(),

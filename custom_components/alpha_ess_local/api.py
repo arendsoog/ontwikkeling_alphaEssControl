@@ -188,6 +188,18 @@ class AlphaEssLocalApiClient:
         registers = await self._read_registers(protocol.REG_BATTERY_TOTAL_ENERGY_DISCHARGE, 2)
         return protocol.to_unsigned_int(registers[0], registers[1]) * 0.1
 
+    async def async_get_battery_info(self) -> dict[str, float | int]:
+        """Battery pack health: voltage, current, cell extremes, capacity, SOH."""
+        registers = await self._read_registers(
+            protocol.REG_BATTERY_INFO, protocol.REG_BATTERY_INFO_COUNT
+        )
+        return protocol.decode_battery_info(registers)
+
+    async def async_get_inverter_temperature(self) -> float:
+        """Inverter temperature, in degC (0.1 degC units on this model)."""
+        registers = await self._read_registers(protocol.REG_INVERTER_TEMPERATURE, 1)
+        return protocol.to_signed_short(registers[0]) * 0.1
+
     async def async_get_dispatch_param(self) -> DispatchParam:
         """Read the current dispatch mode/power/cutoff-SOC/duration."""
         registers = await self._read_registers(
@@ -245,4 +257,6 @@ class AlphaEssLocalApiClient:
             "battery_total_energy_discharge": (
                 await self.async_get_battery_total_energy_discharge()
             ),
+            **await self.async_get_battery_info(),
+            "inverter_temperature": await self.async_get_inverter_temperature(),
         }
