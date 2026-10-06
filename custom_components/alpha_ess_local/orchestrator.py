@@ -1202,6 +1202,11 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         the command" persistence but through a usable HA service."""
         self._manual_override = None if charge is None else (charge, cutoff_soc)
 
+    @property
+    def manual_override(self) -> Charge | None:
+        """The currently forced charge action, or None when following the schedule."""
+        return None if self._manual_override is None else self._manual_override[0]
+
     async def _async_update_data(self) -> dispatch.DispatchDecision | None:
         """Decide this cycle's dispatch mode and (maybe) write it."""
         now = dt_util.now()

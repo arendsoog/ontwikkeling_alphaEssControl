@@ -9,7 +9,8 @@
   "after_dependencies": [
     "frontend",
     "http",
-    "panel_custom"
+    "panel_custom",
+    "websocket_api"
   ],
   "documentation": "https://github.com/arendsoog/ontwikkeling_alphaEssControl",
   "iot_class": "local_polling",
