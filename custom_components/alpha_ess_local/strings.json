@@ -65,12 +65,12 @@
             },
             "extra_pv": {
                 "title": "Additional PV installation",
-                "description": "A second PV installation and its optional Modbus price control.",
+                "description": "A second PV installation and its optional Modbus control that switches it off at negative prices.",
                 "data": {
                     "extra_pv_power_entity": "Additional PV installation: power sensor",
                     "extra_pv_panel_wp": "Additional PV installation: Wp per panel",
                     "extra_pv_panel_count": "Additional PV installation: number of panels",
-                    "extra_pv_control_enabled": "Extra PV: enable price control",
+                    "extra_pv_control_enabled": "Extra PV: enable negative-price control",
                     "extra_pv_modbus_hub": "Extra PV: Modbus hub name (empty = disabled)",
                     "extra_pv_modbus_slave": "Extra PV: Modbus slave ID",
                     "extra_pv_modbus_address": "Extra PV: Modbus register address",

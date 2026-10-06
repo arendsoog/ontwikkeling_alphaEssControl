@@ -65,12 +65,12 @@
             },
             "extra_pv": {
                 "title": "Extra PV-installatie",
-                "description": "Een tweede PV-installatie en de optionele Modbus-prijssturing ervan.",
+                "description": "Een tweede PV-installatie en de optionele Modbus-sturing die haar uitschakelt bij negatieve prijzen.",
                 "data": {
                     "extra_pv_power_entity": "Extra PV-installatie: vermogensensor",
                     "extra_pv_panel_wp": "Extra PV-installatie: Wp per paneel",
                     "extra_pv_panel_count": "Extra PV-installatie: aantal panelen",
-                    "extra_pv_control_enabled": "Extra PV: prijssturing inschakelen",
+                    "extra_pv_control_enabled": "Extra PV: sturing bij negatieve prijzen inschakelen",
                     "extra_pv_modbus_hub": "Extra PV: Modbus hub-naam (leeg = uitgeschakeld)",
                     "extra_pv_modbus_slave": "Extra PV: Modbus slave-ID",
                     "extra_pv_modbus_address": "Extra PV: Modbus registeradres",

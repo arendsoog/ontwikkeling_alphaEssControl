@@ -886,7 +886,7 @@ class AlphaEssPanel extends HTMLElement {
       row("Winststatus", this._formatted("price_earning_status"), "", "price_earning_status"),
       row("Prijsbron", st ? st.price_source ?? "Niet ingesteld" : "–", st && st.price_source ? "" : "muted"),
       row("Zonnevoorspelling", st ? (st.solar_forecast_sources ? `${st.solar_forecast_sources} locatie(s)` : "Niet ingesteld") : "–", st && st.solar_forecast_sources ? "" : "muted"),
-      row("Extra PV-sturing", st ? (st.extra_pv_control_enabled ? "Actief" : "Uit") : "–", st ? tone(st.extra_pv_control_enabled) : ""),
+      row("Extra PV-sturing negatieve prijzen", st ? (st.extra_pv_control_enabled ? "Actief" : "Uit") : "–", st ? tone(st.extra_pv_control_enabled) : ""),
     ];
     return `${this._header("mdi:shield-check-outline", "Integratiestatus")}<div class="card-body status-grid"><div>${left.join("")}</div><div>${right.join("")}</div></div>`;
   }
@@ -1305,7 +1305,7 @@ class AlphaEssPanel extends HTMLElement {
         <div class="section-title">Energie vandaag</div>
         ${this._energyRows([{ label: "Opgewekt", value: this._history ? todayKwh : null, color: COLOR.solar, entity: e.extra_pv_power }])}
 
-        <div class="section-title">Prijssturing (curtailment)</div>
+        <div class="section-title">Sturing bij negatieve prijzen</div>
         <div class="kv-grid">
           <div class="kv"><span>Status</span><span class="${st.extra_pv_control_enabled ? "accent" : "muted"}">${
             st.extra_pv_control_enabled ? "Actief" : "Uit"
