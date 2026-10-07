@@ -15,7 +15,7 @@ const COLOR = {
   charge: "#2dd4bf",
   discharge: "#99f6e4",
   import: "#c026d3",
-  export: "#facc15",
+  export: "#f97316",
   solar: "#fbbf24",
   house: "#94a3b8",
   battery: "#2dd4bf",
@@ -331,7 +331,22 @@ const SCENE_PATHS = {
   // battery -> EV charger on the garage wall
   ev: ["M558,622 L717,622"],
 };
-const SCENE_COLOR = { solar: "#2fd25a", extraPv: "#2fd25a", house: "#5aa8ff", grid: "#f2c230", ev: "#9333ea" };
+// Same colours as the charts. The grid's depends on direction: magenta
+// while importing, orange while feeding in (see gridColour).
+const SCENE_COLOR = {
+  solar: "#fbbf24",
+  extraPv: "#fbbf24",
+  house: "#94a3b8",
+  ev: "#5aa8ff",
+  gridImport: "#c026d3",
+  gridExport: "#f97316",
+  gridIdle: "#cbd5e1",
+};
+
+function gridColour(watts) {
+  if (watts === null || Math.abs(watts) < 15) return SCENE_COLOR.gridIdle;
+  return watts > 0 ? SCENE_COLOR.gridImport : SCENE_COLOR.gridExport;
+}
 
 // Where each label points at in the image (x, y in image pixels). Labels sit
 // in a band above or below the image, straight above/below their target,
@@ -349,16 +364,16 @@ const SCENE_TARGETS = {
 // A solid wire over a cable the image draws in another colour (the EV
 // charger's is drawn blue, like the rooms'), so it reads as its own
 // circuit even when nothing flows; sceneFlow's pulses run on top of it.
-function sceneCable(key) {
+function sceneCable(key, colour = SCENE_COLOR[key]) {
   return SCENE_PATHS[key]
-    .map((d) => `<path class="cable" d="${d}" style="--c:${SCENE_COLOR[key]}" filter="url(#scene-glow)"/>`)
+    .map((d) => `<path class="cable" d="${d}" style="--c:${colour}" filter="url(#scene-glow)"/>`)
     .join("");
 }
 
-function sceneFlow(key, watts, reverse = false) {
+function sceneFlow(key, watts, reverse = false, colour = SCENE_COLOR[key]) {
   if (watts === null || Math.abs(watts) < 15) return "";
   const dur = Math.max(1.2, 4 - Math.log10(Math.abs(watts)) * 0.8).toFixed(2);
-  return `<g class="flow ${reverse ? "rev" : ""}" style="--c:${SCENE_COLOR[key]};--dur:${dur}s" filter="url(#scene-glow)">${SCENE_PATHS[
+  return `<g class="flow ${reverse ? "rev" : ""}" style="--c:${colour};--dur:${dur}s" filter="url(#scene-glow)">${SCENE_PATHS[
     key
   ]
     .map((d) => `<path class="pulse" pathLength="100" d="${d}"/><path class="pulse core" pathLength="100" d="${d}"/>`)
@@ -905,7 +920,7 @@ class AlphaEssPanel extends HTMLElement {
       },
       {
         key: "grid",
-        color: SCENE_COLOR.grid,
+        color: gridColour(grid),
         value: fmtW(grid === null ? null : Math.abs(grid)),
         name: gridName,
         entity: this._entities.grid_power,
@@ -967,7 +982,8 @@ class AlphaEssPanel extends HTMLElement {
             ${hasExtraPv ? sceneFlow("extraPv", extraPv) : ""}
             ${sceneFlow("house", rooms)}
             ${hasEv ? sceneCable("ev") + sceneFlow("ev", ev) : ""}
-            ${sceneFlow("grid", grid, grid !== null && grid > 0)}
+            ${sceneCable("grid", gridColour(grid))}
+            ${sceneFlow("grid", grid, grid !== null && grid > 0, gridColour(grid))}
           </svg>
         </div>
         <div class="scene-band bottom">${band("bottom")}</div>
@@ -2259,7 +2275,7 @@ const STYLE = `
     animation: run var(--dur, 2.4s) linear infinite;
   }
   .pulse.core { stroke: #fff; stroke-width: 2.2; }
-  .cable { fill: none; stroke: var(--c); stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; opacity: 0.9; }
+  .cable { fill: none; stroke: var(--c); stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; opacity: 0.95; }
   .flow.rev .pulse { animation-direction: reverse; }
   @keyframes run { from { stroke-dashoffset: 100; } to { stroke-dashoffset: 0; } }
   @media (prefers-reduced-motion: reduce) { .pulse { animation-duration: 6s; } }
