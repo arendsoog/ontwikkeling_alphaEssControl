@@ -58,7 +58,11 @@ from ..data import MAX_FIVE_MINS, Day
 from ..orchestrator import get_db_path
 from ..schedule import set_charging_msg
 
-PANEL_URL_PATH = "alpha-ess"
+# Specific enough not to collide with a user's own dashboard: a Lovelace
+# dashboard named "AlphaESS" readily gets "alpha-ess" as its URL, which made
+# the panel silently not register at all.
+PANEL_URL_PATH = "alpha-ess-control"
+PANEL_TITLE = "AlphaESS Control"
 PANEL_COMPONENT = "alpha-ess-panel"
 PANEL_FILE = Path(__file__).parent / f"{PANEL_COMPONENT}.js"
 STATIC_URL = f"/{DOMAIN}/frontend"
@@ -280,8 +284,6 @@ async def async_register_panel(hass: HomeAssistant) -> None:
     """
     if hass.http is None or "frontend" not in hass.config.components:
         return
-    if PANEL_URL_PATH in hass.data.get(frontend.DATA_PANELS, {}):
-        return
 
     # A static path and a websocket command can't be unregistered again,
     # so only add them once per HA run, even if the panel is removed and
@@ -296,6 +298,17 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         websocket_api.async_register_command(hass, _ws_history)
         hass.data[_DATA_REGISTERED] = True
 
+    existing = hass.data.get(frontend.DATA_PANELS, {}).get(PANEL_URL_PATH)
+    if existing is not None:
+        if not _is_our_panel(existing):
+            LOGGER.warning(
+                "Sidebar panel not added: /%s is already used by another panel or "
+                "dashboard (%s). Change that dashboard's URL to get the AlphaESS panel",
+                PANEL_URL_PATH,
+                existing.sidebar_title or existing.component_name,
+            )
+        return
+
     # The file's mtime as a cache-buster, so the browser picks up a changed
     # panel after a restart instead of serving its cached copy.
     mtime = int(await hass.async_add_executor_job(lambda: PANEL_FILE.stat().st_mtime))
@@ -304,14 +317,21 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         frontend_url_path=PANEL_URL_PATH,
         webcomponent_name=PANEL_COMPONENT,
         module_url=f"{STATIC_URL}/{PANEL_FILE.name}?v={mtime}",
-        sidebar_title="AlphaESS",
+        sidebar_title=PANEL_TITLE,
         sidebar_icon="mdi:home-battery",
         require_admin=False,
     )
-    LOGGER.debug("Registered sidebar panel at /%s", PANEL_URL_PATH)
+    LOGGER.info("Added the %s sidebar panel at /%s", PANEL_TITLE, PANEL_URL_PATH)
+
+
+def _is_our_panel(panel: frontend.Panel) -> bool:
+    """Whether a registered panel is this integration's (not a dashboard)."""
+    custom = (panel.config or {}).get("_panel_custom", {})
+    return panel.component_name == "custom" and custom.get("name") == PANEL_COMPONENT
 
 
 def async_unregister_panel(hass: HomeAssistant) -> None:
-    """Remove the panel from the sidebar."""
-    if PANEL_URL_PATH in hass.data.get(frontend.DATA_PANELS, {}):
+    """Remove the panel from the sidebar -- only if it is ours."""
+    existing = hass.data.get(frontend.DATA_PANELS, {}).get(PANEL_URL_PATH)
+    if existing is not None and _is_our_panel(existing):
         frontend.async_remove_panel(hass, PANEL_URL_PATH)

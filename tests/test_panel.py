@@ -1,6 +1,7 @@
 """Tests for the sidebar panel's websocket payloads (frontend/__init__.py)."""
 
 from datetime import date, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,7 +11,13 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.alpha_ess_local.const import DOMAIN
 from custom_components.alpha_ess_local.data import Day, FiveMin
-from custom_components.alpha_ess_local.frontend import _ws_set_option, today_power_payload
+from custom_components.alpha_ess_local.frontend import (
+    PANEL_COMPONENT,
+    PANEL_URL_PATH,
+    _is_our_panel,
+    _ws_set_option,
+    today_power_payload,
+)
 
 
 def _day() -> Day:
@@ -136,3 +143,29 @@ def test_set_option_requires_admin(hass):
         )
 
     connection.send_result.assert_not_called()
+
+
+# --- sidebar panel identity -----------------------------------------------------
+
+
+def _panel(component_name, config=None):
+    # Only the fields _is_our_panel reads -- frontend.Panel's constructor
+    # changes between Home Assistant versions.
+    return SimpleNamespace(component_name=component_name, config=config)
+
+
+def test_panel_url_is_specific_enough_not_to_clash_with_a_dashboard():
+    # A dashboard titled "AlphaESS" readily gets /alpha-ess or /dashboard-alphaess.
+    assert PANEL_URL_PATH not in ("alpha-ess", "alphaess", "dashboard-alphaess")
+
+
+def test_our_custom_panel_is_recognised():
+    assert _is_our_panel(_panel("custom", {"_panel_custom": {"name": PANEL_COMPONENT}}))
+
+
+def test_a_dashboard_on_the_same_url_is_not_ours():
+    assert not _is_our_panel(_panel("lovelace", {"mode": "storage"}))
+
+
+def test_another_custom_panel_on_the_same_url_is_not_ours():
+    assert not _is_our_panel(_panel("custom", {"_panel_custom": {"name": "something-else"}}))
