@@ -67,6 +67,9 @@ const RANGES = [
 
 const WEEKDAYS = ["zo", "ma", "di", "wo", "do", "vr", "za"];
 
+// Window for the energy-flow scene's averaged values (see _averaged).
+const FLOW_AVERAGE_MS = 2 * 60 * 1000;
+
 // Sensors whose live readings the panel buffers itself (see _recordLive).
 const LIVE_KEYS = ["battery_soc", "pv_power", "total_pv_power", "grid_power", "battery_power", "extra_pv_power"];
 
@@ -328,7 +331,7 @@ const SCENE_PATHS = {
   // battery -> EV charger on the garage wall
   ev: ["M558,622 L717,622"],
 };
-const SCENE_COLOR = { solar: "#2fd25a", extraPv: "#2fd25a", house: "#5aa8ff", grid: "#f2c230", ev: "#5aa8ff" };
+const SCENE_COLOR = { solar: "#2fd25a", extraPv: "#2fd25a", house: "#5aa8ff", grid: "#f2c230", ev: "#9333ea" };
 
 // Where each label points at in the image (x, y in image pixels). Labels sit
 // in a band above or below the image, straight above/below their target,
@@ -343,6 +346,15 @@ const SCENE_TARGETS = {
 };
 
 // One flow group: hidden below ~15 W, faster pulses for more power.
+// A solid wire over a cable the image draws in another colour (the EV
+// charger's is drawn blue, like the rooms'), so it reads as its own
+// circuit even when nothing flows; sceneFlow's pulses run on top of it.
+function sceneCable(key) {
+  return SCENE_PATHS[key]
+    .map((d) => `<path class="cable" d="${d}" style="--c:${SCENE_COLOR[key]}" filter="url(#scene-glow)"/>`)
+    .join("");
+}
+
 function sceneFlow(key, watts, reverse = false) {
   if (watts === null || Math.abs(watts) < 15) return "";
   const dur = Math.max(1.2, 4 - Math.log10(Math.abs(watts)) * 0.8).toFixed(2);
@@ -814,12 +826,37 @@ class AlphaEssPanel extends HTMLElement {
     return state.attributes.unit_of_measurement === "kW" ? value * 1000 : value;
   }
 
+  // Time-weighted mean of a sensor over the last `windowMs`, from the live
+  // readings buffered while the panel is open (see _recordLive). Each value
+  // counts for as long as it held, so a brief spike doesn't dominate. Falls
+  // back to the current value until there's a reading inside the window.
+  _averaged(key, windowMs = FLOW_AVERAGE_MS) {
+    const current = this._value(key);
+    const id = this._entities[key];
+    const points = (id && this._live && this._live[id]) || [];
+    const now = Date.now();
+    const start = now - windowMs;
+    let total = 0;
+    let covered = 0;
+    for (let i = 0; i < points.length; i++) {
+      const [t, v] = points[i];
+      const until = i + 1 < points.length ? points[i + 1][0] : now;
+      const from = Math.max(t, start);
+      if (until <= from || v === null) continue;
+      total += v * (until - from);
+      covered += until - from;
+    }
+    return covered > 0 ? total / covered : current;
+  }
+
   _renderFlow() {
-    const roofPv = this._value("pv_power");
-    const extraPv = this._value("extra_pv_power");
-    const pv = this._value("total_pv_power") ?? roofPv;
-    const grid = this._value("grid_power");
-    const battery = this._value("battery_power");
+    // Averaged so the labels and flow direction don't flip back and forth
+    // with every 30 s reading while the battery chases a switching load.
+    const roofPv = this._averaged("pv_power");
+    const extraPv = this._averaged("extra_pv_power");
+    const pv = roofPv === null && extraPv === null ? this._value("total_pv_power") : (roofPv || 0) + (extraPv || 0);
+    const grid = this._averaged("grid_power");
+    const battery = this._averaged("battery_power");
     const soc = this._value("battery_soc");
     const house = pv !== null && grid !== null && battery !== null ? pv + grid + battery : null;
     const capacity = this._status ? num(this._status.usable_battery_capacity) : null;
@@ -918,7 +955,7 @@ class AlphaEssPanel extends HTMLElement {
       .join("");
 
     return `
-      ${this._header("mdi:transit-connection-variant", "Energiestroom", '<span class="live"><span class="dot"></span>Live</span>')}
+      ${this._header("mdi:transit-connection-variant", "Energiestroom", '<span class="live" title="Gemiddelde over de laatste 2 minuten"><span class="dot"></span>Live · gem. 2 min</span>')}
       <div class="scene">
         <div class="scene-band top">${band("top")}</div>
         <div class="scene-img">
@@ -929,7 +966,7 @@ class AlphaEssPanel extends HTMLElement {
             ${sceneFlow("solar", roofPv)}
             ${hasExtraPv ? sceneFlow("extraPv", extraPv) : ""}
             ${sceneFlow("house", rooms)}
-            ${hasEv ? sceneFlow("ev", ev) : ""}
+            ${hasEv ? sceneCable("ev") + sceneFlow("ev", ev) : ""}
             ${sceneFlow("grid", grid, grid !== null && grid > 0)}
           </svg>
         </div>
@@ -1268,7 +1305,7 @@ class AlphaEssPanel extends HTMLElement {
           { name: "Verbruik (verwacht)", color: COLOR.house, points: loadFc.pts, step: true, stepEnd: loadFc.end, dashed: true },
           { name: "Zon", color: COLOR.solar, points: actual.pv, width: 2 },
           { name: "Verbruik", color: "#64748b", points: actual.house, width: 2 },
-          { name: "SOC", color: COLOR.import, points: socPts, axis: "right", step: true, width: 2 },
+          { name: "SOC", color: COLOR.soc, points: socPts, axis: "right", step: true, width: 2 },
         ],
         unit: "kW",
         units: { SOC: "%" },
@@ -1319,7 +1356,7 @@ class AlphaEssPanel extends HTMLElement {
       { label: "Verbruik (verwacht)", color: COLOR.house, line: true },
       { label: "Zon", color: COLOR.solar, line: true },
       { label: "Verbruik", color: "#64748b", line: true },
-      { label: "SOC", color: COLOR.import, line: true },
+      { label: "SOC", color: COLOR.soc, line: true },
     ]);
     return `${header}<div class="card-body"><div class="subtitle">Werkelijk en verwacht per uur · achtergrond = geplande actie · staven = marktprijs</div>${legend}${chart}${strip}</div>`;
   }
@@ -2222,6 +2259,7 @@ const STYLE = `
     animation: run var(--dur, 2.4s) linear infinite;
   }
   .pulse.core { stroke: #fff; stroke-width: 2.2; }
+  .cable { fill: none; stroke: var(--c); stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; opacity: 0.9; }
   .flow.rev .pulse { animation-direction: reverse; }
   @keyframes run { from { stroke-dashoffset: 100; } to { stroke-dashoffset: 0; } }
   @media (prefers-reduced-motion: reduce) { .pulse { animation-duration: 6s; } }
