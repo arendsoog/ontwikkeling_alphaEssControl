@@ -14,6 +14,8 @@ from custom_components.alpha_ess_local.dispatch import (
     decide_dispatch,
     decide_extra_pv_state,
     dispatch_params_equal,
+    is_grid_charge,
+    regulate_grid_charge_power,
     set_dispatch_msg,
 )
 from custom_components.alpha_ess_local.protocol import DispatchMode, DispatchParam
@@ -343,3 +345,62 @@ def test_decide_extra_pv_state_on_for_no_earning():
 def test_decide_extra_pv_state_on_for_earning_on_return():
     hour = Hour(earning=Earning.EARNING_ON_RETURN, cutoff_soc=900)
     assert decide_extra_pv_state(hour, cur_soc=900) == ExtraPvState.ON
+
+
+# --- closed-loop grid-charge regulation --------------------------------------
+
+_CAP_CONFIG = DispatchConfig(usable_battery_capacity=10000, max_grid_load=5000)
+
+
+def test_regulate_grid_charge_takes_off_the_whole_excess_above_the_cap():
+    # Washing machine switched on: 5.8 kW import against a 5 kW cap while
+    # charging at 3 kW -> drop the full 800 W excess in one step.
+    assert regulate_grid_charge_power(3000, 5800, _CAP_CONFIG) == 2200
+
+
+def test_regulate_grid_charge_adds_half_the_headroom_below_the_cap():
+    # Load switched off: 3.0 kW import, 2 kW headroom -> rise by 1 kW.
+    assert regulate_grid_charge_power(3000, 3000, _CAP_CONFIG) == 4000
+
+
+def test_regulate_grid_charge_never_goes_below_zero():
+    assert regulate_grid_charge_power(500, 9000, _CAP_CONFIG) == 0
+
+
+def test_regulate_grid_charge_never_exceeds_full_battery_power():
+    full = _full_dispatch_power(10000)
+    assert regulate_grid_charge_power(full, 0, _CAP_CONFIG) == full
+
+
+def test_regulate_grid_charge_leaves_power_alone_without_a_cap():
+    assert (
+        regulate_grid_charge_power(3000, 9000, DispatchConfig(usable_battery_capacity=10000))
+        == 3000
+    )
+
+
+def test_is_grid_charge_only_for_state_of_charge_control_while_charging_on_grid():
+    grid_hour = Hour(valid=True, charge=Charge.CHARGING_ON_GRID)
+    soc_control = DispatchParam(
+        mode=DispatchMode.STATE_OF_CHARGE_CONTROL,
+        started=True,
+        power=3000,
+        cutoff_soc=900,
+        duration=3600,
+        para7=255,
+        pv_on=True,
+    )
+    assert is_grid_charge(soc_control, grid_hour)
+    assert not is_grid_charge(soc_control, Hour(valid=True, charge=Charge.CHARGING_DISCHARGE))
+    assert not is_grid_charge(
+        DispatchParam(
+            mode=DispatchMode.NO_BATTERY_CHARGE,
+            started=True,
+            power=0,
+            cutoff_soc=0,
+            duration=3600,
+            para7=255,
+            pv_on=True,
+        ),
+        grid_hour,
+    )

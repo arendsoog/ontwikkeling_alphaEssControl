@@ -29,6 +29,7 @@ from custom_components.alpha_ess_local.const import (
     CONF_EXTRA_PV_MODBUS_OFF_VALUE,
     CONF_EXTRA_PV_MODBUS_ON_VALUE,
     CONF_EXTRA_PV_MODBUS_SLAVE,
+    CONF_HOUSE_LOAD_POWER_ENTITY,
     CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
     CONF_USABLE_BATTERY_CAPACITY,
@@ -36,6 +37,8 @@ from custom_components.alpha_ess_local.const import (
 )
 from custom_components.alpha_ess_local.data import Charge, Day, Earning, FiveMin, Hour
 from custom_components.alpha_ess_local.orchestrator import (
+    DISPATCH_INTERVAL,
+    DISPATCH_INTERVAL_GRID_CHARGE,
     MIN_SIGMA_WH,
     AlphaEssLocalDispatchCoordinator,
     AlphaEssLocalRealDataCoordinator,
@@ -2665,3 +2668,237 @@ def test_extra_pv_power_resolves_sma_reference(hass: HomeAssistant):
 
 def test_extra_pv_power_none_when_unset():
     assert _extra_pv_power(None, None) is None
+
+
+# --- closed-loop grid-charge regulation ---------------------------------------
+
+
+def _remembering_client(initial_param):
+    """A fake client whose dispatch param reads back what was last written."""
+    client = _fake_client(initial_param, cur_feed_in_percentage=100)
+
+    async def _set(param):
+        client.async_get_dispatch_param.return_value = param
+
+    client.async_set_dispatch_param.side_effect = _set
+    return client
+
+
+def _grid_charge_setup(hass, *, control_enabled=True, p1_power="1900"):
+    if p1_power is not None:
+        hass.states.async_set("sensor.p1_net_power", p1_power, {"unit_of_measurement": "W"})
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            CONF_USABLE_BATTERY_CAPACITY: 10000,
+            CONF_CONTROL_ENABLED: control_enabled,
+            CONF_HOUSE_LOAD_POWER_ENTITY: "sensor.p1_net_power",
+        },
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(_register_soc_number(hass, entry, "max_grid_load"), "2.0")
+    day = _schedule_day_with_hour(
+        dt_util.now().hour,
+        charge=Charge.CHARGING_ON_GRID,
+        earning=Earning.EARNING_ON_RETURN,
+        cutoff_soc=900,
+        estimated_house_load=300,
+    )
+    client = _remembering_client(
+        DispatchParam(
+            mode=DispatchMode.NO_BATTERY_CHARGE,
+            started=True,
+            power=0,
+            cutoff_soc=0,
+            duration=3600,
+            para7=255,
+            pv_on=True,
+        )
+    )
+    coordinator = AlphaEssLocalDispatchCoordinator(
+        hass, entry, _fake_modbus_coordinator(client), SimpleNamespace(data={"today": day})
+    )
+    return coordinator, client
+
+
+async def test_grid_charge_power_drops_when_a_load_pushes_import_over_the_cap(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 14:00:00")
+    coordinator, client = _grid_charge_setup(hass)
+
+    # First cycle: the estimate-based power (2.0 kW cap - 300 W estimate).
+    decision = await coordinator._async_update_data()
+    assert decision.param.power == 1700
+    assert coordinator.update_interval == DISPATCH_INTERVAL_GRID_CHARGE
+
+    # Washing machine on: the P1 meter now sees 2.6 kW import.
+    freezer.tick(timedelta(seconds=10))
+    hass.states.async_set("sensor.p1_net_power", "2600", {"unit_of_measurement": "W"})
+    decision = await coordinator._async_update_data()
+
+    assert decision.param.power == 1100  # the whole 600 W excess taken off
+    assert client.async_set_dispatch_param.await_args.args[0].power == 1100
+
+
+async def test_grid_charge_power_holds_within_the_deadband(hass: HomeAssistant, freezer):
+    freezer.move_to("2024-01-15 14:00:00")
+    coordinator, client = _grid_charge_setup(hass)
+    await coordinator._async_update_data()
+
+    # Import just under the cap: a 20 W step isn't worth a write.
+    freezer.tick(timedelta(seconds=10))
+    hass.states.async_set("sensor.p1_net_power", "1960", {"unit_of_measurement": "W"})
+    decision = await coordinator._async_update_data()
+
+    assert decision.param.power == 1700
+    assert client.async_set_dispatch_param.await_count == 1
+
+
+async def test_grid_charge_waits_for_a_reading_taken_after_the_last_write(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 14:00:00")
+    coordinator, client = _grid_charge_setup(hass)
+    await coordinator._async_update_data()
+
+    freezer.tick(timedelta(seconds=2))  # inverter hasn't settled yet
+    hass.states.async_set("sensor.p1_net_power", "2600", {"unit_of_measurement": "W"})
+    decision = await coordinator._async_update_data()
+
+    assert decision.param.power == 1700
+
+
+async def test_grid_charge_not_regulated_when_control_disabled(hass: HomeAssistant, freezer):
+    freezer.move_to("2024-01-15 14:00:00")
+    coordinator, _client = _grid_charge_setup(hass, control_enabled=False)
+    await coordinator._async_update_data()
+
+    freezer.tick(timedelta(seconds=10))
+    hass.states.async_set("sensor.p1_net_power", "2600", {"unit_of_measurement": "W"})
+    decision = await coordinator._async_update_data()
+
+    assert decision.param.power == 1700
+    assert coordinator.update_interval == DISPATCH_INTERVAL
+
+
+async def test_grid_charge_does_not_start_without_a_p1_reading(hass: HomeAssistant, freezer):
+    freezer.move_to("2024-01-15 14:00:00")
+    coordinator, client = _grid_charge_setup(hass, p1_power=None)
+
+    decision = await coordinator._async_update_data()
+
+    assert decision.param.power == 0
+    assert client.async_set_dispatch_param.await_args.args[0].power == 0
+
+
+async def test_grid_charge_stops_when_the_p1_meter_goes_unavailable(hass: HomeAssistant, freezer):
+    freezer.move_to("2024-01-15 14:00:00")
+    coordinator, client = _grid_charge_setup(hass)
+    assert (await coordinator._async_update_data()).param.power == 1700
+
+    hass.states.async_set("sensor.p1_net_power", "unavailable")
+    freezer.tick(timedelta(seconds=10))
+    decision = await coordinator._async_update_data()
+
+    assert decision.param.power == 0
+    assert client.async_set_dispatch_param.await_args.args[0].power == 0
+
+
+async def test_grid_charge_stops_on_a_stale_p1_reading(hass: HomeAssistant, freezer):
+    freezer.move_to("2024-01-15 14:00:00")
+    coordinator, _client = _grid_charge_setup(hass)
+    await coordinator._async_update_data()
+
+    # The meter dropped off but its last value is still standing.
+    freezer.tick(timedelta(seconds=90))
+    decision = await coordinator._async_update_data()
+
+    assert decision.param.power == 0
+
+
+async def test_grid_charge_resumes_when_the_p1_meter_returns(hass: HomeAssistant, freezer):
+    freezer.move_to("2024-01-15 14:00:00")
+    coordinator, _client = _grid_charge_setup(hass, p1_power=None)
+    assert (await coordinator._async_update_data()).param.power == 0
+
+    # Meter back: 300 W house load, 1.7 kW headroom -> half of it per cycle.
+    freezer.tick(timedelta(seconds=10))
+    hass.states.async_set("sensor.p1_net_power", "300", {"unit_of_measurement": "W"})
+    decision = await coordinator._async_update_data()
+
+    assert decision.param.power == 850
+
+
+# --- 5-minute samples across a restart ---------------------------------------
+
+
+async def test_real_data_coordinator_restores_stored_five_minute_samples(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 14:23:00")
+    current_hour = dt_util.now().hour  # local hour (the test TZ isn't UTC)
+    earlier_hour = current_hour - 2
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass,
+        entry,
+        SimpleNamespace(data={"pv_power": 1000, "battery_power": -200, "grid_power": 50}),
+        SimpleNamespace(data=None),
+    )
+
+    def _retrieve_hour_progress(_db_path, _year, _month, _day, hour):
+        # 2 samples of the current hour landed before the restart.
+        if hour == current_hour:
+            return (500.0, 120.0, 30.0, 400.0, 2, 0.0, 0.0, None, None, None)
+        return None
+
+    stored = {
+        earlier_hour: {
+            0: FiveMin(real_solar_power_roof=700, real_house_load=300, battery_power=-400)
+        },
+        current_hour: {
+            0: FiveMin(real_solar_power_roof=111, total_active_power=222, real_house_load=600)
+        },
+    }
+    with (
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.storage.retrieve_day_hours",
+            MagicMock(return_value={earlier_hour: (300.0, 700.0, 0.0, 0.0, 0.0)}),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.storage.retrieve_hour_progress",
+            MagicMock(side_effect=_retrieve_hour_progress),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.storage.retrieve_day_five_min",
+            MagicMock(return_value=stored),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.storage.store_five_min_sample",
+            MagicMock(),
+        ) as store_sample,
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.storage.store_hour_progress",
+            MagicMock(),
+        ),
+    ):
+        data = await coordinator._async_update_data()
+
+    # A completed hour gets its stored samples back, with a count to match.
+    nine = data.day.hour[earlier_hour]
+    assert nine.five_min_count == 1
+    assert nine.five_min[0].real_solar_power_roof == 700
+    assert nine.five_min[0].battery_power == -400
+
+    # The current hour: slot 0 is the real stored sample; slot 1 has no
+    # stored sample, so it keeps the synthetic average, with its battery
+    # power from the energy balance (500 - 120 - 30 - 400 = -50) instead of 0.
+    now_hour = data.day.hour[current_hour]
+    assert now_hour.five_min[0].real_solar_power_roof == 111
+    assert now_hour.five_min[0].total_active_power == 222
+    assert now_hour.five_min[1].battery_power == -50
+
+    # This cycle's own new sample (slot 2) is stored for the next restart.
+    assert store_sample.call_args.args[4:6] == (current_hour, 2)

@@ -462,6 +462,41 @@ def _dsmr_net_power(hass: HomeAssistant, config_entry_id: str) -> float | None:
     return usage - delivery
 
 
+def _house_load_entity_ids(hass: HomeAssistant, value: str) -> list[str]:
+    """The entity_id(s) behind a configured house-load source (see below)."""
+    if not value.startswith("dsmr:"):
+        return [value]
+    registry = er.async_get(hass)
+    return [
+        reg_entry.entity_id
+        for reg_entry in er.async_entries_for_config_entry(registry, value.removeprefix("dsmr:"))
+        if reg_entry.unique_id.endswith(
+            ("_current_electricity_usage", "_current_electricity_delivery")
+        )
+    ]
+
+
+def _house_load_reading_time(hass: HomeAssistant, value: str) -> datetime | None:
+    """When the sensor(s) behind the source last reported (the oldest of
+    them for DSMR's pair), or None if any is missing.
+
+    Uses `last_reported` (bumped on every report, even an unchanged value)
+    where available, else `last_updated` -- a meter that drops off the
+    network often leaves its last value standing rather than going
+    unavailable, so the caller checks this for staleness.
+    """
+    entity_ids = _house_load_entity_ids(hass, value)
+    if not entity_ids:
+        return None
+    times = []
+    for entity_id in entity_ids:
+        state = hass.states.get(entity_id)
+        if state is None:
+            return None
+        times.append(getattr(state, "last_reported", None) or state.last_updated)
+    return min(times)
+
+
 def _house_load_power(hass: HomeAssistant, value: str | None) -> float | None:
     """Resolve the configured house-load source to a signed net power value.
 
@@ -832,8 +867,36 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                     sample.real_solar_power_roof = solar_power_roof
                     sample.real_extra_pv_power = extra_pv
                     sample.total_active_power = active_power
+                    # From the energy balance (house = PV + grid + battery),
+                    # so the synthetic samples aren't shown as 0 W battery.
+                    sample.battery_power = house_load - solar_power_roof - extra_pv - active_power
                     sample.solar_to_battery = solar_to_battery
                     sample.grid_to_battery = grid_to_battery
+
+            # Put back the real 5-minute samples stored so far today -- for
+            # the panel's power curve (today_power), which otherwise starts
+            # empty after a restart. Only the samples themselves are restored;
+            # hour averages and counts above stay as they were (completed
+            # hours get a sample count so the curve shows their samples).
+            stored_samples = await self.hass.async_add_executor_job(
+                storage.retrieve_day_five_min, db_path, now.year, now.month, now.day
+            )
+            for hour_index, slots in stored_samples.items():
+                restored_hour = self._today.hour[hour_index]
+                if not restored_hour.valid:
+                    continue
+                for slot, stored in slots.items():
+                    if 0 <= slot < MAX_FIVE_MINS:
+                        sample = restored_hour.five_min[slot]
+                        sample.real_solar_power_roof = stored.real_solar_power_roof
+                        sample.real_extra_pv_power = stored.real_extra_pv_power
+                        sample.total_active_power = stored.total_active_power
+                        sample.battery_power = stored.battery_power
+                        sample.real_house_load = stored.real_house_load
+                if hour_index != now.hour:
+                    restored_hour.five_min_count = max(
+                        restored_hour.five_min_count, min(MAX_FIVE_MINS, max(slots) + 1)
+                    )
 
         hour = self._today.hour[now.hour]
         hour.valid = True
@@ -862,6 +925,7 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         if tariff is not None:
             hour.real_tariff = tariff
 
+        samples_before = hour.five_min_count
         _sample_hour(
             hour,
             pv_roof,
@@ -949,6 +1013,20 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         # Persisted after the baseline update above (not right after
         # _sample_hour) so a fresh hour's progress row is always tagged with
         # *that* hour's own baseline, never the just-completed hour's.
+        # The sample just taken (if _sample_hour accepted it), for the
+        # panel's power curve after a restart -- see storage.five_min_data.
+        if hour.five_min_count > samples_before:
+            await self.hass.async_add_executor_job(
+                storage.store_five_min_sample,
+                db_path,
+                now.year,
+                now.month,
+                now.day,
+                now.hour,
+                samples_before,
+                hour.five_min[samples_before],
+            )
+
         if hour.five_min_count > 0:
             await self.hass.async_add_executor_job(
                 storage.store_hour_progress,
@@ -1145,6 +1223,20 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         return {"today": today, "tomorrow": tomorrow}
 
 
+# Dispatch cycle; halved while charging from the grid, so the grid-charge
+# regulation (see _regulate_grid_charge) catches a new load quickly.
+DISPATCH_INTERVAL = timedelta(seconds=20)
+DISPATCH_INTERVAL_GRID_CHARGE = timedelta(seconds=10)
+# How long after a write a grid reading is trusted to reflect it: the P1
+# meter updates about every second; the inverter's own grid reading only
+# with the 30 s Modbus poll.
+GRID_SETTLE_P1_S = 5
+GRID_SETTLE_MODBUS_S = 35
+# A P1 reading older than this counts as missing (meter offline) and stops
+# grid charging; DSMR/HomeWizard normally report every 1-10 s.
+GRID_READING_MAX_AGE_S = 60
+
+
 class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDecision | None]):
     """Decides (and, if `control_enabled`, writes) the inverter's dispatch
     mode roughly every 20 seconds — port of `CheckAndSetChargingMode` plus
@@ -1179,7 +1271,7 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
             LOGGER,
             config_entry=entry,
             name=f"{DOMAIN}_dispatch",
-            update_interval=timedelta(seconds=20),
+            update_interval=DISPATCH_INTERVAL,
         )
         self._modbus_coordinator = modbus_coordinator
         self._schedule_coordinator = schedule_coordinator
@@ -1191,6 +1283,100 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         self._last_extra_pv_state: dispatch.ExtraPvState | None = None
         self._last_charge_on_grid_used = False
         self._last_discharge_used = False
+        # Grid-charge regulation state: the charge power currently being
+        # regulated (None when not charging from the grid) and when it was
+        # last written, so a correction only uses a grid reading taken after
+        # the inverter had time to react to the previous write.
+        self._grid_charge_power: int | None = None
+        self._grid_charge_written_at: datetime | None = None
+
+    def _measured_grid_power(self, now: datetime) -> tuple[float | None, datetime | None]:
+        """Measured net grid power (W, + = import) and when it was measured.
+
+        With a P1/smart-meter source configured, only that meter counts: if
+        it gives no value, or one older than GRID_READING_MAX_AGE_S, this
+        returns None (and grid charging stops) -- deliberately no fallback,
+        the cap can't be guarded without it. Without a P1 source, the
+        inverter's own grid reading is used; its exact time isn't known
+        (None), only that it's polled every 30 s.
+        """
+        source = self.config_entry.options.get(CONF_HOUSE_LOAD_POWER_ENTITY)
+        if source:
+            measured_at = _house_load_reading_time(self.hass, source)
+            if measured_at is None or (now - measured_at).total_seconds() > GRID_READING_MAX_AGE_S:
+                return None, measured_at
+            return _house_load_power(self.hass, source), measured_at
+        return (self._modbus_coordinator.data or {}).get("grid_power"), None
+
+    def _reading_after_last_write(self, measured_at: datetime | None, now: datetime) -> bool:
+        """Whether a reading can already reflect the last write.
+
+        A P1 reading must be taken at least GRID_SETTLE_P1_S after it (the
+        inverter needs a moment to change its charge power); a Modbus
+        reading has no timestamp, so wait for a full poll after the write.
+        """
+        written_at = self._grid_charge_written_at
+        if written_at is None:
+            return True
+        if measured_at is not None:
+            return (measured_at - written_at).total_seconds() >= GRID_SETTLE_P1_S
+        return (now - written_at).total_seconds() >= GRID_SETTLE_MODBUS_S
+
+    def _regulate_grid_charge(
+        self,
+        decision: dispatch.DispatchDecision,
+        hour: Hour,
+        config: dispatch.DispatchConfig,
+        control_enabled: bool,
+        hour_start: bool,
+        now: datetime,
+    ) -> dispatch.DispatchDecision:
+        """Correct a grid-charge decision's power from the measured grid import.
+
+        Only while actually charging from the grid with control enabled (in
+        log-only mode nothing is written, so there'd be no feedback to
+        regulate on). The first cycle of a session -- and of every hour --
+        starts from the estimate-based power decide_dispatch already chose.
+        Polls twice as often during a session, so a new load is caught fast.
+        """
+        if not control_enabled or not dispatch.is_grid_charge(decision.param, hour):
+            self._grid_charge_power = None
+            self.update_interval = DISPATCH_INTERVAL
+            return decision
+
+        self.update_interval = DISPATCH_INTERVAL_GRID_CHARGE
+        grid_w, measured_at = self._measured_grid_power(now)
+        if grid_w is None:
+            # No (fresh) meter reading: the cap can't be guarded, so don't
+            # charge from the grid until the meter is back.
+            if self._grid_charge_power != 0:
+                LOGGER.warning(
+                    "dispatch: no valid grid/P1 meter reading -- stopping grid charge until it returns"
+                )
+            self._grid_charge_power = 0
+            return replace(decision, param=replace(decision.param, power=0))
+
+        if self._grid_charge_power is None or hour_start:
+            self._grid_charge_power = decision.param.power
+            return decision
+
+        if self._reading_after_last_write(measured_at, now):
+            current = self._grid_charge_power
+            new = dispatch.regulate_grid_charge_power(current, grid_w, config)
+            over_cap = grid_w > config.max_grid_load
+            if abs(new - current) >= dispatch.GRID_CHARGE_DEADBAND_W or (
+                over_cap and new < current
+            ):
+                LOGGER.info(
+                    "dispatch: grid import %.0f W vs cap %.0f W -> charge power %d -> %d W",
+                    grid_w,
+                    config.max_grid_load,
+                    current,
+                    new,
+                )
+                self._grid_charge_power = new
+
+        return replace(decision, param=replace(decision.param, power=self._grid_charge_power))
 
     def set_manual_override(self, charge: Charge | None, cutoff_soc: int | None = None) -> None:
         """Force the next decision to use `charge` (and optionally its
@@ -1346,6 +1532,9 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         decision = dispatch.decide_dispatch(
             hour, cur_soc, dispatch_config, hour.estimated_house_load
         )
+        decision = self._regulate_grid_charge(
+            decision, hour, dispatch_config, control_enabled, hour_start, now
+        )
 
         already_set = (
             not hour_start
@@ -1424,6 +1613,7 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         if control_enabled:
             await client.async_set_max_feed_into_grid(decision.target_feed_in_percentage)
             await client.async_set_dispatch_param(decision.param)
+            self._grid_charge_written_at = now
 
         if self._provider_charging_power != 0:
             self._provider_charging_power = 0
