@@ -1,0 +1,5 @@
+# Shell scripts run inside the Linux devcontainer: keep LF line endings even
+# in a Windows checkout. With core.autocrlf they'd otherwise be checked out
+# as CRLF, and bash fails on the \r (the container then never starts).
+scripts/* text eol=lf
+*.sh text eol=lf

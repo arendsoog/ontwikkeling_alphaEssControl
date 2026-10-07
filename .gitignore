@@ -27,10 +27,19 @@ config/
 # (e.g. a local antivirus's HTTPS-scanning root)
 /.devcontainer/local-ca/
 
-# VS Code
+# Editors: only the shared VS Code files are tracked (the negations below
+# need the directory's contents ignored first to have any effect)
+.vscode/*
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
+
+.idea/
+
+# Local tool settings, secrets and logs
+.claude/
+.env
+*.log
 
 # OS
 .DS_Store
