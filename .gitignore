@@ -23,6 +23,10 @@ config/
 # Frank Energie tariff data, kept locally only
 /.tarieven_frank/
 
+# Per-machine root certificates trusted by scripts/trust-local-ca
+# (e.g. a local antivirus's HTTPS-scanning root)
+/.devcontainer/local-ca/
+
 # VS Code
 !.vscode/tasks.json
 !.vscode/launch.json
