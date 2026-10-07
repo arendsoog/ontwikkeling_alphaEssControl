@@ -623,3 +623,28 @@ async def test_options_flow_extra_pv_field_is_checklist_when_detected(
     field_selector = result["data_schema"].schema[marker]
     options = field_selector.config["options"]
     assert options == [{"value": entry_reg.entity_id, "label": "SMA Sunny Boy"}]
+
+
+async def test_options_flow_ev_charger_section_saves_both_sensors(
+    hass: HomeAssistant, mock_api_client
+):
+    entry = await _create_entry(hass, mock_api_client)
+
+    result = await _open_section(hass, entry, "ev_charger")
+    assert [str(key) for key in result["data_schema"].schema] == [
+        "ev_charger_power_entity",
+        "ev_charger_energy_entity",
+    ]
+
+    await _save_section(
+        hass,
+        entry,
+        "ev_charger",
+        {
+            "ev_charger_power_entity": "sensor.laadpaal_vermogen",
+            "ev_charger_energy_entity": "sensor.laadpaal_energie_totaal",
+        },
+    )
+
+    assert entry.options["ev_charger_power_entity"] == "sensor.laadpaal_vermogen"
+    assert entry.options["ev_charger_energy_entity"] == "sensor.laadpaal_energie_totaal"

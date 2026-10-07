@@ -170,13 +170,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntr
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         await entry.runtime_data.client.async_close()
-        # Keep the panel while another entry is still loaded; it's shared.
-        if not any(
-            other.entry_id != entry.entry_id
-            for other in hass.config_entries.async_loaded_entries(DOMAIN)
-        ):
-            async_unregister_panel(hass)
     return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry) -> None:
+    """Remove the sidebar panel once the last entry is deleted.
+
+    Done here rather than on unload: every options change reloads the
+    entry, and removing the panel then would yank it out from under an
+    open panel page (e.g. right after toggling an option from it).
+    """
+    if not any(
+        other.entry_id != entry.entry_id for other in hass.config_entries.async_entries(DOMAIN)
+    ):
+        async_unregister_panel(hass)
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry) -> None:

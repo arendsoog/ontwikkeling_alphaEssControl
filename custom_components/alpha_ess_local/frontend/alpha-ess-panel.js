@@ -51,6 +51,7 @@ const SETTINGS = [
 
 // Cumulative kWh counters whose recorder statistics give per-day totals.
 const COUNTERS = {
+  pv: "pv_total_energy",
   charged: "battery_total_energy_charge",
   discharged: "battery_total_energy_discharge",
   imported: "total_energy_consume_from_grid",
@@ -73,6 +74,7 @@ const TABS = [
   { key: "overview", label: "Overzicht", icon: "mdi:view-dashboard-outline" },
   { key: "devices", label: "Omvormers", icon: "mdi:solar-power-variant-outline" },
   { key: "control", label: "Bediening", icon: "mdi:tune-variant" },
+  { key: "history", label: "Historie", icon: "mdi:history" },
 ];
 const TAB_STORAGE_KEY = "alpha-ess-panel-tab";
 
@@ -323,8 +325,22 @@ const SCENE_PATHS = {
   house: ["M506,566 L506,443 L360,443", "M486,622 L423,622 L423,581 L362,581 L362,592"],
   // battery -> pylon (export); reversed for import
   grid: ["M552,566 L552,534 L1130,534 Q1175,526 1205,478"],
+  // battery -> EV charger on the garage wall
+  ev: ["M558,622 L717,622"],
 };
-const SCENE_COLOR = { solar: "#2fd25a", extraPv: "#2fd25a", house: "#5aa8ff", grid: "#f2c230" };
+const SCENE_COLOR = { solar: "#2fd25a", extraPv: "#2fd25a", house: "#5aa8ff", grid: "#f2c230", ev: "#5aa8ff" };
+
+// Where each label points at in the image (x, y in image pixels). Labels sit
+// in a band above or below the image, straight above/below their target,
+// with a dashed leader line down/up to it.
+const SCENE_TARGETS = {
+  house: { x: 270, y: 330, band: "top" },
+  solar: { x: 560, y: 150, band: "top" },
+  extraPv: { x: 905, y: 400, band: "top" },
+  grid: { x: 1185, y: 410, band: "top" },
+  battery: { x: 520, y: 700, band: "bottom" },
+  ev: { x: 735, y: 640, band: "bottom" },
+};
 
 // One flow group: hidden below ~15 W, faster pulses for more power.
 function sceneFlow(key, watts, reverse = false) {
@@ -347,6 +363,9 @@ class AlphaEssPanel extends HTMLElement {
     this._charts = {};
     this._range = 0;
     this._tab = loadTab();
+    this._histPeriod = "day";
+    this._histAnchor = Date.now();
+    this._histData = null;
     this._devices = [];
     this._history = null;
     this._stats = null;
@@ -484,7 +503,16 @@ class AlphaEssPanel extends HTMLElement {
     } catch (err) {
       this._status = null;
     }
+    const evEnergy = this._evEnergyId();
+    if (evEnergy !== this._loadedEvEnergy) {
+      this._loadedEvEnergy = evEnergy;
+      if (evEnergy) this._loadHistory();
+    }
     this._renderAll();
+  }
+
+  _evEnergyId() {
+    return (this._status && this._status.ev_charger_energy_entity) || null;
   }
 
   async _loadHistory() {
@@ -494,7 +522,11 @@ class AlphaEssPanel extends HTMLElement {
       ...new Set(this._devices.flatMap((d) => keys.map((k) => d.entities[k])).filter(Boolean)),
     ];
     const counterIds = [
-      ...new Set(this._devices.flatMap((d) => Object.values(COUNTERS).map((k) => d.entities[k])).filter(Boolean)),
+      ...new Set(
+        [...this._devices.flatMap((d) => Object.values(COUNTERS).map((k) => d.entities[k])), this._evEnergyId()].filter(
+          Boolean
+        )
+      ),
     ];
     const now = new Date();
 
@@ -517,6 +549,14 @@ class AlphaEssPanel extends HTMLElement {
       this._history = history;
     } catch (err) {
       this._history = this._history || {};
+    }
+
+    try {
+      const today = await this._hass.callWS({ type: `${DOMAIN}/today_power` });
+      this._todayPower = today && Array.isArray(today.samples) ? today : null;
+    } catch (err) {
+      // Older backend without the command: fall back to recorder history only.
+      this._todayPower = null;
     }
 
     if (counterIds.length) {
@@ -560,7 +600,10 @@ class AlphaEssPanel extends HTMLElement {
 
   // Per-day totals for a counter: {dayStartMs: kWh}.
   _dailyTotals(key, entities = this._entities) {
-    const id = entities[COUNTERS[key]];
+    return this._dailyTotalsById(entities[COUNTERS[key]]);
+  }
+
+  _dailyTotalsById(id) {
     const rows = (id && this._stats && this._stats[id]) || [];
     const out = {};
     for (const row of rows) {
@@ -572,6 +615,12 @@ class AlphaEssPanel extends HTMLElement {
 
   _todayTotal(key, entities = this._entities) {
     return this._dailyTotals(key, entities)[startOfDay().getTime()] ?? null;
+  }
+
+  // kWh the EV charger delivered today, from its total-energy counter.
+  _evTodayKwh() {
+    const id = this._evEnergyId();
+    return id ? this._dailyTotalsById(id)[startOfDay().getTime()] ?? null : null;
   }
 
   _plan() {
@@ -596,24 +645,21 @@ class AlphaEssPanel extends HTMLElement {
       <div class="content tab-page" data-page="devices">
         <div class="device-grid" id="devices"></div>
       </div>
+      <div class="content tab-page" data-page="history">
+        <section class="card" id="history"></section>
+      </div>
       <div class="content tab-page" data-page="control">
-        <section class="card" id="control-status"></section>
-        <div class="grid g2">
-          <section class="card" id="overrides"></section>
-          <section class="card" id="settings"></section>
-        </div>
+        <section class="card" id="controls"></section>
       </div>
       <div class="content tab-page" data-page="overview">
-        <div class="grid g3">
-          <section class="card" id="flow"></section>
-          <section class="card" id="today"></section>
-          <section class="card" id="week"></section>
-        </div>
         <div class="grid g-status">
           <section class="card" id="system"></section>
           <section class="card" id="status"></section>
         </div>
-        <div class="grid g2">
+        <div class="grid g-main">
+          <section class="card flow-card" id="flow"></section>
+          <section class="card" id="today"></section>
+          <section class="card" id="week"></section>
           <section class="card" id="power"></section>
           <section class="card" id="soc"></section>
         </div>
@@ -630,8 +676,40 @@ class AlphaEssPanel extends HTMLElement {
     root.addEventListener("click", (ev) => {
       const target = ev
         .composedPath()
-        .find((el) => el.dataset && (el.dataset.entity || el.dataset.service || el.dataset.range || el.dataset.tab));
+        .find(
+          (el) =>
+            el.dataset &&
+            (el.dataset.entity ||
+              el.dataset.service ||
+              el.dataset.range ||
+              el.dataset.tab ||
+              el.dataset.histPeriod ||
+              el.dataset.histStep ||
+              el.dataset.histToday ||
+              el.dataset.histGoto)
+        );
       if (!target) return;
+      if (target.dataset.histPeriod) {
+        this._histPeriod = target.dataset.histPeriod;
+        this._loadHistoryPeriod();
+        return;
+      }
+      if (target.dataset.histStep) {
+        this._historyStep(Number(target.dataset.histStep));
+        return;
+      }
+      if (target.dataset.histToday) {
+        this._histAnchor = Date.now();
+        this._loadHistoryPeriod();
+        return;
+      }
+      if (target.dataset.histGoto) {
+        const [y, m, d] = target.dataset.histGoto.split("-").map(Number);
+        this._histAnchor = new Date(y, m - 1, d || 1).getTime();
+        this._histPeriod = target.dataset.histGotoPeriod;
+        this._loadHistoryPeriod();
+        return;
+      }
       if (target.dataset.tab) {
         this._tab = target.dataset.tab;
         try {
@@ -645,6 +723,33 @@ class AlphaEssPanel extends HTMLElement {
         this._range = Number(target.dataset.range);
         this._renderAll();
       } else this._moreInfo(target.dataset.entity);
+    });
+    root.addEventListener("click", (ev) => {
+      const sw = ev.composedPath().find((el) => el.classList && el.classList.contains("switch"));
+      if (sw) this._toggle(sw);
+    });
+    root.addEventListener("pointerdown", (ev) => {
+      if (ev.composedPath().some((el) => el.dataset && el.dataset.number)) this._dragging = true;
+    });
+    // A press without moving fires no "change": release the hold anyway.
+    root.addEventListener("pointerup", () => {
+      if (!this._dragging) return;
+      setTimeout(() => {
+        this._dragging = false;
+        this._renderAll();
+      }, 400);
+    });
+    root.addEventListener("input", (ev) => {
+      const el = ev.composedPath()[0];
+      if (!el.dataset || !el.dataset.number) return;
+      const min = Number(el.min);
+      const max = Number(el.max);
+      el.style.setProperty("--pct", `${((Number(el.value) - min) / (max - min || 1)) * 100}%`);
+      el.parentElement.querySelector(".slider-value").textContent = `${fmtNum(Number(el.value), Number(el.dataset.digits))} ${el.dataset.unit}`;
+    });
+    root.addEventListener("change", (ev) => {
+      const el = ev.composedPath()[0];
+      if (el.dataset && el.dataset.number) this._setNumber(el);
     });
     root.addEventListener("mousemove", (ev) => this._hover(ev));
     root.addEventListener("mouseleave", () => this._hideHover(), true);
@@ -662,13 +767,14 @@ class AlphaEssPanel extends HTMLElement {
     this._card("soc", this._renderSoc());
     this._card("daily", this._renderDaily());
     this._card("devices", this._renderDevices());
-    this._card("control-status", this._renderStatus());
-    this._card("overrides", this._renderOverrides());
-    this._card("settings", this._renderSettings());
+    this._card("history", this._renderHistory());
+    // Don't rebuild the controls while a slider is being dragged.
+    if (!this._dragging) this._card("controls", this._renderControls());
   }
 
   _applyTab() {
     const root = this.shadowRoot;
+    if (this._tab === "history" && !this._histData && !this._histLoading && this._hass) this._loadHistoryPeriod();
     root.querySelectorAll(".tab").forEach((el) => el.classList.toggle("active", el.dataset.tab === this._tab));
     root.querySelectorAll(".tab-page").forEach((el) => (el.hidden = el.dataset.page !== this._tab));
     this._hideHover();
@@ -699,6 +805,15 @@ class AlphaEssPanel extends HTMLElement {
     ).join("")}</div>`;
   }
 
+  // EV charger power in W from the sensor chosen in the options (W or kW).
+  _evPower() {
+    const id = this._status && this._status.ev_charger_power_entity;
+    const state = id && this._hass.states[id];
+    const value = state ? num(state.state) : null;
+    if (value === null) return null;
+    return state.attributes.unit_of_measurement === "kW" ? value * 1000 : value;
+  }
+
   _renderFlow() {
     const roofPv = this._value("pv_power");
     const extraPv = this._value("extra_pv_power");
@@ -708,7 +823,13 @@ class AlphaEssPanel extends HTMLElement {
     const soc = this._value("battery_soc");
     const house = pv !== null && grid !== null && battery !== null ? pv + grid + battery : null;
     const capacity = this._status ? num(this._status.usable_battery_capacity) : null;
-    const hasExtraPv = Boolean(this._entities.extra_pv_power) && (extraPv !== null || (this._status && this._status.extra_pv_configured));
+    const hasExtraPv =
+      Boolean(this._entities.extra_pv_power) &&
+      (extraPv !== null || Boolean(this._status && this._status.extra_pv_configured));
+    const hasEv = Boolean(this._status && this._status.ev_charger_power_entity);
+    const ev = hasEv ? this._evPower() : null;
+    // The rooms get the house load minus what the car takes.
+    const rooms = house !== null && ev !== null ? Math.max(0, house - ev) : house;
 
     const solarToday = this._value("solar_energy_today");
     const exportedToday = this._todayTotal("exported");
@@ -729,33 +850,90 @@ class AlphaEssPanel extends HTMLElement {
       if (capacity) batterySub += ` · ${fmtNum((soc / 100) * (capacity / 1000), 1)} kWh`;
     }
 
-    // Positions in % of the scene, anchored to the nearest edge so labels
-    // never spill out of it: e.g. {left: 4, top: 4} or {right: 1, bottom: 2}.
-    const label = (pos, color, value, name, key, sub = "") => `
-      <div class="scene-label" style="${Object.entries(pos)
-        .map(([side, pct]) => `${side}:${pct}%`)
-        .join(";")}" data-entity="${esc(this._entities[key] || "")}">
-        <div class="scene-value"><span class="dot" style="background:${color}"></span>${esc(value)}</div>
-        <div class="scene-name">${esc(name)}</div>
-        ${sub ? `<div class="scene-sub">${esc(sub)}</div>` : ""}
-      </div>`;
+    const labels = [
+      {
+        key: "house",
+        color: SCENE_COLOR.house,
+        value: fmtW(rooms),
+        name: hasEv ? "HUIS (ZONDER EV)" : "HUIS",
+        entity: this._entities.house_load_today,
+      },
+      { key: "solar", color: SCENE_COLOR.solar, value: fmtW(roofPv), name: "ZON DAK", entity: this._entities.pv_power },
+      hasExtraPv && {
+        key: "extraPv",
+        color: SCENE_COLOR.extraPv,
+        value: fmtW(extraPv),
+        name: "ZON GARAGE",
+        entity: this._entities.extra_pv_power,
+      },
+      {
+        key: "grid",
+        color: SCENE_COLOR.grid,
+        value: fmtW(grid === null ? null : Math.abs(grid)),
+        name: gridName,
+        entity: this._entities.grid_power,
+      },
+      {
+        key: "battery",
+        color: COLOR.battery,
+        value: fmtW(battery === null ? null : Math.abs(battery)),
+        name: batteryName,
+        entity: this._entities.battery_soc,
+        sub: batterySub,
+      },
+      hasEv && {
+        key: "ev",
+        color: SCENE_COLOR.ev,
+        value: fmtW(ev),
+        name: "EV-LADER",
+        entity: this._status.ev_charger_power_entity,
+        sub: this._evTodayKwh() === null ? "" : `${fmtNum(this._evTodayKwh(), 2)} kWh vandaag`,
+      },
+    ].filter(Boolean);
+
+    const band = (which) =>
+      labels
+        .filter((l) => SCENE_TARGETS[l.key].band === which)
+        .map((l) => {
+          const pct = (SCENE_TARGETS[l.key].x / 1260) * 100;
+          // Keep edge labels inside the scene instead of centring them.
+          let pos = `left:${pct}%;transform:translateX(-50%)`;
+          if (pct > 88) pos = "right:0";
+          else if (pct < 12) pos = "left:0";
+          return `
+            <div class="scene-label" style="${pos}" data-entity="${esc(l.entity || "")}">
+              <div class="scene-value"><span class="dot" style="background:${l.color}"></span>${esc(l.value)}</div>
+              <div class="scene-name">${esc(l.name)}</div>
+              ${l.sub ? `<div class="scene-sub">${esc(l.sub)}</div>` : ""}
+            </div>`;
+        })
+        .join("");
+
+    const leaders = labels
+      .map((l) => {
+        const t = SCENE_TARGETS[l.key];
+        const y0 = t.band === "top" ? 0 : 848;
+        return `<line x1="${t.x}" y1="${y0}" x2="${t.x}" y2="${t.y}" class="leader" stroke="${l.color}"/><circle cx="${t.x}" cy="${t.y}" r="5" fill="${l.color}" class="leader-dot"/>`;
+      })
+      .join("");
 
     return `
       ${this._header("mdi:transit-connection-variant", "Energiestroom", '<span class="live"><span class="dot"></span>Live</span>')}
       <div class="scene">
-        <img src="${SCENE_IMAGE}" alt="" draggable="false">
-        <svg viewBox="0 0 1260 848" aria-hidden="true">
-          <defs><filter id="scene-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="1260" height="848"><feGaussianBlur stdDeviation="3.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
-          ${sceneFlow("solar", roofPv)}
-          ${hasExtraPv ? sceneFlow("extraPv", extraPv) : ""}
-          ${sceneFlow("house", house)}
-          ${sceneFlow("grid", grid, grid !== null && grid > 0)}
-        </svg>
-        ${label({ left: 45, top: 2 }, SCENE_COLOR.solar, fmtW(roofPv), "ZON DAK", "pv_power")}
-        ${hasExtraPv ? label({ left: 57, top: 33 }, SCENE_COLOR.extraPv, fmtW(extraPv), "ZON GARAGE", "extra_pv_power") : ""}
-        ${label({ left: 3, top: 4 }, SCENE_COLOR.house, fmtW(house), "HUIS", "house_load_today")}
-        ${label({ right: 1, top: 40 }, SCENE_COLOR.grid, fmtW(grid === null ? null : Math.abs(grid)), gridName, "grid_power")}
-        ${label({ left: 22, bottom: 1 }, COLOR.battery, fmtW(battery === null ? null : Math.abs(battery)), batteryName, "battery_soc", batterySub)}
+        <div class="scene-band top">${band("top")}</div>
+        <div class="scene-img">
+          <img src="${SCENE_IMAGE}" alt="" draggable="false">
+          <svg viewBox="0 0 1260 848" aria-hidden="true">
+            <defs><filter id="scene-glow" filterUnits="userSpaceOnUse" x="0" y="0" width="1260" height="848"><feGaussianBlur stdDeviation="3.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+            ${leaders}
+            ${sceneFlow("solar", roofPv)}
+            ${hasExtraPv ? sceneFlow("extraPv", extraPv) : ""}
+            ${sceneFlow("house", rooms)}
+            ${hasEv ? sceneFlow("ev", ev) : ""}
+            ${sceneFlow("grid", grid, grid !== null && grid > 0)}
+          </svg>
+        </div>
+        <div class="scene-band bottom">${band("bottom")}</div>
       </div>
       <div class="scene-foot">${selfUse === null ? "&nbsp;" : `<b>${Math.round(selfUse)}%</b> zelfconsumptie vandaag`}</div>`;
   }
@@ -773,11 +951,14 @@ class AlphaEssPanel extends HTMLElement {
       { label: "Net ingevoerd", value: this._todayTotal("imported"), color: COLOR.import, entity: COUNTERS.imported },
       { label: "Net teruggeleverd", value: this._todayTotal("exported"), color: COLOR.export, entity: COUNTERS.exported },
     ];
+    if (this._evEnergyId()) {
+      rows.push({ label: "EV geladen", value: this._evTodayKwh(), color: SCENE_COLOR.ev, entityId: this._evEnergyId() });
+    }
     const max = Math.max(1, ...rows.map((r) => r.value || 0));
     const bars = rows
       .map(
         (r) => `
-        <div class="energy-row" data-entity="${esc(this._entities[r.entity] || "")}">
+        <div class="energy-row" data-entity="${esc(r.entityId || this._entities[r.entity] || "")}">
           <div class="energy-top"><span>${r.label}</span><span class="energy-value">${fmtNum(r.value, 2)}<small> kWh</small></span></div>
           <div class="energy-bar"><div style="width:${((r.value || 0) / max) * 60}%;background:${r.color}"></div></div>
         </div>`
@@ -822,9 +1003,8 @@ class AlphaEssPanel extends HTMLElement {
           this._charts
         )
       : `<div class="empty">${this._stats === null ? "Laden…" : "Nog geen statistieken (de recorder bouwt die per uur op)."}</div>`;
-    return `${this._header("mdi:calendar-week", "Energie per week")}<div class="card-body">${this._legend(
-      series.map((s) => ({ label: s.name, color: s.color }))
-    )}${chart}<div class="unit-note">kWh per dag</div></div>`;
+    const legend = this._legend(series.map((s) => ({ label: s.name, color: s.color })));
+    return `${this._header("mdi:calendar-week", "Energie per week", legend)}<div class="card-body">${chart}<div class="unit-note">kWh per dag</div></div>`;
   }
 
   _renderSystem() {
@@ -891,7 +1071,55 @@ class AlphaEssPanel extends HTMLElement {
     return `${this._header("mdi:shield-check-outline", "Integratiestatus")}<div class="card-body status-grid"><div>${left.join("")}</div><div>${right.join("")}</div></div>`;
   }
 
+  // Power (kW) for the charts. Primary source is the integration's own
+  // 5-minute samples (today_power), which exist even when the raw power
+  // sensors are excluded from the recorder; the minutes since the last
+  // sample come from the live readings buffered while the panel is open.
+  // Without samples it falls back to recorder history.
   _powerSeries(x0, x1) {
+    const samples = (this._todayPower && this._todayPower.samples) || [];
+    if (!samples.length) return this._powerSeriesFromHistory(x0, x1);
+
+    const rows = samples.map((s) => ({
+      t: s.t,
+      pv: s.pv_roof + s.extra_pv,
+      grid: s.grid,
+      battery: s.battery,
+      house: s.house,
+    }));
+    const last = rows[rows.length - 1].t;
+    const livePv = this._series("pv_power");
+    const liveExtra = this._series("extra_pv_power");
+    const liveGrid = this._series("grid_power");
+    const liveBattery = this._series("battery_power");
+    const liveTimes = [...new Set([...livePv, ...liveGrid, ...liveBattery].map((p) => p[0]))]
+      .filter((t) => t > last)
+      .sort((a, b) => a - b);
+    for (const t of liveTimes) {
+      const p = stepAt(livePv, t);
+      const g = stepAt(liveGrid, t);
+      const b = stepAt(liveBattery, t);
+      if (p === null || g === null || b === null) continue;
+      const pvTotal = p + (stepAt(liveExtra, t) || 0);
+      rows.push({ t, pv: pvTotal, grid: g, battery: b, house: Math.max(0, pvTotal + g + b) });
+    }
+
+    const out = { pv: [], house: [], battery: [], grid: [] };
+    // Hours restored without samples carry no grid/battery (null): keep them
+    // as gaps instead of letting null / 1000 turn into a 0 kW line.
+    const kw = (w) => (w === null || w === undefined ? null : w / 1000);
+    for (const r of rows) {
+      if (r.t < x0 || r.t > x1) continue;
+      out.pv.push([r.t, kw(r.pv)]);
+      out.grid.push([r.t, kw(r.grid)]);
+      // Shown as "+ = charging", the intuitive direction for a chart.
+      out.battery.push([r.t, r.battery === null || r.battery === undefined ? null : -r.battery / 1000]);
+      out.house.push([r.t, kw(r.house)]);
+    }
+    return out;
+  }
+
+  _powerSeriesFromHistory(x0, x1) {
     const pvKey = this._series("total_pv_power").length ? "total_pv_power" : "pv_power";
     const pv = this._series(pvKey);
     const grid = this._series("grid_power");
@@ -904,7 +1132,6 @@ class AlphaEssPanel extends HTMLElement {
       const b = stepAt(battery, t);
       out.pv.push([t, p === null ? null : p / 1000]);
       out.grid.push([t, g === null ? null : g / 1000]);
-      // Shown as "+ = charging", the intuitive direction for a chart.
       out.battery.push([t, b === null ? null : -b / 1000]);
       out.house.push([t, p === null || g === null || b === null ? null : Math.max(0, p + g + b) / 1000]);
     }
@@ -928,7 +1155,7 @@ class AlphaEssPanel extends HTMLElement {
       ["grid_power", "net"],
       ["battery_power", "batterij"],
     ]
-      .filter(([key]) => this._noHistory(key))
+      .filter(([key]) => !(this._todayPower && this._todayPower.samples.length) && this._noHistory(key))
       .map(([, name]) => name);
     const note = unrecorded.length
       ? `<p class="hint">Geen geschiedenis voor ${unrecorded.join(" en ")}: deze sensor wordt niet door de recorder opgeslagen (uitgesloten in configuration.yaml). De lijn vult zich zolang dit paneel open staat.</p>`
@@ -1071,13 +1298,19 @@ class AlphaEssPanel extends HTMLElement {
         return `<rect x="${x + 1.5}" y="${y}" width="${plotW / 24 - 3}" height="${Math.max(height, 1)}" rx="2" fill="${info.color}" opacity="${past ? 0.4 : 1}"/>`;
       })
       .join("");
+    // Hover shows that hour's price and plan (see _hover's "strip" branch).
+    this._charts["daily-strip"] = { kind: "strip", W, pad, plotW, plan };
     const strip = `
-      <svg viewBox="0 0 ${W} ${H}" class="chart strip">
-        <text x="${pad.l - 6}" y="12" class="axis" text-anchor="end">€ ${fmtNum(pMax, 2)}</text>
-        ${pMin < 0 ? `<text x="${pad.l - 6}" y="${H - 8}" class="axis" text-anchor="end">€ ${fmtNum(pMin, 2)}</text>` : ""}
-        <line x1="${pad.l}" x2="${W - pad.r}" y1="${zeroY}" y2="${zeroY}" class="zero"/>
-        ${bars}
-      </svg>`;
+      <div class="chart-wrap">
+        <svg viewBox="0 0 ${W} ${H}" class="chart strip" data-chart="daily-strip">
+          <text x="${pad.l - 6}" y="12" class="axis" text-anchor="end">€ ${fmtNum(pMax, 2)}</text>
+          ${pMin < 0 ? `<text x="${pad.l - 6}" y="${H - 8}" class="axis" text-anchor="end">€ ${fmtNum(pMin, 2)}</text>` : ""}
+          <line x1="${pad.l}" x2="${W - pad.r}" y1="${zeroY}" y2="${zeroY}" class="zero"/>
+          <rect class="cursor-band" x="0" y="0" width="${plotW / 24}" height="${H}" visibility="hidden"/>
+          ${bars}
+        </svg>
+        <div class="tooltip" hidden></div>
+      </div>`;
 
     const usedActions = Object.entries(ACTIONS).filter(([key]) => plan.some((h) => h.action === key));
     const legend = this._legend([
@@ -1150,12 +1383,14 @@ class AlphaEssPanel extends HTMLElement {
     const circ = 2 * Math.PI * r;
     const filled = soc === null ? 0 : (Math.max(0, Math.min(100, soc)) / 100) * 0.8;
 
-    const dayStart = startOfDay().getTime();
-    const pvToday = integrateWh(this._historyOf(e, "pv_power"), dayStart, Date.now()) / 1000;
+    // Roof PV today: the inverter's own PV counter (recorder statistics),
+    // else the integration's hourly values.
+    let pvToday = this._todayTotal("pv", e);
+    if (pvToday === null && this._todayPower) pvToday = this._todayPower.solar_roof_wh / 1000;
     const today = this._energyRows([
       { label: "Geladen", value: this._todayTotal("charged", e), color: COLOR.charge, entity: e[COUNTERS.charged] },
       { label: "Ontladen", value: this._todayTotal("discharged", e), color: COLOR.discharge, entity: e[COUNTERS.discharged] },
-      { label: "Zon (dak)", value: this._history ? pvToday : null, color: COLOR.solar, entity: e.pv_power },
+      { label: "Zon (dak)", value: pvToday, color: COLOR.solar, entity: e.pv_power },
       { label: "Net ingevoerd", value: this._todayTotal("imported", e), color: COLOR.import, entity: e[COUNTERS.imported] },
       { label: "Net teruggeleverd", value: this._todayTotal("exported", e), color: COLOR.export, entity: e[COUNTERS.exported] },
     ]);
@@ -1284,7 +1519,9 @@ class AlphaEssPanel extends HTMLElement {
     const capacity = num(st.extra_pv_power_capacity);
     const usage = capacity && power ? Math.min(100, (power / capacity) * 100) : 0;
     const dayStart = startOfDay().getTime();
-    const todayKwh = integrateWh(this._historyOf(e, "extra_pv_power"), dayStart, Date.now()) / 1000;
+    const todayKwh = this._todayPower
+      ? this._todayPower.extra_pv_wh / 1000
+      : integrateWh(this._historyOf(e, "extra_pv_power"), dayStart, Date.now()) / 1000;
     const producing = power !== null && power > 15;
 
     return `
@@ -1315,39 +1552,175 @@ class AlphaEssPanel extends HTMLElement {
       </section>`;
   }
 
-  _renderOverrides() {
-    const active = this._status && this._status.manual_override;
-    const buttons = OVERRIDES.map(
-      (o) => `
-        <button class="action ${active === serviceToAction(o.service) ? "active" : ""}" data-service="${o.service}" data-label="${esc(o.label)}">
-          <ha-icon icon="${o.icon}"></ha-icon><span>${o.label}</span>
-        </button>`
-    ).join("");
+  // Control tab: settings grouped in columns, operated in place -- toggles
+  // for switches/options, sliders for the number entities, override buttons.
+  _renderControls() {
+    const st = this._status;
+    const toggle = (spec) => {
+      let on = null;
+      let attr = "";
+      if (spec.option) {
+        on = st ? Boolean(st[spec.option]) : null;
+        attr = `data-option="${spec.option}"`;
+      } else {
+        const s = this._state(spec.entity);
+        on = s ? s.state === "on" : null;
+        attr = `data-switch="${esc(this._entities[spec.entity] || "")}"`;
+      }
+      if (on === null) return "";
+      return `
+        <div class="ctl">
+          ${this._ctlLabel(spec)}
+          <button class="switch ${on ? "on" : ""}" role="switch" aria-checked="${on}" ${attr} data-on="${on}" data-confirm="${esc(spec.confirm || "")}"><span></span></button>
+        </div>`;
+    };
+    const slider = (spec) => {
+      const id = this._entities[spec.entity];
+      const s = id && this._hass.states[id];
+      if (!s) return "";
+      const value = num(s.state);
+      const { min = 0, max = 100, step = 1, unit_of_measurement: unit = "" } = s.attributes;
+      const shown = value === null ? "–" : `${fmtNum(value, step < 1 ? 1 : 0)} ${unit}`;
+      const pct = value === null ? 0 : ((value - min) / (max - min || 1)) * 100;
+      return `
+        <div class="ctl">
+          ${this._ctlLabel(spec)}
+          <div class="slider-row">
+            <input type="range" min="${min}" max="${max}" step="${step}" value="${value ?? min}" data-number="${esc(id)}" data-unit="${esc(unit)}" data-digits="${step < 1 ? 1 : 0}" style="--pct:${pct}%">
+            <span class="slider-value">${esc(shown)}</span>
+          </div>
+        </div>`;
+    };
+    const column = (icon, title, body) =>
+      `<section class="ctl-col">${this._header(icon, title)}${body}</section>`;
+
+    const control = column(
+      "mdi:robot-outline",
+      "Sturing",
+      [
+        toggle({
+          option: "control_enabled",
+          icon: "mdi:power",
+          label: "Batterijsturing",
+          info: "Schrijft de beslissingen echt naar de omvormer. Uit = alleen berekenen en loggen.",
+          confirm: "Batterijsturing inschakelen? De integratie gaat dan echte commando's naar de omvormer schrijven.",
+        }),
+        toggle({
+          entity: "discharge_enabled",
+          icon: "mdi:battery-arrow-down-outline",
+          label: "Ontladen via schema toestaan",
+          info: "Mag de planning de batterij op dure uren ontladen.",
+        }),
+        toggle({
+          option: "extra_pv_control_enabled",
+          icon: "mdi:solar-panel",
+          label: "Extra PV-sturing negatieve prijzen",
+          info: "Schakelt de extra PV-installatie uit bij negatieve prijzen, zodra de batterij haar doel-SOC heeft bereikt.",
+        }),
+        toggle({
+          option: "persist_daily_charge_limit",
+          icon: "mdi:content-save-outline",
+          label: "Daglimiet bewaren na herstart",
+          info: "Bewaart de eenmalige dagelijkse net-laad/ontlaadlimiet over een herstart van Home Assistant heen.",
+        }),
+      ].join("") || '<div class="empty">Status laden…</div>'
+    );
+
+    const limits = column(
+      "mdi:battery-charging-80",
+      "Batterijlimieten",
+      [
+        slider({
+          entity: "max_soc_positive_price",
+          icon: "mdi:battery-arrow-up-outline",
+          label: "Max SOC bij positieve prijzen",
+          info: "Tot hoeveel procent de batterij laadt op uren met een positieve prijs.",
+        }),
+        slider({
+          entity: "max_soc_negative_price",
+          icon: "mdi:battery-plus-outline",
+          label: "Max SOC bij negatieve prijzen",
+          info: "Tot hoeveel procent de batterij laadt bij negatieve prijzen.",
+        }),
+        slider({
+          entity: "min_soc_discharge",
+          icon: "mdi:battery-low",
+          label: "Min SOC bij ontladen",
+          info: "Onder deze SOC wordt de batterij niet verder ontladen.",
+        }),
+      ].join("")
+    );
+
+    const planning = column(
+      "mdi:calendar-clock",
+      "Planning",
+      [
+        slider({
+          entity: "daily_min_profit",
+          icon: "mdi:cash-check",
+          label: "Minimale dagelijkse winst",
+          info: "Minimale verwachte winst per dag (in cent) voordat een geoptimaliseerd schema wordt gebruikt.",
+        }),
+        slider({
+          entity: "max_grid_load",
+          icon: "mdi:transmission-tower-import",
+          label: "Max belasting net-laden",
+          info: "Maximaal vermogen waarmee vanaf het net wordt geladen (capaciteitstarief).",
+        }),
+      ].join("")
+    );
+
+    const active = st && st.manual_override;
+    const overrides = column(
+      "mdi:hand-back-right-outline",
+      "Handmatig overschrijven",
+      `<p class="hint">Blijft actief tot je het opheft. Wordt alleen echt naar de omvormer geschreven als batterijsturing aan staat.</p>
+      <div class="actions">${OVERRIDES.map(
+        (o) => `
+          <button class="action ${active === serviceToAction(o.service) ? "active" : ""}" data-service="${o.service}" data-label="${esc(o.label)}">
+            <ha-icon icon="${o.icon}"></ha-icon><span>${o.label}</span>
+          </button>`
+      ).join("")}</div>
+      <button class="action clear" data-service="clear_manual_override" data-label="">
+        <ha-icon icon="mdi:restore"></ha-icon><span>Opheffen — terug naar planning</span>
+      </button>`
+    );
+
+    return `<div class="ctl-grid">${control}${limits}${planning}${overrides}</div>`;
+  }
+
+  _ctlLabel(spec) {
     return `
-      ${this._header("mdi:hand-back-right-outline", "Handmatig overschrijven")}
-      <div class="card-body">
-        <p class="hint">Blijft actief tot je het opheft. Wordt alleen echt naar de omvormer geschreven als batterijsturing aan staat.</p>
-        <div class="actions">${buttons}</div>
-        <button class="action clear" data-service="clear_manual_override" data-label="">
-          <ha-icon icon="mdi:restore"></ha-icon><span>Opheffen — terug naar planning</span>
-        </button>
+      <div class="ctl-label">
+        <ha-icon icon="${spec.icon}"></ha-icon>
+        <span>${esc(spec.label)}</span>
+        <span class="info" title="${esc(spec.info)}">ⓘ</span>
       </div>`;
   }
 
-  _renderSettings() {
-    const rows = SETTINGS.filter((key) => this._entities[key])
-      .map((key) => {
-        const s = this._state(key);
-        const name = (s && s.attributes.friendly_name) || key;
-        return `<div class="status-row" data-entity="${esc(this._entities[key])}"><span>${esc(name)}</span><span>${esc(this._formatted(key))}</span></div>`;
-      })
-      .join("");
-    return `
-      ${this._header("mdi:tune-variant", "Instellingen")}
-      <div class="card-body">
-        ${rows || '<div class="empty">Geen instellingen gevonden.</div>'}
-        <p class="hint">Klik op een regel om de waarde aan te passen.</p>
-      </div>`;
+  async _toggle(el) {
+    const on = el.dataset.on !== "true";
+    if (on && el.dataset.confirm && !window.confirm(el.dataset.confirm)) return;
+    try {
+      if (el.dataset.option) {
+        await this._hass.callWS({ type: `${DOMAIN}/set_option`, key: el.dataset.option, value: on });
+        // The entry reloads on an options change; refresh once it's back.
+        setTimeout(() => this._loadStatus(), 1500);
+      } else {
+        await this._hass.callService("switch", on ? "turn_on" : "turn_off", { entity_id: el.dataset.switch });
+      }
+    } catch (err) {
+      window.alert(`Mislukt: ${err.message || err}`);
+    }
+  }
+
+  async _setNumber(el) {
+    this._dragging = false;
+    try {
+      await this._hass.callService("number", "set_value", { entity_id: el.dataset.number, value: Number(el.value) });
+    } catch (err) {
+      window.alert(`Mislukt: ${err.message || err}`);
+    }
   }
 
   _timeTicks(x0, x1) {
@@ -1357,6 +1730,201 @@ class AlphaEssPanel extends HTMLElement {
     const ticks = [];
     for (let t = Math.ceil(x0 / step) * step; t <= x1; t += step) ticks.push({ t, label: fmtTime(t) });
     return ticks;
+  }
+
+  // ------------------------------------------------------------ history tab
+
+  // The period shown: start/end dates (inclusive) and how rows are grouped.
+  _historyRange() {
+    const a = new Date(this._histAnchor);
+    a.setHours(0, 0, 0, 0);
+    if (this._histPeriod === "day") return { start: a, end: a, group: "hour" };
+    if (this._histPeriod === "week") {
+      const start = new Date(a);
+      start.setDate(a.getDate() - ((a.getDay() + 6) % 7)); // Monday
+      const end = new Date(start);
+      end.setDate(start.getDate() + 6);
+      return { start, end, group: "day" };
+    }
+    if (this._histPeriod === "month") {
+      return { start: new Date(a.getFullYear(), a.getMonth(), 1), end: new Date(a.getFullYear(), a.getMonth() + 1, 0), group: "day" };
+    }
+    return { start: new Date(a.getFullYear(), 0, 1), end: new Date(a.getFullYear(), 11, 31), group: "month" };
+  }
+
+  _historyLabel() {
+    const { start, end } = this._historyRange();
+    const d = (x, opts) => x.toLocaleDateString("nl-NL", opts);
+    if (this._histPeriod === "day") return d(start, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    if (this._histPeriod === "week") return `${d(start, { day: "numeric", month: "short" })} – ${d(end, { day: "numeric", month: "short", year: "numeric" })}`;
+    if (this._histPeriod === "month") return d(start, { month: "long", year: "numeric" });
+    return String(start.getFullYear());
+  }
+
+  async _loadHistoryPeriod() {
+    const { start, end, group } = this._historyRange();
+    const iso = (x) => `${x.getFullYear()}-${pad2(x.getMonth() + 1)}-${pad2(x.getDate())}`;
+    const request = `${iso(start)}|${iso(end)}|${group}`;
+    this._histRequest = request;
+    this._histLoading = true;
+    this._renderAll();
+    try {
+      const data = await this._hass.callWS({ type: `${DOMAIN}/history`, start: iso(start), end: iso(end), group });
+      if (this._histRequest !== request) return; // a newer request superseded this one
+      this._histData = data;
+      this._histError = null;
+    } catch (err) {
+      this._histData = null;
+      this._histError = err.message || String(err);
+    }
+    this._histLoading = false;
+    this._renderAll();
+  }
+
+  _historyStep(step) {
+    const a = new Date(this._histAnchor);
+    if (this._histPeriod === "day") a.setDate(a.getDate() + step);
+    else if (this._histPeriod === "week") a.setDate(a.getDate() + 7 * step);
+    else if (this._histPeriod === "month") a.setMonth(a.getMonth() + step, 1);
+    else a.setFullYear(a.getFullYear() + step, 0, 1);
+    this._histAnchor = a.getTime();
+    this._loadHistoryPeriod();
+  }
+
+  _historyRowLabel(key, group) {
+    if (group === "hour") {
+      const h = Number(key);
+      return `${pad2(h)}:00 – ${pad2((h + 1) % 24)}:00`;
+    }
+    if (group === "day") {
+      const [y, m, d] = key.split("-").map(Number);
+      return new Date(y, m - 1, d).toLocaleDateString("nl-NL", { weekday: "short", day: "numeric", month: "short" });
+    }
+    const [y, m] = key.split("-").map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString("nl-NL", { month: "long" });
+  }
+
+  _renderHistory() {
+    const periods = [
+      ["day", "Dag"],
+      ["week", "Week"],
+      ["month", "Maand"],
+      ["year", "Jaar"],
+    ];
+    const controls = `
+      <div class="hist-controls">
+        <div class="seg">${periods
+          .map(([k, l]) => `<button class="range ${this._histPeriod === k ? "active" : ""}" data-hist-period="${k}">${l}</button>`)
+          .join("")}</div>
+        <div class="hist-nav">
+          <button class="range" data-hist-step="-1" title="Vorige">‹</button>
+          <span class="hist-label">${esc(this._historyLabel())}</span>
+          <button class="range" data-hist-step="1" title="Volgende">›</button>
+          <button class="range" data-hist-today="1">Vandaag</button>
+        </div>
+      </div>`;
+    const header = this._header("mdi:history", "Historie");
+
+    if (this._histError) {
+      return `${header}${controls}<div class="empty">Kon de historie niet laden: ${esc(this._histError)}</div>`;
+    }
+    const data = this._histData;
+    if (!data) {
+      return `${header}${controls}<div class="empty">${this._histLoading ? "Laden…" : ""}</div>`;
+    }
+    const t = data.totals;
+    if (!t.hours) {
+      return `${header}${controls}<div class="empty">Geen opgeslagen gegevens voor deze periode.</div>`;
+    }
+
+    const kwh = (wh) => fmtNum(wh / 1000, 2);
+    const eur = (v) => `€ ${fmtNum(v, 2)}`;
+    const tile = (label, value, unit, color, sub = "") => `
+      <div class="hist-tile">
+        <div class="hist-tile-label"><span class="swatch" style="background:${color}"></span>${label}</div>
+        <div class="hist-tile-value">${value}<small> ${unit}</small></div>
+        ${sub ? `<div class="hist-tile-sub">${sub}</div>` : ""}
+      </div>`;
+    const savings = t.savings_solar_eur + t.savings_battery_eur;
+    const selfUse = t.solar_wh > 0 ? Math.max(0, Math.min(100, ((t.solar_wh - t.export_wh) / t.solar_wh) * 100)) : null;
+    const tiles = `
+      <div class="hist-tiles">
+        ${tile("Zon dak", kwh(t.solar_wh_roof), "kWh", COLOR.solar)}
+        ${tile("Zon extra", kwh(t.solar_wh_extra), "kWh", COLOR.forecast)}
+        ${tile("Zon totaal", kwh(t.solar_wh), "kWh", COLOR.solar, selfUse === null ? "" : `${Math.round(selfUse)}% zelf verbruikt`)}
+        ${tile("Huisverbruik", kwh(t.house_wh), "kWh", COLOR.house)}
+        ${tile("Net afname", kwh(t.import_wh), "kWh", COLOR.import)}
+        ${tile("Teruglevering", kwh(t.export_wh), "kWh", COLOR.export)}
+        ${tile("Batterij geladen", kwh(t.battery_charge_wh), "kWh", COLOR.charge)}
+        ${tile("Batterij ontladen", kwh(t.battery_discharge_wh), "kWh", COLOR.discharge)}
+        ${tile("Besparing zon", eur(t.savings_solar_eur), "", COLOR.solar)}
+        ${tile("Besparing batterij", eur(t.savings_battery_eur), "", COLOR.charge)}
+        ${tile("Besparing totaal", eur(savings), "", "var(--accent)")}
+      </div>`;
+
+    const group = data.group;
+    const chart = barChart(
+      {
+        id: "hist",
+        w: 1100,
+        h: 220,
+        groups: data.rows.map((r) => ({
+          label: group === "hour" ? r.key : this._historyRowLabel(r.key, group).split(" ")[group === "day" ? 1 : 0],
+          title: this._historyRowLabel(r.key, group),
+          values: [r.solar_wh_roof / 1000, r.solar_wh_extra / 1000, r.house_wh / 1000],
+        })),
+        series: [
+          { name: "Zon dak", color: COLOR.solar },
+          { name: "Zon extra", color: COLOR.forecast },
+          { name: "Huis", color: COLOR.house },
+        ],
+        sums: [{ name: "Zon totaal", of: [0, 1], color: COLOR.solar }],
+        fmt: (v) => fmtNum(v, v < 10 ? 1 : 0),
+      },
+      this._charts
+    );
+
+    // Week/month rows open that day; year rows open that month.
+    const drill = group === "day" ? "day" : group === "month" ? "month" : null;
+    const rows = data.rows
+      .map((r) => {
+        const empty = !r.hours;
+        const cell = (wh) => (empty ? "–" : kwh(wh));
+        const target = drill ? `data-hist-goto="${r.key}" data-hist-goto-period="${drill}"` : "";
+        return `
+          <tr class="${empty ? "empty-row" : ""} ${drill ? "clickable" : ""}" ${target}>
+            <td>${esc(this._historyRowLabel(r.key, group))}</td>
+            <td>${cell(r.solar_wh_roof)}</td>
+            <td>${cell(r.solar_wh_extra)}</td>
+            <td>${cell(r.solar_wh)}</td>
+            <td>${cell(r.house_wh)}</td>
+            <td>${cell(r.import_wh)}</td>
+            <td>${cell(r.export_wh)}</td>
+            <td>${cell(r.battery_charge_wh)}</td>
+            <td>${cell(r.battery_discharge_wh)}</td>
+            <td>${empty ? "–" : eur(r.savings_solar_eur + r.savings_battery_eur)}</td>
+          </tr>`;
+      })
+      .join("");
+    const firstCol = group === "hour" ? "Tijd" : group === "day" ? "Dag" : "Maand";
+    const table = `
+      <div class="table-scroll">
+        <table class="hist-table">
+          <thead><tr>
+            <th>${firstCol}</th><th>Zon dak</th><th>Zon extra</th><th>Zon totaal</th><th>Huis</th>
+            <th>Net af</th><th>Terug</th><th>Bat. geladen</th><th>Bat. ontladen</th><th>Besparing</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr>
+            <td>Totaal</td><td>${kwh(t.solar_wh_roof)}</td><td>${kwh(t.solar_wh_extra)}</td><td>${kwh(t.solar_wh)}</td>
+            <td>${kwh(t.house_wh)}</td><td>${kwh(t.import_wh)}</td><td>${kwh(t.export_wh)}</td>
+            <td>${kwh(t.battery_charge_wh)}</td><td>${kwh(t.battery_discharge_wh)}</td><td>${eur(savings)}</td>
+          </tr></tfoot>
+        </table>
+      </div>
+      <div class="unit-note">Energie in kWh · besparing t.o.v. geen zon en geen batterij${drill ? " · klik een regel voor details" : ""}</div>`;
+
+    return `${header}${controls}${tiles}${chart}${table}`;
   }
 
   // ------------------------------------------------------------ hover
@@ -1403,6 +1971,45 @@ class AlphaEssPanel extends HTMLElement {
         lines.push(`<div class="tt-row"><span class="swatch" style="background:${s.color}"></span>${esc(s.name)}<b>${value}</b></div>`);
       }
       html = `<div class="tt-title">${fmtTime(t)}</div>${lines.join("")}`;
+    } else if (meta.kind === "strip") {
+      const { pad, plotW, plan } = meta;
+      const h = Math.floor(((px - pad.l) / plotW) * 24);
+      const entry = plan.find((p) => p.hour === h);
+      if (!entry) return this._hideHover();
+      const band = svg.querySelector(".cursor-band");
+      band.setAttribute("x", pad.l + (h / 24) * plotW);
+      band.setAttribute("visibility", "visible");
+      const info = ACTIONS[entry.action] || { label: entry.action, color: "#94a3b8" };
+      const price = num(entry.price);
+      const eur = (v) => (v === null ? "–" : `€ ${fmtNum(v, 3)}`);
+      // Same formulas as prices.mk_use_price / mk_return_price (and the
+      // "Prijs nu (all-in)" sensor), so the numbers match.
+      const st = this._status;
+      let allIn = "";
+      if (st && price !== null) {
+        const vat = num(st.vat_percentage) || 0;
+        const useAllIn = price * (1 + vat / 100) + (num(st.use_fee) || 0);
+        const returnVat = st.apply_vat_on_return ? vat : 0;
+        const returnAllIn = price * (1 + returnVat / 100) + (num(st.return_fee) || 0);
+        const netNormal = num(st.network_use_fee_normal);
+        const netLow = num(st.network_use_fee_low);
+        let network = "";
+        if (netNormal) {
+          network = netLow && netLow !== netNormal ? `${eur(netLow)} – ${eur(netNormal)}` : eur(netNormal);
+        }
+        allIn = `
+          <div class="tt-row">Afname all-in<b>${eur(useAllIn)}/kWh</b></div>
+          <div class="tt-row">Teruglevering<b>${eur(returnAllIn)}/kWh</b></div>
+          ${network ? `<div class="tt-row tt-sub">+ netwerkkosten bij afname<b>${network}</b></div>` : ""}`;
+      }
+      html = `
+        <div class="tt-title">${pad2(h)}:00 – ${pad2((h + 1) % 24)}:00</div>
+        <div class="tt-row"><span class="swatch" style="background:${info.color}"></span>${esc(info.label)}</div>
+        <div class="tt-row">Marktprijs<b>${eur(price)}/kWh</b></div>
+        ${allIn}
+        ${price !== null && price < 0 ? '<div class="tt-row tt-note">Negatieve prijs</div>' : ""}
+        <div class="tt-row"><span class="swatch" style="background:${COLOR.forecast}"></span>Zon (verwacht)<b>${fmtW(num(entry.solar_forecast_w))}</b></div>
+        <div class="tt-row"><span class="swatch" style="background:${COLOR.house}"></span>Verbruik (verwacht)<b>${fmtW(num(entry.house_load_w))}</b></div>`;
     } else {
       const { o, pad, groupW } = meta;
       const gi = Math.floor((px - pad.l) / groupW);
@@ -1411,9 +2018,15 @@ class AlphaEssPanel extends HTMLElement {
       band.setAttribute("x", pad.l + gi * groupW);
       band.setAttribute("visibility", "visible");
       const g = o.groups[gi];
-      html = `<div class="tt-title">${esc(g.label)}</div>${o.series
-        .map((s, si) => `<div class="tt-row"><span class="swatch" style="background:${s.color}"></span>${esc(s.name)}<b>${fmtKwh(g.values[si])}</b></div>`)
-        .join("")}`;
+      const row = (color, name, value, cls = "") =>
+        `<div class="tt-row ${cls}"><span class="swatch" style="background:${color}"></span>${esc(name)}<b>${fmtKwh(value)}</b></div>`;
+      // Optional sums of several series, e.g. roof + extra PV = total solar.
+      const sums = (o.sums || []).map((sum) =>
+        row(sum.color, sum.name, sum.of.reduce((total, si) => total + (g.values[si] || 0), 0), "tt-sum")
+      );
+      html = `<div class="tt-title">${esc(g.title || g.label)}</div>${o.series
+        .map((s, si) => row(s.color, s.name, g.values[si]))
+        .join("")}${sums.join("")}`;
     }
     tooltip.innerHTML = html;
     tooltip.hidden = false;
@@ -1529,26 +2142,32 @@ const STYLE = `
   }
   .content {
     padding: 20px;
-    max-width: 1500px;
-    margin: 0 auto;
+    margin: 0;
     display: flex;
     flex-direction: column;
     gap: 20px;
     box-sizing: border-box;
   }
   .grid { display: grid; gap: 20px; align-items: stretch; }
-  .g3 { grid-template-columns: minmax(300px, 1.05fr) minmax(260px, 0.9fr) minmax(300px, 1fr); }
+  .g-main { grid-template-columns: minmax(420px, 1.35fr) minmax(280px, 1fr) minmax(300px, 1fr); column-gap: 48px; }
+  .g-main .flow-card { grid-row: span 2; }
   .g2 { grid-template-columns: 1fr 1fr; }
-  .g-status { grid-template-columns: minmax(240px, 0.45fr) 1fr; }
+  .g-status { grid-template-columns: minmax(240px, 0.32fr) 1fr; column-gap: 48px; }
+  @media (max-width: 1300px) {
+    .g-main { grid-template-columns: 1fr 1fr; }
+    .g-main .flow-card { grid-column: 1 / -1; grid-row: auto; }
+  }
   @media (max-width: 1100px) {
-    .g3, .g2, .g-status { grid-template-columns: 1fr; }
+    .g2, .g-status { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 800px) {
+    .g-main { grid-template-columns: 1fr; }
   }
 
   .card {
-    background: var(--card-background-color, #fff);
-    border-radius: var(--ha-card-border-radius, 16px);
-    border: 1px solid var(--line);
-    padding: 18px 20px 20px;
+    background: none;
+    border: none;
+    padding: 12px 4px 20px;
     min-width: 0;
     box-sizing: border-box;
   }
@@ -1559,10 +2178,12 @@ const STYLE = `
     color: var(--muted);
     text-transform: uppercase;
     letter-spacing: 0.12em;
-    font-size: 13px;
-    margin-bottom: 14px;
+    font-size: 14px;
+    font-weight: 400;
+    margin-bottom: 18px;
   }
   .card-header ha-icon { --mdc-icon-size: 18px; opacity: 0.7; }
+  .card-header .legend { text-transform: none; letter-spacing: 0; margin: 0; justify-content: flex-end; max-width: 60%; }
   .spacer { flex: 1; }
   .card-body { position: relative; }
   .subtitle { font-size: 13px; color: var(--muted); margin: -6px 0 10px; }
@@ -1579,10 +2200,18 @@ const STYLE = `
   .live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 2s infinite; }
   @keyframes pulse { 50% { opacity: 0.3; } }
 
-  /* energy flow scene (photo + traced flow paths) */
-  .scene { position: relative; background: #fff; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
-  .scene img { display: block; width: 100%; height: auto; user-select: none; }
-  .scene svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  /* energy flow scene (photo + traced flow paths, labels in bands) */
+  .scene { background: #fff; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+  .scene-img { position: relative; }
+  .scene-img img { display: block; width: 100%; height: auto; user-select: none; }
+  .scene-img svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .scene-band { position: relative; height: 74px; }
+  .scene-band .scene-label { position: absolute; top: 12px; }
+  .scene-band.bottom .scene-label { top: auto; bottom: 12px; }
+  .scene-band .scene-label[style*="right:0"] { right: 12px !important; }
+  .scene-band .scene-label[style*="left:0"] { left: 12px !important; }
+  .leader { stroke-width: 1.6; stroke-dasharray: 4 6; opacity: 0.55; }
+  .leader-dot { opacity: 0.8; }
   .pulse {
     fill: none;
     stroke: var(--c);
@@ -1597,38 +2226,38 @@ const STYLE = `
   @keyframes run { from { stroke-dashoffset: 100; } to { stroke-dashoffset: 0; } }
   @media (prefers-reduced-motion: reduce) { .pulse { animation-duration: 6s; } }
   .scene-label {
-    position: absolute;
-    padding: 6px 10px;
+    padding: 6px 12px;
     border-radius: 10px;
-    background: rgba(255, 255, 255, 0.86);
-    backdrop-filter: blur(4px);
+    background: #fff;
     color: #1d2321;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
     line-height: 1.2;
     white-space: nowrap;
+    z-index: 1;
   }
   .scene-label:hover { box-shadow: 0 0 0 2px var(--accent); }
-  .scene-value { display: flex; align-items: center; gap: 6px; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .scene-value { display: flex; align-items: center; gap: 6px; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .scene-value .dot { width: 8px; height: 8px; border-radius: 50%; }
   .scene-name { font-size: 10px; letter-spacing: 0.1em; color: #66706c; font-weight: 600; margin-top: 2px; }
   .scene-sub { font-size: 11px; color: #66706c; }
   .scene-foot { color: var(--muted); font-size: 13px; text-align: center; padding-top: 10px; }
   .scene-foot b { color: var(--accent); }
-  @media (max-width: 500px) {
+  @media (max-width: 600px) {
+    .scene-band { height: 56px; }
     .scene-label { padding: 3px 6px; }
     .scene-value { font-size: 12px; }
     .scene-name, .scene-sub { font-size: 8px; }
   }
 
   /* energy today */
-  .energy-row { padding: 6px 0; }
-  .energy-top { display: flex; justify-content: space-between; font-size: 15px; }
+  .energy-row { padding: 8px 0; }
+  .energy-top { display: flex; justify-content: space-between; font-size: 16px; font-weight: 300; }
   .energy-value { font-weight: 500; font-variant-numeric: tabular-nums; }
   .energy-value small { color: var(--muted); font-weight: 400; font-size: 11px; }
-  .energy-bar { height: 7px; margin-top: 6px; border-radius: 4px; }
+  .energy-bar { height: 6px; margin-top: 8px; border-radius: 3px; }
   .energy-bar div { height: 100%; border-radius: 4px; min-width: 6px; transition: width 0.6s; }
   .sep { height: 12px; }
-  .energy-row.plain { padding: 9px 0; }
+  .energy-row.plain { padding: 12px 0; }
 
   /* charts */
   .chart-wrap { position: relative; }
@@ -1657,6 +2286,9 @@ const STYLE = `
   .tt-title { font-weight: 600; margin-bottom: 4px; }
   .tt-row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   .tt-row b { margin-left: auto; padding-left: 12px; font-weight: 500; }
+  .tt-note { color: var(--warning-color, #f59e0b); font-size: 11px; }
+  .tt-sub { color: var(--muted); font-size: 11px; }
+  .tt-sum { border-top: 1px solid var(--line); margin-top: 3px; padding-top: 3px; font-weight: 500; }
   .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
   .legend-item { display: flex; align-items: center; gap: 6px; }
   .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }
@@ -1695,18 +2327,92 @@ const STYLE = `
   .io-note { font-size: 11px; color: var(--muted); text-align: center; margin-top: 6px; }
 
   /* status rows */
-  .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 40px; }
+  .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 56px; }
   @media (max-width: 700px) { .status-grid { grid-template-columns: 1fr; } }
   .status-row {
     display: flex;
     justify-content: space-between;
     gap: 12px;
-    padding: 12px 0;
-    border-bottom: 1px solid var(--line);
-    font-size: 14px;
+    padding: 15px 0;
+    font-size: 15px;
+    font-weight: 300;
   }
   .status-row span:first-child { color: var(--muted); }
+  .status-row span:last-child { font-weight: 400; }
   .status-row span:last-child { text-align: right; }
+
+  /* history tab */
+  .hist-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+  .hist-controls .seg { display: flex; gap: 4px; }
+  .hist-nav { display: flex; align-items: center; gap: 6px; }
+  .hist-label { display: inline-block; min-width: 220px; text-align: center; font-size: 16px; }
+  .hist-label::first-letter { text-transform: uppercase; }
+  .hist-nav .range[data-hist-step] { font-size: 20px; line-height: 1; padding: 2px 12px; }
+  .hist-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 16px 24px; margin-bottom: 24px; }
+  .hist-tile-label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); font-weight: 300; }
+  .hist-tile-value { font-size: 24px; font-weight: 500; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .hist-tile-value small { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .hist-tile-sub { font-size: 12px; color: var(--muted); }
+  .table-scroll { overflow-x: auto; margin-top: 16px; }
+  .hist-table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .hist-table th, .hist-table td { padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .hist-table th:first-child, .hist-table td:first-child { text-align: left; }
+  .hist-table th { color: var(--muted); font-weight: 400; font-size: 12px; }
+  .hist-table tfoot td { font-weight: 600; border-top: 2px solid var(--line); border-bottom: none; }
+  .hist-table tr.empty-row td { color: var(--muted); opacity: 0.6; }
+  .hist-table tr.clickable { cursor: pointer; }
+  .hist-table tr.clickable:hover td { background: rgba(20, 184, 166, 0.08); }
+
+  /* control tab */
+  .ctl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px 48px; align-items: start; }
+  .ctl { padding: 10px 0 14px; }
+  .ctl-label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 15px; font-weight: 300; }
+  .ctl-label ha-icon { --mdc-icon-size: 18px; opacity: 0.7; }
+  .ctl-label .info { margin-left: auto; cursor: help; opacity: 0.6; font-size: 14px; }
+  .switch {
+    margin-top: 10px;
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    border: none;
+    padding: 0;
+    background: var(--line);
+    position: relative;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .switch span {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: transform 0.2s, background 0.2s;
+  }
+  .switch.on { background: rgba(20, 184, 166, 0.35); }
+  .switch.on span { transform: translateX(18px); background: var(--accent); }
+  .slider-row { display: flex; align-items: center; gap: 16px; margin-top: 10px; }
+  .slider-row input[type="range"] {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    border-radius: 3px;
+    background: linear-gradient(to right, var(--accent) var(--pct), var(--line) var(--pct));
+    outline: none;
+  }
+  .slider-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+  }
+  .slider-row input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; border: none; border-radius: 50%; background: var(--accent); cursor: pointer; }
+  .slider-value { min-width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
 
   /* overrides */
   .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -1752,7 +2458,7 @@ const STYLE = `
   }
   .kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px; }
   @media (max-width: 500px) { .kv-grid { grid-template-columns: 1fr; } }
-  .kv { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; font-size: 14px; border-bottom: 1px solid var(--line); }
+  .kv { display: flex; justify-content: space-between; gap: 12px; padding: 11px 0; font-size: 15px; font-weight: 300; }
   .kv span:first-child { color: var(--muted); }
   .kv span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
   details { margin-top: 14px; }

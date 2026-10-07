@@ -27,6 +27,7 @@
                     "prices": "Prices",
                     "solar_forecast": "Solar forecast",
                     "extra_pv": "Additional PV installation",
+                    "ev_charger": "EV charger",
                     "meter": "Smart meter",
                     "control": "Control"
                 }
@@ -76,6 +77,14 @@
                     "extra_pv_modbus_address": "Extra PV: Modbus register address",
                     "extra_pv_modbus_on_value": "Extra PV: register value for \"on\"",
                     "extra_pv_modbus_off_value": "Extra PV: register value for \"off\" (curtail)"
+                }
+            },
+            "ev_charger": {
+                "title": "EV charger",
+                "description": "Sensors of your EV charger, shown in the panel's energy flow. Display only, not used for control.",
+                "data": {
+                    "ev_charger_power_entity": "EV charger: power sensor (W)",
+                    "ev_charger_energy_entity": "EV charger: total energy sensor (kWh)"
                 }
             },
             "meter": {

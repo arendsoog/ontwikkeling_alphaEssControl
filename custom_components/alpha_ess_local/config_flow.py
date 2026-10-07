@@ -23,6 +23,8 @@ from .const import (
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
     CONF_ENTSOE_PRICE_ENTITY,
+    CONF_EV_CHARGER_ENERGY_ENTITY,
+    CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_EXTRA_PV_MODBUS_ADDRESS,
     CONF_EXTRA_PV_MODBUS_HUB,
@@ -549,6 +551,30 @@ def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sectio
     ], []
 
 
+def _ev_charger_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
+    """EV charger sensors -- display only (the panel), not used for control."""
+    return [
+        (
+            vol.Optional(
+                CONF_EV_CHARGER_POWER_ENTITY,
+                description={"suggested_value": options.get(CONF_EV_CHARGER_POWER_ENTITY)},
+            ),
+            selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="power")
+            ),
+        ),
+        (
+            vol.Optional(
+                CONF_EV_CHARGER_ENERGY_ENTITY,
+                description={"suggested_value": options.get(CONF_EV_CHARGER_ENERGY_ENTITY)},
+            ),
+            selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="energy")
+            ),
+        ),
+    ], []
+
+
 def _meter_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
     """Smart-meter (P1/DSMR) sources: live house load and monthly peak."""
     house_load_candidates = _house_load_candidates(hass)
@@ -636,6 +662,7 @@ OPTIONS_SECTIONS = {
     "prices": _prices_fields,
     "solar_forecast": _solar_forecast_fields,
     "extra_pv": _extra_pv_fields,
+    "ev_charger": _ev_charger_fields,
     "meter": _meter_fields,
     "control": _control_fields,
 }
@@ -734,6 +761,11 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         return self._async_section("extra_pv", user_input)
+
+    async def async_step_ev_charger(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        return self._async_section("ev_charger", user_input)
 
     async def async_step_meter(
         self, user_input: dict[str, Any] | None = None

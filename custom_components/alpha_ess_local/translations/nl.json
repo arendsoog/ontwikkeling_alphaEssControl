@@ -27,6 +27,7 @@
                     "prices": "Prijzen",
                     "solar_forecast": "Zonnevoorspelling",
                     "extra_pv": "Extra PV-installatie",
+                    "ev_charger": "EV-lader",
                     "meter": "Slimme meter",
                     "control": "Sturing"
                 }
@@ -76,6 +77,14 @@
                     "extra_pv_modbus_address": "Extra PV: Modbus registeradres",
                     "extra_pv_modbus_on_value": "Extra PV: registerwaarde voor \"aan\"",
                     "extra_pv_modbus_off_value": "Extra PV: registerwaarde voor \"uit\" (curtailen)"
+                }
+            },
+            "ev_charger": {
+                "title": "EV-lader",
+                "description": "Sensoren van je laadpaal, voor de energiestroom in het paneel. Alleen weergave, niet gebruikt voor de sturing.",
+                "data": {
+                    "ev_charger_power_entity": "EV-lader: vermogensensor (W)",
+                    "ev_charger_energy_entity": "EV-lader: energiesensor totaal (kWh)"
                 }
             },
             "meter": {

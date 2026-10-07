@@ -103,6 +103,11 @@ DEFAULT_EXTRA_PV_MODBUS_ON_VALUE = 100
 DEFAULT_EXTRA_PV_MODBUS_OFF_VALUE = 0
 
 CONF_HOUSE_LOAD_POWER_ENTITY = "house_load_power_entity"
+# Optional EV charger sensors -- display only, not used for control: live
+# power (the panel's energy-flow scene splits the house load into rooms and
+# charger) and the cumulative energy counter (per-day totals in the panel).
+CONF_EV_CHARGER_POWER_ENTITY = "ev_charger_power_entity"
+CONF_EV_CHARGER_ENERGY_ENTITY = "ev_charger_energy_entity"
 
 # Options flow: scheduler tuning (config.ini [Daily])
 CONF_ALLOW_PROVIDER_CONTROL_HOURS = "allow_provider_control_hours"
