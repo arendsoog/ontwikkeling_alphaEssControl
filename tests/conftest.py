@@ -18,11 +18,20 @@ def mock_api_client():
     Patched at the config_flow module's import site (`from .api import
     AlphaEssLocalApiClient`), not in api.py itself, since that's the name
     actually looked up when the flow instantiates the client.
+
+    Also skips setting the entry up once the flow creates it (and on the
+    reload an options change triggers): these flow tests only need the
+    entry to exist, and a real setup would open a Modbus connection --
+    which pytest-homeassistant-custom-component now fails the test for.
     """
-    with patch(
-        "custom_components.alpha_ess_local.config_flow.AlphaEssLocalApiClient",
-        autospec=True,
-    ) as mock_client:
+    with (
+        patch(
+            "custom_components.alpha_ess_local.config_flow.AlphaEssLocalApiClient",
+            autospec=True,
+        ) as mock_client,
+        patch("custom_components.alpha_ess_local.async_setup_entry", return_value=True),
+        patch("custom_components.alpha_ess_local.async_unload_entry", return_value=True),
+    ):
         client = mock_client.return_value
         client.async_test_connection = AsyncMock(return_value=None)
         client.async_get_data = AsyncMock(

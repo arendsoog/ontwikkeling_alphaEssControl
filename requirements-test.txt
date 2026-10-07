@@ -1,4 +1,7 @@
 -r requirements.txt
-pytest-homeassistant-custom-component
+# Pins the Home Assistant version the dev environment and tests run
+# against (0.13.367 = homeassistant 2026.9.4, needs Python 3.14 -- see
+# .devcontainer/devcontainer.json). Bump both together to follow HA.
+pytest-homeassistant-custom-component==0.13.367
 pytest-cov
 ruff

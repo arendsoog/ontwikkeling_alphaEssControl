@@ -24,7 +24,12 @@ for cert in "${certs[@]}"; do
 done
 update-ca-certificates > /dev/null
 
-bundle="$(python3 -c 'import certifi; print(certifi.where())')"
+# certifi only exists once the requirements are installed (scripts/setup
+# runs this again afterwards); a fresh image may not have it yet.
+if ! bundle="$(python3 -c 'import certifi; print(certifi.where())' 2> /dev/null)"; then
+    echo "trust-local-ca: trusted ${#certs[@]} root certificate(s) system-wide (certifi not installed yet)"
+    exit 0
+fi
 for cert in "${certs[@]}"; do
     # The first base64 line is unique enough to tell if it's already there.
     if ! grep -qF "$(sed -n 2p "$cert")" "$bundle"; then
