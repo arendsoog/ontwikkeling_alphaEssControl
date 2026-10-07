@@ -26,13 +26,16 @@ from custom_components.alpha_ess_local.sensor import (
     AlphaEssLocalExtraPvPowerSensor,
     AlphaEssLocalGridToBatteryTodaySensor,
     AlphaEssLocalHouseLoadTodaySensor,
+    AlphaEssLocalSensor,
     AlphaEssLocalSolarEnergyTodaySensor,
     AlphaEssLocalSolarToBatteryTodaySensor,
     AlphaEssLocalTotalPvPowerSensor,
     AlphaEssLocalYesterdaySavingsSensor,
+    _cell_voltage_delta,
     _current_hour_action,
     _day_plan_attributes,
     _day_plan_hour_count,
+    _equivalent_cycles,
     _hour_plan_entries,
     _next_hour_action,
     _remaining_solar_surplus_today,
@@ -600,3 +603,42 @@ def test_dispatch_mode_sensor_is_diagnostic():
     coordinator = _fake_coordinator(decision)
 
     assert AlphaEssLocalDispatchModeSensor(coordinator).entity_category is EntityCategory.DIAGNOSTIC
+
+
+# --- battery health ----------------------------------------------------------
+
+
+def test_cell_voltage_delta_in_millivolts():
+    data = {"battery_min_cell_voltage": 3.325, "battery_max_cell_voltage": 3.331}
+    assert _cell_voltage_delta(data) == 6
+
+
+def test_cell_voltage_delta_none_when_a_reading_is_missing():
+    assert _cell_voltage_delta({"battery_min_cell_voltage": 3.325}) is None
+
+
+def test_equivalent_cycles_divides_discharge_by_capacity():
+    data = {"battery_total_energy_discharge": 2300.0, "battery_capacity": 23.0}
+    assert _equivalent_cycles(data) == pytest.approx(100.0)
+
+
+def test_equivalent_cycles_none_without_capacity():
+    assert (
+        _equivalent_cycles({"battery_total_energy_discharge": 10.0, "battery_capacity": 0}) is None
+    )
+
+
+def test_modbus_sensor_uses_value_fn_when_defined():
+    description = next(d for d in MODBUS_SENSOR_DESCRIPTIONS if d.key == "battery_cycles")
+    coordinator = _fake_coordinator(
+        {"battery_total_energy_discharge": 46.0, "battery_capacity": 23.0}
+    )
+
+    assert AlphaEssLocalSensor(coordinator, description).native_value == pytest.approx(2.0)
+
+
+def test_modbus_sensor_reads_key_without_value_fn():
+    description = next(d for d in MODBUS_SENSOR_DESCRIPTIONS if d.key == "battery_soh")
+    coordinator = _fake_coordinator({"battery_soh": 99.5})
+
+    assert AlphaEssLocalSensor(coordinator, description).native_value == 99.5

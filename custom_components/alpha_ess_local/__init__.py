@@ -18,6 +18,7 @@ from .coordinator import (
     AlphaEssLocalSolarCoordinator,
 )
 from .data import SOC_MAX, SOC_MAX_CHARGE_ON_GRID, SOC_MIN_DISCHARGE_AFTER, Charge
+from .frontend import async_register_panel, async_unregister_panel
 from .orchestrator import (
     AlphaEssLocalDispatchCoordinator,
     AlphaEssLocalRealDataCoordinator,
@@ -132,6 +133,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry
     )
 
     _async_register_dispatch_services(hass)
+    await async_register_panel(hass)
 
     entry.async_on_unload(
         async_track_time_change(
@@ -169,6 +171,19 @@ async def async_unload_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntr
     if unloaded:
         await entry.runtime_data.client.async_close()
     return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry) -> None:
+    """Remove the sidebar panel once the last entry is deleted.
+
+    Done here rather than on unload: every options change reloads the
+    entry, and removing the panel then would yank it out from under an
+    open panel page (e.g. right after toggling an option from it).
+    """
+    if not any(
+        other.entry_id != entry.entry_id for other in hass.config_entries.async_entries(DOMAIN)
+    ):
+        async_unregister_panel(hass)
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry) -> None:

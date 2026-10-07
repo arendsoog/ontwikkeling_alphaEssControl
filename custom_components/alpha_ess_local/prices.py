@@ -64,7 +64,7 @@ def _parse_entsoe_prices(state: State, attribute: str) -> dict[int, float] | Non
         return None
 
     unit = state.attributes.get("unit_of_measurement")
-    prices: dict[int, float] = {}
+    prices: dict[int, list[float]] = {}
     for entry in entries:
         try:
             timestamp = _as_datetime(entry["time"])
@@ -82,9 +82,11 @@ def _parse_entsoe_prices(state: State, attribute: str) -> dict[int, float] | Non
                 "ENTSO-e entity %s: could not parse timestamp in %r", state.entity_id, entry
             )
             return None
-        prices[dt_util.as_local(timestamp).hour] = _entsoe_price_to_eur_per_kwh(price, unit)
+        prices.setdefault(dt_util.as_local(timestamp).hour, []).append(
+            _entsoe_price_to_eur_per_kwh(price, unit)
+        )
 
-    return prices
+    return _hourly_means(prices)
 
 
 def _parse_frank_energie_prices(state: State, target_date: date) -> dict[int, float] | None:
@@ -100,7 +102,7 @@ def _parse_frank_energie_prices(state: State, target_date: date) -> dict[int, fl
         LOGGER.debug("Frank Energie entity %s has no 'prices' attribute", state.entity_id)
         return None
 
-    prices: dict[int, float] = {}
+    prices: dict[int, list[float]] = {}
     for entry in entries:
         try:
             start = _as_datetime(entry["from"])
@@ -121,9 +123,21 @@ def _parse_frank_energie_prices(state: State, target_date: date) -> dict[int, fl
         local_start = dt_util.as_local(start)
         if local_start.date() != target_date:
             continue
-        prices[local_start.hour] = price
+        prices.setdefault(local_start.hour, []).append(price)
 
-    return prices or None
+    return _hourly_means(prices) or None
+
+
+def _hourly_means(prices: dict[int, list[float]]) -> dict[int, float]:
+    """One price per hour: the mean of that hour's entries.
+
+    Since the day-ahead market moved to 15-minute products (Oct 2025),
+    sources deliver four prices per hour (Frank Energie defaults to PT15M).
+    Storing them by hour used to keep only the last quarter (xx:45); the
+    scheduler plans per hour, so it needs the hour's average instead. An
+    hourly feed (one entry per hour) is unaffected.
+    """
+    return {hour: sum(values) / len(values) for hour, values in prices.items()}
 
 
 def read_hour_prices(

@@ -21,12 +21,31 @@
     "options": {
         "step": {
             "init": {
-                "description": "Tune pricing, forecasting, and scheduler settings. All fields are optional and only used once the corresponding feature is built.{solar_forecast_note}",
+                "description": "Select the section you want to configure. Each section is saved on its own.",
+                "menu_options": {
+                    "installation": "Installation",
+                    "prices": "Prices",
+                    "solar_forecast": "Solar forecast",
+                    "extra_pv": "Additional PV installation",
+                    "ev_charger": "EV charger",
+                    "meter": "Smart meter",
+                    "control": "Control"
+                }
+            },
+            "installation": {
+                "title": "Installation",
+                "description": "Physical specs of the roof PV, battery and inverter.",
                 "data": {
                     "pv_panel_wp": "Roof PV: Wp per panel",
                     "pv_panel_count": "Roof PV: number of panels",
                     "usable_battery_capacity": "Usable battery capacity",
-                    "inverter_nominal_power": "Inverter nominal power",
+                    "inverter_nominal_power": "Inverter nominal power"
+                }
+            },
+            "prices": {
+                "title": "Prices",
+                "description": "Supplier and network costs, VAT and the price source.{missing_source_note}",
+                "data": {
                     "provider_use_fee": "Provider use fee",
                     "provider_return_fee": "Provider return fee",
                     "vat_percentage": "VAT",
@@ -34,21 +53,53 @@
                     "network_use_fee_normal": "Network cost, normal tariff",
                     "network_use_fee_low": "Network cost, low/night tariff",
                     "entsoe_price_entity": "ENTSO-E entity",
-                    "frank_energie_price_entity": "Frank Energie entity",
+                    "frank_energie_price_entity": "Frank Energie entity"
+                }
+            },
+            "solar_forecast": {
+                "title": "Solar forecast",
+                "description": "Solar forecast locations; forecasts of all ticked locations are summed.{missing_source_note}",
+                "data": {
                     "forecast_solar_entries": "Forecast.Solar locations",
-                    "solcast_entries": "Solcast locations",
+                    "solcast_entries": "Solcast locations"
+                }
+            },
+            "extra_pv": {
+                "title": "Additional PV installation",
+                "description": "A second PV installation and its optional Modbus control that switches it off at negative prices.",
+                "data": {
                     "extra_pv_power_entity": "Additional PV installation: power sensor",
                     "extra_pv_panel_wp": "Additional PV installation: Wp per panel",
                     "extra_pv_panel_count": "Additional PV installation: number of panels",
-                    "extra_pv_control_enabled": "Extra PV: enable price control",
-                    "house_load_power_entity": "House load power sensor (P1)",
-                    "peak_load_this_month_entity": "Peak load this month sensor (capaciteitstarief)",
-                    "allow_provider_control_hours": "Hours where the provider may override the schedule",
+                    "extra_pv_control_enabled": "Extra PV: enable negative-price control",
                     "extra_pv_modbus_hub": "Extra PV: Modbus hub name (empty = disabled)",
                     "extra_pv_modbus_slave": "Extra PV: Modbus slave ID",
                     "extra_pv_modbus_address": "Extra PV: Modbus register address",
                     "extra_pv_modbus_on_value": "Extra PV: register value for \"on\"",
-                    "extra_pv_modbus_off_value": "Extra PV: register value for \"off\" (curtail)",
+                    "extra_pv_modbus_off_value": "Extra PV: register value for \"off\" (curtail)"
+                }
+            },
+            "ev_charger": {
+                "title": "EV charger",
+                "description": "Sensors of your EV charger, shown in the panel's energy flow. Display only, not used for control.",
+                "data": {
+                    "ev_charger_power_entity": "EV charger: power sensor (W)",
+                    "ev_charger_energy_entity": "EV charger: total energy sensor (kWh)"
+                }
+            },
+            "meter": {
+                "title": "Smart meter",
+                "description": "P1/smart-meter sensors for live house load and the monthly peak.",
+                "data": {
+                    "house_load_power_entity": "House load power sensor (P1)",
+                    "peak_load_this_month_entity": "Peak load this month sensor (capaciteitstarief)"
+                }
+            },
+            "control": {
+                "title": "Control",
+                "description": "Scheduler behaviour and the master switch for battery control.",
+                "data": {
+                    "allow_provider_control_hours": "Hours where the provider may override the schedule",
                     "persist_daily_charge_limit": "Keep the once-per-day grid-charge/discharge limit after a restart",
                     "control_enabled": "Enable battery control (writes real commands to the inverter)"
                 }
@@ -93,7 +144,19 @@
             "solar_to_battery_today": { "name": "Today solar to battery" },
             "grid_to_battery_today": { "name": "Today grid to battery" },
             "yesterday_savings": { "name": "Yesterday's savings" },
-            "dispatch_current_mode": { "name": "Dispatch current mode" }
+            "dispatch_current_mode": { "name": "Dispatch current mode" },
+            "battery_voltage": { "name": "Battery voltage" },
+            "battery_current": { "name": "Battery current" },
+            "battery_min_cell_voltage": { "name": "Battery lowest cell voltage" },
+            "battery_max_cell_voltage": { "name": "Battery highest cell voltage" },
+            "battery_cell_voltage_delta": { "name": "Battery cell voltage spread" },
+            "battery_min_cell_temperature": { "name": "Battery lowest cell temperature" },
+            "battery_max_cell_temperature": { "name": "Battery highest cell temperature" },
+            "battery_soh": { "name": "Battery state of health" },
+            "battery_capacity": { "name": "Battery nominal capacity" },
+            "battery_module_count": { "name": "Battery modules" },
+            "battery_cycles": { "name": "Battery cycles (estimated)" },
+            "inverter_temperature": { "name": "Inverter temperature" }
         },
         "number": {
             "max_soc_positive_price": { "name": "Max SOC on positive-price hours" },

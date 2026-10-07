@@ -5,8 +5,15 @@ set -e
 
 cd "$(dirname "$0")/.."
 
+# Before pip (system store) and again after it (certifi's bundle, which
+# Home Assistant uses and pip may just have installed or replaced), so
+# HTTPS works behind a host antivirus that intercepts TLS (see the script).
+bash scripts/trust-local-ca
+
 python3 -m pip install --upgrade pip
 pip3 install -r requirements-test.txt
+
+bash scripts/trust-local-ca
 
 mkdir -p config
 if [ ! -f config/configuration.yaml ]; then

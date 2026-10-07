@@ -12,8 +12,8 @@ SCAN_INTERVAL = timedelta(seconds=30)
 
 # Options flow: device physical specs (config.ini [General])
 # CONF_PV_POWER is not itself a form field -- it's computed from
-# CONF_PV_PANEL_WP * CONF_PV_PANEL_COUNT each time the options form is
-# submitted (config_flow.py's async_step_init) and stored alongside them, so
+# CONF_PV_PANEL_WP * CONF_PV_PANEL_COUNT each time an options section is
+# submitted (config_flow.py's _async_section) and stored alongside them, so
 # every other reader (e.g. orchestrator.py's solar-regression calibration)
 # keeps consuming a single total wattage. Entering Wp-per-panel and panel
 # count separately is much harder to fat-finger than one raw watt total.
@@ -103,6 +103,11 @@ DEFAULT_EXTRA_PV_MODBUS_ON_VALUE = 100
 DEFAULT_EXTRA_PV_MODBUS_OFF_VALUE = 0
 
 CONF_HOUSE_LOAD_POWER_ENTITY = "house_load_power_entity"
+# Optional EV charger sensors -- display only, not used for control: live
+# power (the panel's energy-flow scene splits the house load into rooms and
+# charger) and the cumulative energy counter (per-day totals in the panel).
+CONF_EV_CHARGER_POWER_ENTITY = "ev_charger_power_entity"
+CONF_EV_CHARGER_ENERGY_ENTITY = "ev_charger_energy_entity"
 
 # Options flow: scheduler tuning (config.ini [Daily])
 CONF_ALLOW_PROVIDER_CONTROL_HOURS = "allow_provider_control_hours"

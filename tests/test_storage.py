@@ -8,26 +8,30 @@ the weighting math is deterministic.
 
 import sqlite3
 from contextlib import closing
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
-from custom_components.alpha_ess_local.data import Day, Earning
+from custom_components.alpha_ess_local.data import Day, Earning, FiveMin
 from custom_components.alpha_ess_local.storage import (
     LOAD_TAU_DAYS,
     MIN_SAMPLES,
     _day_class,
+    _ensure_schema,
     _is_factor_reliable,
     _recency_weight,
     c_weekday,
     calculate_and_store_mean_data,
     delete_hour_progress,
+    retrieve_day_five_min,
     retrieve_day_hours,
     retrieve_day_savings,
     retrieve_dispatch_daily_state,
     retrieve_hour_progress,
     retrieve_mean_data,
+    retrieve_period_summary,
     store_dispatch_daily_state,
+    store_five_min_sample,
     store_hour_data,
     store_hour_progress,
 )
@@ -762,3 +766,151 @@ def test_solar_regression_becomes_reliable_with_enough_samples(tmp_path, freezer
 
 def c_weekday_for(year, mon, day) -> int:
     return c_weekday(datetime(year, mon, day).date())
+
+
+# --- 5-minute samples -----------------------------------------------------------
+
+
+def test_five_min_samples_round_trip(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    sample = FiveMin(
+        real_solar_power_roof=1200,
+        real_extra_pv_power=300,
+        total_active_power=-400,
+        battery_power=-900,
+        real_house_load=200,
+    )
+    store_five_min_sample(db_path, 2026, 10, 7, 10, 3, sample)
+    store_five_min_sample(db_path, 2026, 10, 7, 11, 0, FiveMin(real_house_load=500))
+
+    samples = retrieve_day_five_min(db_path, 2026, 10, 7)
+
+    assert set(samples) == {10, 11}
+    restored = samples[10][3]
+    assert restored.real_solar_power_roof == 1200
+    assert restored.real_extra_pv_power == 300
+    assert restored.total_active_power == -400
+    assert restored.battery_power == -900
+    assert restored.real_house_load == 200
+
+
+def test_five_min_samples_only_for_the_requested_day(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    store_five_min_sample(db_path, 2026, 10, 6, 10, 0, FiveMin(real_house_load=1))
+    store_five_min_sample(db_path, 2026, 10, 7, 10, 0, FiveMin(real_house_load=2))
+
+    assert retrieve_day_five_min(db_path, 2026, 10, 7)[10][0].real_house_load == 2
+
+
+def test_five_min_samples_older_than_three_days_are_pruned(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    store_five_min_sample(db_path, 2026, 10, 1, 10, 0, FiveMin(real_house_load=1))
+    store_five_min_sample(db_path, 2026, 10, 4, 10, 0, FiveMin(real_house_load=1))
+
+    store_five_min_sample(db_path, 2026, 10, 7, 10, 0, FiveMin(real_house_load=1))
+
+    assert retrieve_day_five_min(db_path, 2026, 10, 1) == {}
+    assert retrieve_day_five_min(db_path, 2026, 10, 4) != {}
+
+
+# --- period summaries (history tab) -------------------------------------------
+
+
+def _insert_hour(
+    db_path, day, hour, *, house=500, roof=0, extra=0, feed_in=500, price=0.1, charge=0, discharge=0
+):
+    with closing(sqlite3.connect(db_path)) as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO hour_data (year, mon, day, hour, house_load, solar_power_roof,
+                extra_pv_power, feed_in, price, use_fee, return_fee, vat_percentage,
+                battery_charge_energy, battery_discharge_energy)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.02, 0.02, 6, ?, ?)
+            """,
+            (
+                day.year,
+                day.month,
+                day.day,
+                hour,
+                house,
+                roof,
+                extra,
+                feed_in,
+                price,
+                charge,
+                discharge,
+            ),
+        )
+        conn.commit()
+
+
+def test_period_summary_by_hour_has_all_24_hours_and_totals(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    day = date(2026, 10, 6)
+    _insert_hour(db_path, day, 12, house=400, roof=3000, extra=1000, feed_in=-2600, charge=1000)
+    _insert_hour(db_path, day, 20, house=800, feed_in=0, discharge=800)
+
+    summary = retrieve_period_summary(db_path, day, day, "hour", 6.0)
+
+    assert summary["group"] == "hour"
+    assert [r["key"] for r in summary["rows"]] == [f"{h:02d}" for h in range(24)]
+    noon = summary["rows"][12]
+    assert (noon["solar_wh_roof"], noon["solar_wh_extra"], noon["solar_wh"]) == (3000, 1000, 4000)
+    assert (noon["import_wh"], noon["export_wh"]) == (0, 2600)
+    assert summary["rows"][3]["hours"] == 0  # nothing stored: shown as a gap
+    totals = summary["totals"]
+    assert totals["hours"] == 2
+    assert totals["house_wh"] == 1200
+    assert totals["battery_charge_wh"] == 1000
+    assert totals["battery_discharge_wh"] == 800
+
+
+def test_period_summary_by_day_includes_empty_days(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    _insert_hour(db_path, date(2026, 10, 5), 10, house=500)
+    _insert_hour(db_path, date(2026, 10, 5), 11, house=700)
+    _insert_hour(db_path, date(2026, 10, 7), 10, house=300)
+
+    summary = retrieve_period_summary(db_path, date(2026, 10, 5), date(2026, 10, 7), "day", 6.0)
+
+    assert [(r["key"], r["hours"], r["house_wh"]) for r in summary["rows"]] == [
+        ("2026-10-05", 2, 1200),
+        ("2026-10-06", 0, 0),
+        ("2026-10-07", 1, 300),
+    ]
+
+
+def test_period_summary_by_month_over_a_year(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    _insert_hour(db_path, date(2026, 3, 10), 10, house=1000)
+    _insert_hour(db_path, date(2026, 10, 1), 10, house=2000)
+
+    summary = retrieve_period_summary(db_path, date(2026, 1, 1), date(2026, 12, 31), "month", 6.0)
+
+    assert len(summary["rows"]) == 12
+    assert summary["rows"][2] == summary["rows"][2] | {"key": "2026-03", "house_wh": 1000}
+    assert summary["rows"][9]["house_wh"] == 2000
+    assert summary["totals"]["house_wh"] == 3000
+
+
+def test_period_summary_savings_match_the_day_savings(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    day = date(2026, 10, 6)
+    _insert_hour(db_path, day, 12, house=400, roof=3000, extra=1000, feed_in=-2600, charge=1000)
+
+    summary = retrieve_period_summary(db_path, day, day, "hour", 6.0)
+    savings = retrieve_day_savings(db_path, 2026, 10, 6, 6.0)
+
+    noon = summary["rows"][12]
+    assert noon["savings_solar_eur"] == pytest.approx(savings[12]["savings_solar_eur"], abs=0.01)
+    assert noon["savings_battery_eur"] == pytest.approx(
+        savings[12]["savings_battery_eur"], abs=0.01
+    )
+
+
+def test_period_summary_rejects_unknown_group(tmp_path):
+    with pytest.raises(ValueError):
+        retrieve_period_summary(
+            str(tmp_path / "t.db"), date(2026, 1, 1), date(2026, 1, 1), "week", 6.0
+        )

@@ -21,10 +21,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date as date_cls
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .const import LOGGER
-from .data import MAX_HOURS, MAX_WEEK_DAYS, MIN_EXPECTED_SOLAR_POWER, Day, Earning
+from .data import MAX_HOURS, MAX_WEEK_DAYS, MIN_EXPECTED_SOLAR_POWER, Day, Earning, FiveMin
 from .prices import mk_return_price, mk_use_price
 
 MAX_MONTHS = 12
@@ -147,6 +147,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "hour_data", "battery_discharge_energy", "REAL DEFAULT 0")
     _add_column_if_missing(conn, "hour_progress", "battery_charge_energy_at_hour_start", "REAL")
     _add_column_if_missing(conn, "hour_progress", "battery_discharge_energy_at_hour_start", "REAL")
+    # The individual 5-minute samples (hour_progress/hour_data only keep
+    # averages), so today's power curve survives a restart. Short-lived:
+    # store_five_min_sample prunes everything older than FIVE_MIN_KEEP_DAYS.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS five_min_data (
+            year INTEGER, mon INTEGER, day INTEGER, hour INTEGER, slot INTEGER,
+            solar_power_roof REAL, extra_pv_power REAL, total_active_power REAL,
+            battery_power REAL, house_load REAL,
+            PRIMARY KEY (year, mon, day, hour, slot)
+        )
+        """
+    )
 
 
 def store_hour_data(
@@ -291,6 +304,160 @@ def _net_grid_cost(
     )
 
 
+# Columns _hour_figures expects, in order (after any key columns).
+_HOUR_FIGURE_COLUMNS = """house_load, solar_power_roof, extra_pv_power, feed_in,
+                   price, use_fee, return_fee, vat_percentage,
+                   battery_charge_energy, battery_discharge_energy"""
+
+
+def _hour_figures(
+    row: tuple, default_vat_percentage: float, return_vat_percentage: float | None
+) -> dict[str, float]:
+    """One stored hour's energy flows (Wh) and savings (EUR), unrounded.
+
+    `row` holds the _HOUR_FIGURE_COLUMNS values. Savings compare three
+    scenarios with that hour's own stored price/fees -- see
+    retrieve_day_savings. `feed_in` is the AlphaESS's net grid exchange
+    (positive = import), split here into separate import/export totals.
+    """
+    (
+        house_load,
+        solar_power_roof,
+        extra_pv_power,
+        feed_in,
+        price,
+        use_fee,
+        return_fee,
+        vat,
+        battery_charge_energy,
+        battery_discharge_energy,
+    ) = row
+    vat = vat if vat is not None else default_vat_percentage
+    effective_return_vat = return_vat_percentage if return_vat_percentage is not None else vat
+    # Total solar from *both* installations — the AlphaESS's own roof
+    # panels and a separate second installation (e.g. an SMA Tripower),
+    # if configured (see orchestrator._extra_pv_power). `feed_in` (the
+    # AlphaESS's own total active power) already nets out extra_pv_power
+    # on its own, since that second installation feeds the house/grid
+    # independently of the AlphaESS's battery — only cost_solar_only
+    # needs it added explicitly.
+    total_solar = (solar_power_roof or 0.0) + (extra_pv_power or 0.0)
+    feed_in = feed_in or 0.0
+    cost_no_solar = _net_grid_cost(
+        house_load, price, use_fee, return_fee, vat, effective_return_vat
+    )
+    cost_solar_only = _net_grid_cost(
+        house_load - total_solar, price, use_fee, return_fee, vat, effective_return_vat
+    )
+    cost_actual = _net_grid_cost(feed_in, price, use_fee, return_fee, vat, effective_return_vat)
+    return {
+        "solar_wh": total_solar,
+        "solar_wh_roof": solar_power_roof or 0.0,
+        "solar_wh_extra": extra_pv_power or 0.0,
+        "house_wh": house_load or 0.0,
+        "import_wh": max(0.0, feed_in),
+        "export_wh": max(0.0, -feed_in),
+        "battery_charge_wh": battery_charge_energy or 0.0,
+        "battery_discharge_wh": battery_discharge_energy or 0.0,
+        "savings_solar_eur": cost_no_solar - cost_solar_only,
+        "savings_battery_eur": cost_solar_only - cost_actual,
+    }
+
+
+PERIOD_GROUPS = ("hour", "day", "month")
+
+
+def retrieve_period_summary(
+    db_path: str,
+    start: date_cls,
+    end: date_cls,
+    group: str,
+    default_vat_percentage: float,
+    return_vat_percentage: float | None = None,
+) -> dict:
+    """Energy and savings for `start`..`end` (inclusive), grouped.
+
+    `group` is "hour" (one day's hours 0-23), "day" (each date in the range)
+    or "month" (each month in the range). Every group in the range gets a
+    row, also when nothing was stored for it -- its `hours` count is then 0,
+    so a table can show the gap (e.g. Home Assistant was off) instead of
+    silently skipping it. `totals` sums the whole range.
+    """
+    if group not in PERIOD_GROUPS:
+        raise ValueError(f"unknown group {group!r}")
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            f"""
+            SELECT year, mon, day, hour, {_HOUR_FIGURE_COLUMNS}
+            FROM hour_data
+            WHERE year * 10000 + mon * 100 + day BETWEEN ? AND ?
+            ORDER BY year, mon, day, hour
+            """,
+            (
+                _date_key(start.year, start.month, start.day),
+                _date_key(end.year, end.month, end.day),
+            ),
+        ).fetchall()
+
+    def key_of(year: int, mon: int, day: int, hour: int) -> str:
+        if group == "hour":
+            return f"{hour:02d}"
+        if group == "day":
+            return f"{year:04d}-{mon:02d}-{day:02d}"
+        return f"{year:04d}-{mon:02d}"
+
+    # Every group in the range, in order, so gaps show up as empty rows.
+    keys: list[str] = []
+    if group == "hour":
+        keys = [f"{h:02d}" for h in range(MAX_HOURS)]
+    else:
+        current = start
+        while current <= end:
+            key = key_of(current.year, current.month, current.day, 0)
+            if key not in keys:
+                keys.append(key)
+            current += timedelta(days=1)
+
+    fields = (
+        "solar_wh",
+        "solar_wh_roof",
+        "solar_wh_extra",
+        "house_wh",
+        "import_wh",
+        "export_wh",
+        "battery_charge_wh",
+        "battery_discharge_wh",
+        "savings_solar_eur",
+        "savings_battery_eur",
+    )
+    sums = {key: dict.fromkeys(fields, 0.0) | {"hours": 0} for key in keys}
+    for row in rows:
+        key = key_of(*row[:4])
+        if key not in sums:
+            continue
+        figures = _hour_figures(row[4:], default_vat_percentage, return_vat_percentage)
+        for field_name in fields:
+            sums[key][field_name] += figures[field_name]
+        sums[key]["hours"] += 1
+
+    def rounded(values: dict) -> dict:
+        return {
+            name: round(value, 2) if name.endswith("_eur") else round(value)
+            for name, value in values.items()
+        }
+
+    totals = dict.fromkeys(fields, 0.0) | {"hours": 0}
+    for values in sums.values():
+        for name in totals:
+            totals[name] += values[name]
+    return {
+        "group": group,
+        "rows": [{"key": key} | rounded(sums[key]) for key in keys],
+        "totals": rounded(totals),
+    }
+
+
 def retrieve_day_savings(
     db_path: str,
     year: int,
@@ -346,10 +513,8 @@ def retrieve_day_savings(
     with _connection(db_path) as conn:
         _ensure_schema(conn)
         rows = conn.execute(
-            """
-            SELECT hour, house_load, solar_power_roof, extra_pv_power, feed_in,
-                   price, use_fee, return_fee, vat_percentage,
-                   battery_charge_energy, battery_discharge_energy
+            f"""
+            SELECT hour, {_HOUR_FIGURE_COLUMNS}
             FROM hour_data
             WHERE year = ? AND mon = ? AND day = ?
             ORDER BY hour
@@ -358,46 +523,18 @@ def retrieve_day_savings(
         ).fetchall()
 
     results = []
-    for (
-        hour,
-        house_load,
-        solar_power_roof,
-        extra_pv_power,
-        feed_in,
-        price,
-        use_fee,
-        return_fee,
-        vat,
-        battery_charge_energy,
-        battery_discharge_energy,
-    ) in rows:
-        vat = vat if vat is not None else default_vat_percentage
-        effective_return_vat = return_vat_percentage if return_vat_percentage is not None else vat
-        # Total solar from *both* installations — the AlphaESS's own roof
-        # panels and a separate second installation (e.g. an SMA Tripower),
-        # if configured (see orchestrator._extra_pv_power). `feed_in` (the
-        # AlphaESS's own total active power) already nets out extra_pv_power
-        # on its own, since that second installation feeds the house/grid
-        # independently of the AlphaESS's battery — only cost_solar_only
-        # needs it added explicitly.
-        total_solar = (solar_power_roof or 0.0) + (extra_pv_power or 0.0)
-        cost_no_solar = _net_grid_cost(
-            house_load, price, use_fee, return_fee, vat, effective_return_vat
-        )
-        cost_solar_only = _net_grid_cost(
-            house_load - total_solar, price, use_fee, return_fee, vat, effective_return_vat
-        )
-        cost_actual = _net_grid_cost(feed_in, price, use_fee, return_fee, vat, effective_return_vat)
+    for row in rows:
+        figures = _hour_figures(row[1:], default_vat_percentage, return_vat_percentage)
         results.append(
             {
-                "hour": hour,
-                "solar_wh": round(total_solar),
-                "solar_wh_roof": round(solar_power_roof or 0.0),
-                "solar_wh_extra": round(extra_pv_power or 0.0),
-                "battery_charge_wh": round(battery_charge_energy or 0.0),
-                "battery_discharge_wh": round(battery_discharge_energy or 0.0),
-                "savings_solar_eur": round(cost_no_solar - cost_solar_only, 4),
-                "savings_battery_eur": round(cost_solar_only - cost_actual, 4),
+                "hour": row[0],
+                "solar_wh": round(figures["solar_wh"]),
+                "solar_wh_roof": round(figures["solar_wh_roof"]),
+                "solar_wh_extra": round(figures["solar_wh_extra"]),
+                "battery_charge_wh": round(figures["battery_charge_wh"]),
+                "battery_discharge_wh": round(figures["battery_discharge_wh"]),
+                "savings_solar_eur": round(figures["savings_solar_eur"], 4),
+                "savings_battery_eur": round(figures["savings_battery_eur"], 4),
             }
         )
 
@@ -539,6 +676,75 @@ def retrieve_hour_progress(
         row[8],
         row[9],
     )
+
+
+FIVE_MIN_KEEP_DAYS = 3
+
+
+def _date_key(year: int, mon: int, day: int) -> int:
+    return year * 10000 + mon * 100 + day
+
+
+def store_five_min_sample(
+    db_path: str, year: int, mon: int, day: int, hour: int, slot: int, sample: FiveMin
+) -> None:
+    """Persist one 5-minute sample, and prune samples older than
+    FIVE_MIN_KEEP_DAYS (only today's are ever read back)."""
+    keep_from = date_cls(year, mon, day) - timedelta(days=FIVE_MIN_KEEP_DAYS)
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO five_min_data
+                (year, mon, day, hour, slot, solar_power_roof, extra_pv_power,
+                 total_active_power, battery_power, house_load)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                year,
+                mon,
+                day,
+                hour,
+                slot,
+                sample.real_solar_power_roof,
+                sample.real_extra_pv_power,
+                sample.total_active_power,
+                sample.battery_power,
+                sample.real_house_load,
+            ),
+        )
+        conn.execute(
+            "DELETE FROM five_min_data WHERE year * 10000 + mon * 100 + day < ?",
+            (_date_key(keep_from.year, keep_from.month, keep_from.day),),
+        )
+        conn.commit()
+
+
+def retrieve_day_five_min(
+    db_path: str, year: int, mon: int, day: int
+) -> dict[int, dict[int, FiveMin]]:
+    """A day's stored 5-minute samples, as {hour: {slot: FiveMin}}."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT hour, slot, solar_power_roof, extra_pv_power, total_active_power,
+                   battery_power, house_load
+            FROM five_min_data
+            WHERE year = ? AND mon = ? AND day = ?
+            """,
+            (year, mon, day),
+        ).fetchall()
+    samples: dict[int, dict[int, FiveMin]] = {}
+    for hour, slot, roof, extra, grid, battery, house in rows:
+        samples.setdefault(hour, {})[slot] = FiveMin(
+            real_solar_power_roof=roof,
+            real_extra_pv_power=extra,
+            total_active_power=grid,
+            battery_power=battery,
+            real_house_load=house,
+        )
+    return samples
 
 
 def delete_hour_progress(db_path: str, year: int, mon: int, day: int, hour: int) -> None:

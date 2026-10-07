@@ -224,6 +224,43 @@ def decide_dispatch(
     )
 
 
+# Closed-loop grid-charge regulation (see the dispatch coordinator). While
+# charging from the grid, the charge power is corrected each cycle from the
+# *measured* grid import, so switching on e.g. a washing machine mid-charge
+# lowers the charge power instead of pushing the 15-minute peak (the
+# capaciteitstarief) over the cap. Above the cap the whole excess is taken
+# off at once; below it, half the headroom is added per cycle so it settles
+# without overshooting. Changes under the deadband aren't written, except
+# when the cap is already exceeded.
+GRID_CHARGE_GAIN_DOWN = 1.0
+GRID_CHARGE_GAIN_UP = 0.5
+GRID_CHARGE_DEADBAND_W = 100
+
+
+def is_grid_charge(param: DispatchParam, hour: Hour) -> bool:
+    """True when this decision charges the battery from the grid."""
+    return (
+        param.mode == DispatchMode.STATE_OF_CHARGE_CONTROL
+        and hour.charge == Charge.CHARGING_ON_GRID
+    )
+
+
+def regulate_grid_charge_power(current_power: int, grid_w: float, config: DispatchConfig) -> int:
+    """Next grid-charge power (W) so the measured grid import moves to the cap.
+
+    `grid_w` is the whole house's measured net grid power (positive =
+    import), which already includes the current charge power -- so the gap
+    to the cap is exactly how much the charge power should change.
+    """
+    cap = config.max_grid_load
+    if cap == float("inf"):
+        return current_power
+    error = cap - grid_w
+    gain = GRID_CHARGE_GAIN_DOWN if error < 0 else GRID_CHARGE_GAIN_UP
+    max_power = _full_dispatch_power(config.usable_battery_capacity)
+    return int(max(0.0, min(float(max_power), current_power + gain * error)))
+
+
 class ExtraPvState(IntEnum):
     OFF = 0
     ON = 1

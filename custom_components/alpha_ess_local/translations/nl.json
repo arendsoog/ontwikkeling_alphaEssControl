@@ -21,12 +21,31 @@
     "options": {
         "step": {
             "init": {
-                "description": "Stel prijs-, voorspellings- en planningsinstellingen af. Alle velden zijn optioneel en worden pas gebruikt zodra de bijbehorende functie is gebouwd.{solar_forecast_note}",
+                "description": "Selecteer de sectie die u wilt configureren. Elke sectie wordt afzonderlijk opgeslagen.",
+                "menu_options": {
+                    "installation": "Installatie",
+                    "prices": "Prijzen",
+                    "solar_forecast": "Zonnevoorspelling",
+                    "extra_pv": "Extra PV-installatie",
+                    "ev_charger": "EV-lader",
+                    "meter": "Slimme meter",
+                    "control": "Sturing"
+                }
+            },
+            "installation": {
+                "title": "Installatie",
+                "description": "Technische gegevens van de PV op het dak, de batterij en de omvormer.",
                 "data": {
                     "pv_panel_wp": "PV dak: Wp per paneel",
                     "pv_panel_count": "PV dak: aantal panelen",
                     "usable_battery_capacity": "Bruikbare batterijcapaciteit",
-                    "inverter_nominal_power": "Nominaal vermogen omvormer",
+                    "inverter_nominal_power": "Nominaal vermogen omvormer"
+                }
+            },
+            "prices": {
+                "title": "Prijzen",
+                "description": "Leverings- en netwerkkosten, BTW en de prijsbron.{missing_source_note}",
+                "data": {
                     "provider_use_fee": "Leveringskosten",
                     "provider_return_fee": "Terugleverkosten",
                     "vat_percentage": "BTW",
@@ -34,21 +53,53 @@
                     "network_use_fee_normal": "Netwerkkosten, normaal tarief",
                     "network_use_fee_low": "Netwerkkosten, laag/nachttarief",
                     "entsoe_price_entity": "ENTSO-E entity",
-                    "frank_energie_price_entity": "Frank Energie entity",
+                    "frank_energie_price_entity": "Frank Energie entity"
+                }
+            },
+            "solar_forecast": {
+                "title": "Zonnevoorspelling",
+                "description": "Locaties voor de zonnevoorspelling; de voorspellingen van alle aangevinkte locaties worden opgeteld.{missing_source_note}",
+                "data": {
                     "forecast_solar_entries": "Forecast.Solar locaties",
-                    "solcast_entries": "Solcast locaties",
+                    "solcast_entries": "Solcast locaties"
+                }
+            },
+            "extra_pv": {
+                "title": "Extra PV-installatie",
+                "description": "Een tweede PV-installatie en de optionele Modbus-sturing die haar uitschakelt bij negatieve prijzen.",
+                "data": {
                     "extra_pv_power_entity": "Extra PV-installatie: vermogensensor",
                     "extra_pv_panel_wp": "Extra PV-installatie: Wp per paneel",
                     "extra_pv_panel_count": "Extra PV-installatie: aantal panelen",
-                    "extra_pv_control_enabled": "Extra PV: prijssturing inschakelen",
-                    "house_load_power_entity": "Huisverbruik vermogensensor (P1)",
-                    "peak_load_this_month_entity": "Piekbelasting deze maand-sensor (capaciteitstarief)",
-                    "allow_provider_control_hours": "Uren waarin de leverancier het schema mag overschrijven",
+                    "extra_pv_control_enabled": "Extra PV: sturing bij negatieve prijzen inschakelen",
                     "extra_pv_modbus_hub": "Extra PV: Modbus hub-naam (leeg = uitgeschakeld)",
                     "extra_pv_modbus_slave": "Extra PV: Modbus slave-ID",
                     "extra_pv_modbus_address": "Extra PV: Modbus registeradres",
                     "extra_pv_modbus_on_value": "Extra PV: registerwaarde voor \"aan\"",
-                    "extra_pv_modbus_off_value": "Extra PV: registerwaarde voor \"uit\" (curtailen)",
+                    "extra_pv_modbus_off_value": "Extra PV: registerwaarde voor \"uit\" (curtailen)"
+                }
+            },
+            "ev_charger": {
+                "title": "EV-lader",
+                "description": "Sensoren van je laadpaal, voor de energiestroom in het paneel. Alleen weergave, niet gebruikt voor de sturing.",
+                "data": {
+                    "ev_charger_power_entity": "EV-lader: vermogensensor (W)",
+                    "ev_charger_energy_entity": "EV-lader: energiesensor totaal (kWh)"
+                }
+            },
+            "meter": {
+                "title": "Slimme meter",
+                "description": "P1-/slimme-metersensoren voor actueel huisverbruik en de maandpiek.",
+                "data": {
+                    "house_load_power_entity": "Huisverbruik vermogensensor (P1)",
+                    "peak_load_this_month_entity": "Piekbelasting deze maand-sensor (capaciteitstarief)"
+                }
+            },
+            "control": {
+                "title": "Sturing",
+                "description": "Gedrag van de planner en de hoofdschakelaar voor batterijsturing.",
+                "data": {
+                    "allow_provider_control_hours": "Uren waarin de leverancier het schema mag overschrijven",
                     "persist_daily_charge_limit": "Netlaad-/ontlaadlimiet (1x per dag) bewaren na herstart",
                     "control_enabled": "Batterijsturing inschakelen (schrijft echte commando's naar de omvormer)"
                 }
@@ -93,7 +144,19 @@
             "solar_to_battery_today": { "name": "Vandaag zonne-energie in batterij" },
             "grid_to_battery_today": { "name": "Vandaag netstroom batterij" },
             "yesterday_savings": { "name": "Besparing gisteren" },
-            "dispatch_current_mode": { "name": "Dispatch huidige modus" }
+            "dispatch_current_mode": { "name": "Dispatch huidige modus" },
+            "battery_voltage": { "name": "Batterijspanning" },
+            "battery_current": { "name": "Batterijstroom" },
+            "battery_min_cell_voltage": { "name": "Batterij laagste celspanning" },
+            "battery_max_cell_voltage": { "name": "Batterij hoogste celspanning" },
+            "battery_cell_voltage_delta": { "name": "Batterij celspanningsverschil" },
+            "battery_min_cell_temperature": { "name": "Batterij laagste celtemperatuur" },
+            "battery_max_cell_temperature": { "name": "Batterij hoogste celtemperatuur" },
+            "battery_soh": { "name": "Batterijgezondheid (SOH)" },
+            "battery_capacity": { "name": "Batterij nominale capaciteit" },
+            "battery_module_count": { "name": "Batterijmodules" },
+            "battery_cycles": { "name": "Batterijcycli (geschat)" },
+            "inverter_temperature": { "name": "Omvormertemperatuur" }
         },
         "number": {
             "max_soc_positive_price": { "name": "Max SOC bij positieve prijzen" },

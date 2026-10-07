@@ -8,6 +8,7 @@ entities don't match, these tests (and the parser) will need updating.
 from datetime import timedelta
 from unittest.mock import MagicMock
 
+import pytest
 from homeassistant.core import HomeAssistant, State
 from homeassistant.util import dt as dt_util
 
@@ -26,9 +27,9 @@ ENTSOE_ENTITY_ID = "sensor.entsoe_average_electricity_price_today"
 FRANK_ENERGIE_ENTITY_ID = "sensor.frank_energie_current_electricity_price"
 
 
-def _local_iso(hour: int, *, on_date=None) -> str:
+def _local_iso(hour: int, *, on_date=None, minute: int = 0) -> str:
     """Build a local ISO datetime string for `hour` today (or `on_date`)."""
-    base = dt_util.now().replace(hour=hour, minute=0, second=0, microsecond=0)
+    base = dt_util.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
     if on_date is not None:
         base = base.replace(year=on_date.year, month=on_date.month, day=on_date.day)
     return base.isoformat()
@@ -302,3 +303,48 @@ def test_parse_entsoe_prices_none_state_handled_by_caller(hass: HomeAssistant):
     )
 
     assert prices is None
+
+
+# --- 15-minute price feeds -----------------------------------------------------
+
+
+def test_parse_frank_energie_prices_averages_quarter_hours(hass: HomeAssistant):
+    """A PT15M feed gives four prices per hour; the hour gets their mean,
+    not just the last quarter's."""
+    today = dt_util.now().date()
+    state = State(
+        FRANK_ENERGIE_ENTITY_ID,
+        "0.20",
+        {
+            "prices": [
+                {"from": _local_iso(10, on_date=today, minute=0), "till": "", "price": 0.10},
+                {"from": _local_iso(10, on_date=today, minute=15), "till": "", "price": 0.20},
+                {"from": _local_iso(10, on_date=today, minute=30), "till": "", "price": 0.30},
+                {"from": _local_iso(10, on_date=today, minute=45), "till": "", "price": 0.40},
+            ]
+        },
+    )
+
+    prices = _parse_frank_energie_prices(state, today)
+
+    assert prices == {10: pytest.approx(0.25)}
+
+
+def test_parse_entsoe_prices_averages_quarter_hours(hass: HomeAssistant):
+    state = State(
+        "sensor.entsoe_average_electricity_price",
+        "0.2",
+        {
+            "unit_of_measurement": "EUR/kWh",
+            "prices_today": [
+                {"time": _local_iso(8, minute=0), "price": -0.02},
+                {"time": _local_iso(8, minute=15), "price": 0.02},
+                {"time": _local_iso(8, minute=30), "price": 0.06},
+                {"time": _local_iso(8, minute=45), "price": 0.10},
+            ],
+        },
+    )
+
+    prices = _parse_entsoe_prices(state, "prices_today")
+
+    assert prices == {8: pytest.approx(0.04)}

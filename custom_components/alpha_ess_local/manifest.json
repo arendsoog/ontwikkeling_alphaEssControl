@@ -1,6 +1,12 @@
 {
   "domain": "alpha_ess_local",
   "name": "AlphaESSControl",
+  "after_dependencies": [
+    "frontend",
+    "http",
+    "panel_custom",
+    "websocket_api"
+  ],
   "codeowners": [
     "@arendsoog"
   ],

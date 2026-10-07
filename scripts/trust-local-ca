@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Trusts extra root certificates from .devcontainer/local-ca/*.crt inside
+# the devcontainer.
+#
+# For a TLS-intercepting antivirus/proxy on the host (e.g. AVG's HTTPS
+# scanning on Windows): the host trusts its root, the container doesn't, so
+# every outbound HTTPS call from Home Assistant -- Frank Energie, ENTSO-E,
+# Forecast.Solar -- fails with CERTIFICATE_VERIFY_FAILED. Adds the
+# certificates to the system store (curl, pip) and to certifi's bundle
+# (Home Assistant's aiohttp client). No-op when the folder is empty or
+# missing; the folder is gitignored, as these certificates are per machine.
+set -e
+
+cd "$(dirname "$0")/.."
+
+shopt -s nullglob
+certs=(.devcontainer/local-ca/*.crt)
+if [ ${#certs[@]} -eq 0 ]; then
+    exit 0
+fi
+
+for cert in "${certs[@]}"; do
+    cp "$cert" /usr/local/share/ca-certificates/
+done
+update-ca-certificates > /dev/null
+
+# certifi only exists once the requirements are installed (scripts/setup
+# runs this again afterwards); a fresh image may not have it yet.
+if ! bundle="$(python3 -c 'import certifi; print(certifi.where())' 2> /dev/null)"; then
+    echo "trust-local-ca: trusted ${#certs[@]} root certificate(s) system-wide (certifi not installed yet)"
+    exit 0
+fi
+for cert in "${certs[@]}"; do
+    # The first base64 line is unique enough to tell if it's already there.
+    if ! grep -qF "$(sed -n 2p "$cert")" "$bundle"; then
+        printf '\n# %s\n' "$(basename "$cert")" >> "$bundle"
+        cat "$cert" >> "$bundle"
+    fi
+done
+echo "trust-local-ca: trusted ${#certs[@]} local root certificate(s)"
