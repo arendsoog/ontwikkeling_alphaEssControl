@@ -53,15 +53,17 @@
                     "network_use_fee_normal": "Network cost, normal tariff",
                     "network_use_fee_low": "Network cost, low/night tariff",
                     "entsoe_price_entity": "ENTSO-E entity",
-                    "frank_energie_price_entity": "Frank Energie entity"
+                    "frank_energie_price_entity": "Frank Energie entity",
+                    "price_source_primary": "Price source order (2 = fallback when 1 has no prices)"
                 }
             },
             "solar_forecast": {
                 "title": "Solar forecast",
-                "description": "Solar forecast locations; forecasts of all ticked locations are summed.{missing_source_note}",
+                "description": "Solar forecast locations. Per source the ticked locations are summed; one source is used, the second only when the first has no forecast.{missing_source_note}",
                 "data": {
                     "forecast_solar_entries": "Forecast.Solar locations",
-                    "solcast_entries": "Solcast locations"
+                    "solcast_entries": "Solcast locations",
+                    "solar_source_primary": "Forecast order (2 = fallback when 1 has no forecast)"
                 }
             },
             "extra_pv": {
@@ -69,6 +71,7 @@
                 "description": "A second PV installation and its optional Modbus control that switches it off at negative prices.",
                 "data": {
                     "extra_pv_power_entity": "Additional PV installation: power sensor",
+                    "extra_pv_string_entities": "Additional PV installation: power per string/MPPT (display only)",
                     "extra_pv_panel_wp": "Additional PV installation: Wp per panel",
                     "extra_pv_panel_count": "Additional PV installation: number of panels",
                     "extra_pv_control_enabled": "Extra PV: enable negative-price control",
@@ -110,6 +113,9 @@
         "sensor": {
             "battery_soc": { "name": "Battery state of charge" },
             "pv_power": { "name": "PV power roof" },
+            "pv1_power": { "name": "PV1 power" },
+            "pv2_power": { "name": "PV2 power" },
+            "pv3_power": { "name": "PV3 power" },
             "grid_power": { "name": "Grid power" },
             "battery_power": { "name": "Battery power" },
             "total_energy_feed_to_grid": { "name": "Total energy fed to grid" },
@@ -166,7 +172,7 @@
             "max_grid_load": { "name": "Max grid-charge load" }
         },
         "switch": {
-            "discharge_enabled": { "name": "Allow grid discharge" }
+            "discharge_enabled": { "name": "Allow scheduled discharge to grid" }
         }
     },
     "services": {

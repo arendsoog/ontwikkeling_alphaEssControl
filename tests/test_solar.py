@@ -21,6 +21,7 @@ from custom_components.alpha_ess_local.solar import (
     get_combined_solar_forecast,
     get_solar_forecast,
     read_solar_forecast,
+    read_solar_forecast_with_source,
 )
 
 FORECAST_SOLAR_DOMAIN = "forecast_solar"
@@ -173,6 +174,29 @@ async def test_read_solar_forecast_falls_back_to_solcast(hass: HomeAssistant):
         hours = await read_solar_forecast(hass, ["forecast-solar-entry"], ["solcast-entry"], today)
 
     assert hours == {6: 55.0}
+
+
+async def test_read_solar_forecast_with_source_solcast_first(hass: HomeAssistant):
+    today = dt_util.now().date()
+
+    async def fake_get_solar_forecast(_hass, config_entry_id):
+        if config_entry_id == "forecast-solar-entry":
+            return {_local_iso(0): 123.0}
+        return {_local_iso(0): 999.0}
+
+    with patch(
+        "custom_components.alpha_ess_local.solar.get_solar_forecast",
+        fake_get_solar_forecast,
+    ):
+        default = await read_solar_forecast_with_source(
+            hass, ["forecast-solar-entry"], ["solcast-entry"], today
+        )
+        solcast_first = await read_solar_forecast_with_source(
+            hass, ["forecast-solar-entry"], ["solcast-entry"], today, primary="solcast"
+        )
+
+    assert default == ({0: 123.0}, "forecast_solar")
+    assert solcast_first == ({0: 999.0}, "solcast")
 
 
 async def test_read_solar_forecast_returns_none_when_both_missing(hass: HomeAssistant):

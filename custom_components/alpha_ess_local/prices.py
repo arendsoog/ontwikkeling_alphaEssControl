@@ -13,10 +13,18 @@ from datetime import date, datetime
 from homeassistant.core import HomeAssistant, State
 from homeassistant.util import dt as dt_util
 
-from .const import LOGGER
+from .const import (
+    DEFAULT_PRICE_SOURCE_PRIMARY,
+    LOGGER,
+    PRICE_SOURCE_ENTSOE,
+    PRICE_SOURCE_FRANK_ENERGIE,
+)
 from .data import Day, Earning
 
 _ENTSOE_MWH_UNITS = {"eur/mwh", "€/mwh"}
+
+# Display names, in the default order of preference.
+PRICE_SOURCES = {PRICE_SOURCE_ENTSOE: "ENTSO-E", PRICE_SOURCE_FRANK_ENERGIE: "Frank Energie"}
 
 
 def _as_datetime(value: object) -> datetime | None:
@@ -148,23 +156,47 @@ def read_hour_prices(
     entsoe_attribute: str,
 ) -> dict[int, float] | None:
     """Port of ReadPrices: try ENTSO-e, fall back to Frank Energie."""
-    if entsoe_entity_id:
-        state = hass.states.get(entsoe_entity_id)
-        prices = _parse_entsoe_prices(state, entsoe_attribute) if state else None
-        if prices:
-            LOGGER.debug("Found prices for %s (using ENTSO-e)", target_date)
-            return prices
-        LOGGER.debug("No ENTSO-e prices for %s", target_date)
+    return read_hour_prices_with_source(
+        hass, entsoe_entity_id, frank_energie_entity_id, target_date, entsoe_attribute
+    )[0]
 
-    if frank_energie_entity_id:
-        state = hass.states.get(frank_energie_entity_id)
-        prices = _parse_frank_energie_prices(state, target_date) if state else None
-        if prices:
-            LOGGER.debug("Found prices for %s (using Frank Energie)", target_date)
-            return prices
-        LOGGER.debug("No Frank Energie prices for %s", target_date)
 
-    return None
+def read_hour_prices_with_source(
+    hass: HomeAssistant,
+    entsoe_entity_id: str | None,
+    frank_energie_entity_id: str | None,
+    target_date: date,
+    entsoe_attribute: str,
+    primary: str = DEFAULT_PRICE_SOURCE_PRIMARY,
+) -> tuple[dict[int, float] | None, str]:
+    """The prices from `primary` if it has them, else from the other source.
+
+    Also returns which source they came from ("" if neither had any).
+    """
+
+    def entsoe() -> dict[int, float] | None:
+        state = hass.states.get(entsoe_entity_id) if entsoe_entity_id else None
+        return _parse_entsoe_prices(state, entsoe_attribute) if state else None
+
+    def frank_energie() -> dict[int, float] | None:
+        state = hass.states.get(frank_energie_entity_id) if frank_energie_entity_id else None
+        return _parse_frank_energie_prices(state, target_date) if state else None
+
+    readers = {PRICE_SOURCE_ENTSOE: entsoe, PRICE_SOURCE_FRANK_ENERGIE: frank_energie}
+    configured = {
+        PRICE_SOURCE_ENTSOE: entsoe_entity_id,
+        PRICE_SOURCE_FRANK_ENERGIE: frank_energie_entity_id,
+    }
+    for source in sorted(readers, key=lambda s: s != primary):
+        if not configured[source]:
+            continue
+        prices = readers[source]()
+        if prices:
+            LOGGER.debug("Found prices for %s (using %s)", target_date, PRICE_SOURCES[source])
+            return prices, source
+        LOGGER.debug("No %s prices for %s", PRICE_SOURCES[source], target_date)
+
+    return None, ""
 
 
 def apply_earning_classification(
@@ -226,13 +258,14 @@ def build_day(
     return_fee: float,
     vat_percentage: float,
     return_vat_percentage: float | None = None,
+    primary: str = DEFAULT_PRICE_SOURCE_PRIMARY,
 ) -> Day:
     """Build a Day of prices for target_date from the configured source entities."""
     day = Day(year=target_date.year, mon=target_date.month, day=target_date.day)
 
     entsoe_attribute = "prices_today" if target_date == dt_util.now().date() else "prices_tomorrow"
-    prices = read_hour_prices(
-        hass, entsoe_entity_id, frank_energie_entity_id, target_date, entsoe_attribute
+    prices, day.source = read_hour_prices_with_source(
+        hass, entsoe_entity_id, frank_energie_entity_id, target_date, entsoe_attribute, primary
     )
     if not prices:
         return day

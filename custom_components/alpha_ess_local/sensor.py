@@ -98,6 +98,16 @@ MODBUS_SENSOR_DESCRIPTIONS: tuple[AlphaEssLocalSensorDescription, ...] = (
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
     ),
+    *(
+        AlphaEssLocalSensorDescription(
+            key=f"pv{n}_power",
+            translation_key=f"pv{n}_power",
+            native_unit_of_measurement=UnitOfPower.WATT,
+            device_class=SensorDeviceClass.POWER,
+            state_class=SensorStateClass.MEASUREMENT,
+        )
+        for n in (1, 2, 3)
+    ),
     AlphaEssLocalSensorDescription(
         key="grid_power",
         translation_key="grid_power",

@@ -82,6 +82,16 @@ async def test_async_get_pv_power_sums_all_three_strings(client, mock_modbus_cli
     assert power == 7000
 
 
+async def test_async_get_pv_string_power_per_input(client, mock_modbus_client):
+    mock_modbus_client.read_holding_registers.return_value = _ok_result(
+        [0, 1000, 0, 0, 0, 2000, 0, 0, 0, 4000]
+    )
+
+    strings = await client.async_get_pv_string_power()
+
+    assert strings == {"pv1_power": 1000, "pv2_power": 2000, "pv3_power": 4000}
+
+
 async def test_async_get_pv_total_energy_uses_point_one_scale(client, mock_modbus_client):
     # Scale here is 0.1, not 0.01 like the other total-energy registers --
     # 616 raw -> 61.6 kWh.

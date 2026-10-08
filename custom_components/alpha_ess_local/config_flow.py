@@ -35,6 +35,7 @@ from .const import (
     CONF_EXTRA_PV_PANEL_WP,
     CONF_EXTRA_PV_POWER_CAPACITY,
     CONF_EXTRA_PV_POWER_ENTITY,
+    CONF_EXTRA_PV_STRING_ENTITIES,
     CONF_FORECAST_SOLAR_ENTRIES,
     CONF_FRANK_ENERGIE_PRICE_ENTITY,
     CONF_HOUSE_LOAD_POWER_ENTITY,
@@ -43,11 +44,13 @@ from .const import (
     CONF_NETWORK_USE_FEE_NORMAL,
     CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
+    CONF_PRICE_SOURCE_PRIMARY,
     CONF_PROVIDER_RETURN_FEE,
     CONF_PROVIDER_USE_FEE,
     CONF_PV_PANEL_COUNT,
     CONF_PV_PANEL_WP,
     CONF_PV_POWER,
+    CONF_SOLAR_SOURCE_PRIMARY,
     CONF_SOLCAST_ENTRIES,
     CONF_USABLE_BATTERY_CAPACITY,
     CONF_VAT_PERCENTAGE,
@@ -63,13 +66,17 @@ from .const import (
     DEFAULT_NETWORK_USE_FEE,
     DEFAULT_PERSIST_DAILY_CHARGE_LIMIT,
     DEFAULT_PORT,
+    DEFAULT_PRICE_SOURCE_PRIMARY,
     DEFAULT_PROVIDER_RETURN_FEE,
     DEFAULT_PROVIDER_USE_FEE,
+    DEFAULT_SOLAR_SOURCE_PRIMARY,
     DEFAULT_SOLCAST_ENTRIES,
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
 )
+from .prices import PRICE_SOURCES
+from .solar import SOLAR_SOURCES
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -311,6 +318,21 @@ def _installation_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Se
     ], []
 
 
+def _source_order_selector(sources: Mapping[str, str]) -> selector.SelectSelector:
+    """Pick which of two sources is used first (the other is the fallback)."""
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[
+                selector.SelectOptionDict(value=key, label=f"1. {name}  ·  2. {other}")
+                for key, name in sources.items()
+                for other_key, other in sources.items()
+                if other_key != key
+            ],
+            mode=selector.SelectSelectorMode.LIST,
+        )
+    )
+
+
 def _prices_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
     """Supplier/network fees, VAT, and the price source entity."""
     entsoe_entities = _entities_with_attribute(hass, "entsoe", "prices_today")
@@ -402,6 +424,16 @@ def _prices_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionF
                 _entity_checklist(frank_energie_entities),
             )
         )
+    if entsoe_entities and frank_energie_entities:
+        fields.append(
+            (
+                vol.Optional(
+                    CONF_PRICE_SOURCE_PRIMARY,
+                    default=options.get(CONF_PRICE_SOURCE_PRIMARY, DEFAULT_PRICE_SOURCE_PRIMARY),
+                ),
+                _source_order_selector(PRICE_SOURCES),
+            )
+        )
 
     missing = [
         name
@@ -447,6 +479,16 @@ def _solar_forecast_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _
                 _config_entry_checklist(solcast_entries),
             )
         )
+    if forecast_solar_entries and solcast_entries:
+        fields.append(
+            (
+                vol.Optional(
+                    CONF_SOLAR_SOURCE_PRIMARY,
+                    default=options.get(CONF_SOLAR_SOURCE_PRIMARY, DEFAULT_SOLAR_SOURCE_PRIMARY),
+                ),
+                _source_order_selector(SOLAR_SOURCES),
+            )
+        )
 
     missing = [
         name
@@ -474,6 +516,15 @@ def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sectio
             _value_label_checklist(extra_pv_candidates)
             if extra_pv_candidates
             else selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
+        ),
+        (
+            vol.Optional(
+                CONF_EXTRA_PV_STRING_ENTITIES,
+                description={"suggested_value": options.get(CONF_EXTRA_PV_STRING_ENTITIES)},
+            ),
+            selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="power", multiple=True)
+            ),
         ),
         (
             vol.Optional(CONF_EXTRA_PV_PANEL_WP, default=options.get(CONF_EXTRA_PV_PANEL_WP, 0)),

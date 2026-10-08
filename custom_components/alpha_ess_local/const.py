@@ -106,6 +106,22 @@ CONF_HOUSE_LOAD_POWER_ENTITY = "house_load_power_entity"
 # Optional EV charger sensors -- display only, not used for control: live
 # power (the panel's energy-flow scene splits the house load into rooms and
 # charger) and the cumulative energy counter (per-day totals in the panel).
+# Which source is tried first when both are configured; the other is the
+# fallback when the first has no data (for that day).
+CONF_PRICE_SOURCE_PRIMARY = "price_source_primary"
+PRICE_SOURCE_ENTSOE = "entsoe"
+PRICE_SOURCE_FRANK_ENERGIE = "frank_energie"
+DEFAULT_PRICE_SOURCE_PRIMARY = PRICE_SOURCE_ENTSOE
+CONF_SOLAR_SOURCE_PRIMARY = "solar_source_primary"
+SOLAR_SOURCE_FORECAST_SOLAR = "forecast_solar"
+SOLAR_SOURCE_SOLCAST = "solcast"
+DEFAULT_SOLAR_SOURCE_PRIMARY = SOLAR_SOURCE_FORECAST_SOLAR
+
+# Power per string (MPPT) of the extra PV installation -- display only (the
+# panel's extra-PV card). Empty with an SMA-integration source = that
+# integration's own per-string sensors.
+CONF_EXTRA_PV_STRING_ENTITIES = "extra_pv_string_entities"
+
 CONF_EV_CHARGER_POWER_ENTITY = "ev_charger_power_entity"
 CONF_EV_CHARGER_ENERGY_ENTITY = "ev_charger_energy_entity"
 

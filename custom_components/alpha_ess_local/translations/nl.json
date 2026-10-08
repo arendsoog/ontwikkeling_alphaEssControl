@@ -53,15 +53,17 @@
                     "network_use_fee_normal": "Netwerkkosten, normaal tarief",
                     "network_use_fee_low": "Netwerkkosten, laag/nachttarief",
                     "entsoe_price_entity": "ENTSO-E entity",
-                    "frank_energie_price_entity": "Frank Energie entity"
+                    "frank_energie_price_entity": "Frank Energie entity",
+                    "price_source_primary": "Volgorde prijsbron (2 = reserve als 1 geen prijzen heeft)"
                 }
             },
             "solar_forecast": {
                 "title": "Zonnevoorspelling",
-                "description": "Locaties voor de zonnevoorspelling; de voorspellingen van alle aangevinkte locaties worden opgeteld.{missing_source_note}",
+                "description": "Locaties voor de zonnevoorspelling. Per bron worden de aangevinkte locaties opgeteld; er wordt één bron gebruikt, de tweede alleen als de eerste geen voorspelling heeft.{missing_source_note}",
                 "data": {
                     "forecast_solar_entries": "Forecast.Solar locaties",
-                    "solcast_entries": "Solcast locaties"
+                    "solcast_entries": "Solcast locaties",
+                    "solar_source_primary": "Volgorde voorspelling (2 = reserve als 1 geen voorspelling heeft)"
                 }
             },
             "extra_pv": {
@@ -69,6 +71,7 @@
                 "description": "Een tweede PV-installatie en de optionele Modbus-sturing die haar uitschakelt bij negatieve prijzen.",
                 "data": {
                     "extra_pv_power_entity": "Extra PV-installatie: vermogensensor",
+                    "extra_pv_string_entities": "Extra PV-installatie: vermogen per string/MPPT (alleen voor weergave)",
                     "extra_pv_panel_wp": "Extra PV-installatie: Wp per paneel",
                     "extra_pv_panel_count": "Extra PV-installatie: aantal panelen",
                     "extra_pv_control_enabled": "Extra PV: sturing bij negatieve prijzen inschakelen",
@@ -110,6 +113,9 @@
         "sensor": {
             "battery_soc": { "name": "Batterij laadniveau" },
             "pv_power": { "name": "PV vermogen dak" },
+            "pv1_power": { "name": "PV1 vermogen" },
+            "pv2_power": { "name": "PV2 vermogen" },
+            "pv3_power": { "name": "PV3 vermogen" },
             "grid_power": { "name": "Netvermogen" },
             "battery_power": { "name": "Batterijvermogen" },
             "total_energy_feed_to_grid": { "name": "Totale energie geleverd aan net" },
@@ -166,7 +172,7 @@
             "max_grid_load": { "name": "Max belasting net-laden" }
         },
         "switch": {
-            "discharge_enabled": { "name": "Ontladen net toegestaan" }
+            "discharge_enabled": { "name": "Ontladen naar het net via schema toestaan" }
         }
     },
     "services": {
