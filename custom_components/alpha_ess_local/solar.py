@@ -18,8 +18,16 @@ from homeassistant.core import HomeAssistant
 from homeassistant.loader import IntegrationNotFound, async_get_integration
 from homeassistant.util import dt as dt_util
 
-from .const import LOGGER
+from .const import (
+    DEFAULT_SOLAR_SOURCE_PRIMARY,
+    LOGGER,
+    SOLAR_SOURCE_FORECAST_SOLAR,
+    SOLAR_SOURCE_SOLCAST,
+)
 from .data import Day
+
+# Display names, in the default order of preference.
+SOLAR_SOURCES = {SOLAR_SOURCE_FORECAST_SOLAR: "Forecast.Solar", SOLAR_SOURCE_SOLCAST: "Solcast"}
 
 
 async def get_solar_forecast(hass: HomeAssistant, config_entry_id: str) -> dict | None:
@@ -100,21 +108,41 @@ async def read_solar_forecast(
     target_date: date,
 ) -> dict[int, float] | None:
     """Port of ReadEstimatedSolarPower: try Forecast.Solar planes, fall back to Solcast."""
-    if forecast_solar_entry_ids:
-        hours = await get_combined_solar_forecast(hass, forecast_solar_entry_ids, target_date)
-        if hours:
-            LOGGER.debug("Found estimated solar power for %s (using Forecast.Solar)", target_date)
-            return hours
-        LOGGER.debug("No Forecast.Solar estimate for %s", target_date)
+    return (
+        await read_solar_forecast_with_source(
+            hass, forecast_solar_entry_ids, solcast_entry_ids, target_date
+        )
+    )[0]
 
-    if solcast_entry_ids:
-        hours = await get_combined_solar_forecast(hass, solcast_entry_ids, target_date)
-        if hours:
-            LOGGER.debug("Found estimated solar power for %s (using Solcast)", target_date)
-            return hours
-        LOGGER.debug("No Solcast estimate for %s", target_date)
 
-    return None
+async def read_solar_forecast_with_source(
+    hass: HomeAssistant,
+    forecast_solar_entry_ids: list[str],
+    solcast_entry_ids: list[str],
+    target_date: date,
+    primary: str = DEFAULT_SOLAR_SOURCE_PRIMARY,
+) -> tuple[dict[int, float] | None, str]:
+    """The forecast from `primary` if it has one, else from the other source.
+
+    Each source's locations are summed. Also returns which source the
+    forecast came from ("" if neither had one).
+    """
+    entries = {
+        SOLAR_SOURCE_FORECAST_SOLAR: forecast_solar_entry_ids,
+        SOLAR_SOURCE_SOLCAST: solcast_entry_ids,
+    }
+    for source in sorted(entries, key=lambda s: s != primary):
+        if not entries[source]:
+            continue
+        hours = await get_combined_solar_forecast(hass, entries[source], target_date)
+        if hours:
+            LOGGER.debug(
+                "Found estimated solar power for %s (using %s)", target_date, SOLAR_SOURCES[source]
+            )
+            return hours, source
+        LOGGER.debug("No %s estimate for %s", SOLAR_SOURCES[source], target_date)
+
+    return None, ""
 
 
 async def build_day(
@@ -123,6 +151,7 @@ async def build_day(
     forecast_solar_entry_ids: list[str],
     solcast_entry_ids: list[str],
     hour_correction: dict[int, tuple[float, float]] | None = None,
+    primary: str = DEFAULT_SOLAR_SOURCE_PRIMARY,
 ) -> Day:
     """Build a Day of solar estimates for target_date from the configured sources.
 
@@ -135,8 +164,8 @@ async def build_day(
     """
     day = Day(year=target_date.year, mon=target_date.month, day=target_date.day)
 
-    hours = await read_solar_forecast(
-        hass, forecast_solar_entry_ids, solcast_entry_ids, target_date
+    hours, day.source = await read_solar_forecast_with_source(
+        hass, forecast_solar_entry_ids, solcast_entry_ids, target_date, primary
     )
     if not hours:
         return day

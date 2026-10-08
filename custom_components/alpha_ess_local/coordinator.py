@@ -21,14 +21,18 @@ from .const import (
     CONF_ENTSOE_PRICE_ENTITY,
     CONF_FORECAST_SOLAR_ENTRIES,
     CONF_FRANK_ENERGIE_PRICE_ENTITY,
+    CONF_PRICE_SOURCE_PRIMARY,
     CONF_PROVIDER_RETURN_FEE,
     CONF_PROVIDER_USE_FEE,
+    CONF_SOLAR_SOURCE_PRIMARY,
     CONF_SOLCAST_ENTRIES,
     CONF_VAT_PERCENTAGE,
     DEFAULT_APPLY_VAT_ON_RETURN,
     DEFAULT_FORECAST_SOLAR_ENTRIES,
+    DEFAULT_PRICE_SOURCE_PRIMARY,
     DEFAULT_PROVIDER_RETURN_FEE,
     DEFAULT_PROVIDER_USE_FEE,
+    DEFAULT_SOLAR_SOURCE_PRIMARY,
     DEFAULT_SOLCAST_ENTRIES,
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
@@ -155,6 +159,8 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             else 0.0
         )
 
+        primary = options.get(CONF_PRICE_SOURCE_PRIMARY, DEFAULT_PRICE_SOURCE_PRIMARY)
+
         today = dt_util.now().date()
         tomorrow = today + timedelta(days=1)
 
@@ -167,6 +173,7 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             return_fee,
             vat_percentage,
             return_vat_percentage,
+            primary,
         )
         tomorrow_day = build_price_day(
             self.hass,
@@ -177,6 +184,7 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             return_fee,
             vat_percentage,
             return_vat_percentage,
+            primary,
         )
 
         self._retry_helper.note_result(
@@ -225,11 +233,17 @@ class AlphaEssLocalSolarCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         )
         hour_correction = hour_correction_from_mean(mean)
 
+        primary = options.get(CONF_SOLAR_SOURCE_PRIMARY, DEFAULT_SOLAR_SOURCE_PRIMARY)
         today_day = await build_solar_day(
-            self.hass, today, forecast_solar_entry_ids, solcast_entry_ids, hour_correction
+            self.hass, today, forecast_solar_entry_ids, solcast_entry_ids, hour_correction, primary
         )
         tomorrow_day = await build_solar_day(
-            self.hass, tomorrow, forecast_solar_entry_ids, solcast_entry_ids, hour_correction
+            self.hass,
+            tomorrow,
+            forecast_solar_entry_ids,
+            solcast_entry_ids,
+            hour_correction,
+            primary,
         )
 
         self._retry_helper.note_result(

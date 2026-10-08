@@ -10,8 +10,14 @@ cd "$(dirname "$0")/.."
 # HTTPS works behind a host antivirus that intercepts TLS (see the script).
 bash scripts/trust-local-ca
 
+# The stable Home Assistant release the dev environment runs, same as
+# production. The test package (requirements-test.txt) can lag behind on
+# a beta of it; installing HA on top keeps dev on the real release.
+HA_VERSION=2026.10.0
+
 python3 -m pip install --upgrade pip
 pip3 install -r requirements-test.txt
+pip3 install "homeassistant==${HA_VERSION}"
 
 bash scripts/trust-local-ca
 

@@ -528,7 +528,9 @@ class AlphaEssPanel extends HTMLElement {
     try {
       this._status = await this._hass.callWS({ type: `${DOMAIN}/panel_status` });
     } catch (err) {
-      this._status = null;
+      // Keep the last known status (e.g. while the entry reloads), so the
+      // option toggles and settings don't vanish until the next refresh.
+      console.debug("alpha-ess-panel: panel_status failed", err);
     }
     const evEnergy = this._evEnergyId();
     if (evEnergy !== this._loadedEvEnergy) {
@@ -910,11 +912,13 @@ class AlphaEssPanel extends HTMLElement {
         name: hasEv ? "HUIS (ZONDER EV)" : "HUIS",
         entity: this._entities.house_load_today,
       },
-      { key: "solar", color: SCENE_COLOR.solar, value: fmtW(roofPv), name: "ZON DAK", entity: this._entities.pv_power },
+      // No reading from a PV inverter means it isn't producing (an SMA
+      // sleeps at night and stops answering): show 0 W rather than "–".
+      { key: "solar", color: SCENE_COLOR.solar, value: fmtW(roofPv ?? 0), name: "ZON DAK", entity: this._entities.pv_power },
       hasExtraPv && {
         key: "extraPv",
         color: SCENE_COLOR.extraPv,
-        value: fmtW(extraPv),
+        value: fmtW(extraPv ?? 0),
         name: "ZON GARAGE",
         entity: this._entities.extra_pv_power,
       },
@@ -1105,6 +1109,16 @@ class AlphaEssPanel extends HTMLElement {
     const tone = (ok) => (ok ? "accent" : "muted");
     const row = (label, value, cls = "", entity = "") =>
       `<div class="status-row" ${entity ? `data-entity="${esc(this._entities[entity] || "")}"` : ""}><span>${label}</span><span class="${cls}">${esc(value)}</span></div>`;
+    // Sources in the order they're tried ("1. … 2. …"); the one today's
+    // data actually came from in green.
+    const sourcesRow = (label, sources) => {
+      if (!sources) return row(label, "–");
+      if (!sources.length) return row(label, "Niet ingesteld", "muted");
+      const list = sources
+        .map((s, i) => `<span class="source ${s.active ? "in-use" : ""}" title="${s.active ? "In gebruik" : "Niet in gebruik"}">${i + 1}. ${esc(s.name)}</span>`)
+        .join("");
+      return `<div class="status-row"><span>${label}</span><span class="sources">${list}</span></div>`;
+    };
 
     const left = [
       row("Batterijsturing", st ? (st.control_enabled ? "Actief" : "Uit (alleen loggen)") : "–", st ? tone(st.control_enabled) : ""),
@@ -1114,11 +1128,11 @@ class AlphaEssPanel extends HTMLElement {
       row("Handmatige override", st ? (st.manual_override ? actionLabel(st.manual_override) : "Geen") : "–", st && st.manual_override ? "warn" : ""),
     ];
     const right = [
-      row("Ontladen naar net", this._formatted("discharge_enabled"), "", "discharge_enabled"),
+      row("Ontladen naar net via schema", this._formatted("discharge_enabled"), "", "discharge_enabled"),
       row("Prijs nu (all-in)", this._formatted("price_current_hour"), "", "price_current_hour"),
       row("Winststatus", this._formatted("price_earning_status"), "", "price_earning_status"),
-      row("Prijsbron", st ? st.price_source ?? "Niet ingesteld" : "–", st && st.price_source ? "" : "muted"),
-      row("Zonnevoorspelling", st ? (st.solar_forecast_sources ? `${st.solar_forecast_sources} locatie(s)` : "Niet ingesteld") : "–", st && st.solar_forecast_sources ? "" : "muted"),
+      sourcesRow("Prijsbron", st && st.price_sources),
+      sourcesRow("Zonnevoorspelling", st && st.solar_sources),
       row("Extra PV-sturing negatieve prijzen", st ? (st.extra_pv_control_enabled ? "Actief" : "Uit") : "–", st ? tone(st.extra_pv_control_enabled) : ""),
     ];
     return `${this._header("mdi:shield-check-outline", "Integratiestatus")}<div class="card-body status-grid"><div>${left.join("")}</div><div>${right.join("")}</div></div>`;
@@ -1508,6 +1522,8 @@ class AlphaEssPanel extends HTMLElement {
           )}</span></div>
         </div>
 
+        ${this._mpptSection([e.pv1_power, e.pv2_power, e.pv3_power])}
+
         <div class="section-title">Energie vandaag</div>
         ${today}
 
@@ -1520,6 +1536,22 @@ class AlphaEssPanel extends HTMLElement {
           <div class="kv-grid">${info || '<div class="muted">Geen apparaatinformatie.</div>'}</div>
         </details>
       </section>`;
+  }
+
+  // Power per PV input (MPPT), one chip per power sensor entity_id.
+  _mpptSection(ids) {
+    const chips = ids
+      .filter(Boolean)
+      .map((id, i) => {
+        const s = this._hass.states[id];
+        const w = s ? num(s.state) : null;
+        return `<span class="mppt ${w ? "active" : ""}" data-entity="${esc(id)}">MPPT${i + 1} · ${fmtW(w)}</span>`;
+      })
+      .join("");
+    if (!chips) return "";
+    return `
+      <div class="section-title">Zon (MPPT)</div>
+      <div class="mppt-row">${chips}</div>`;
   }
 
   // Battery health from the BMS registers (sensor.py's battery_* sensors).
@@ -1592,6 +1624,8 @@ class AlphaEssPanel extends HTMLElement {
           <div class="io-note left">${capacity ? `van ${fmtNum(capacity / 1000, 2)} kWp` : "Piekvermogen niet ingesteld"}</div>
         </div>
 
+        ${this._mpptSection(st.extra_pv_string_entities || [])}
+
         <div class="section-title">Energie vandaag</div>
         ${this._energyRows([{ label: "Opgewekt", value: this._history ? todayKwh : null, color: COLOR.solar, entity: e.extra_pv_power }])}
 
@@ -1659,12 +1693,6 @@ class AlphaEssPanel extends HTMLElement {
           confirm: "Batterijsturing inschakelen? De integratie gaat dan echte commando's naar de omvormer schrijven.",
         }),
         toggle({
-          entity: "discharge_enabled",
-          icon: "mdi:battery-arrow-down-outline",
-          label: "Ontladen via schema toestaan",
-          info: "Mag de planning de batterij op dure uren ontladen.",
-        }),
-        toggle({
           option: "extra_pv_control_enabled",
           icon: "mdi:solar-panel",
           label: "Extra PV-sturing negatieve prijzen",
@@ -1675,6 +1703,12 @@ class AlphaEssPanel extends HTMLElement {
           icon: "mdi:content-save-outline",
           label: "Daglimiet bewaren na herstart",
           info: "Bewaart de eenmalige dagelijkse net-laad/ontlaadlimiet over een herstart van Home Assistant heen.",
+        }),
+        toggle({
+          entity: "discharge_enabled",
+          icon: "mdi:battery-arrow-down-outline",
+          label: "Ontladen naar het net via schema toestaan",
+          info: "Mag de planning één keer per dag op een duur uur extra ontladen (ook naar het net), als het schema de minimale dagelijkse winst haalt. Huisverbruik uit de batterij gaat altijd door.",
         }),
       ].join("") || '<div class="empty">Status laden…</div>'
     );
@@ -1757,8 +1791,10 @@ class AlphaEssPanel extends HTMLElement {
     try {
       if (el.dataset.option) {
         await this._hass.callWS({ type: `${DOMAIN}/set_option`, key: el.dataset.option, value: on });
-        // The entry reloads on an options change; refresh once it's back.
-        setTimeout(() => this._loadStatus(), 1500);
+        // These options apply live (no reload): show the new state right away.
+        if (this._status) this._status = { ...this._status, [el.dataset.option]: on };
+        this._renderAll();
+        this._loadStatus();
       } else {
         await this._hass.callService("switch", on ? "turn_on" : "turn_off", { entity_id: el.dataset.switch });
       }
@@ -2391,9 +2427,9 @@ const STYLE = `
     font-size: 15px;
     font-weight: 300;
   }
-  .status-row span:first-child { color: var(--muted); }
-  .status-row span:last-child { font-weight: 400; }
-  .status-row span:last-child { text-align: right; }
+  .status-row > span:first-child { color: var(--muted); }
+  .status-row > span:last-child { font-weight: 400; }
+  .status-row > span:last-child { text-align: right; }
 
   /* history tab */
   .hist-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
@@ -2515,6 +2551,12 @@ const STYLE = `
   .kv { display: flex; justify-content: space-between; gap: 12px; padding: 11px 0; font-size: 15px; font-weight: 300; }
   .kv span:first-child { color: var(--muted); }
   .kv span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  .sources { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 12px; }
+  .source { color: var(--muted); }
+  .source.in-use { color: var(--accent); }
+  .mppt-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .mppt { padding: 6px 12px; border-radius: 999px; background: var(--secondary-background-color, rgba(127,127,127,0.12)); color: var(--muted); font-size: 13px; cursor: pointer; }
+  .mppt.active { color: var(--primary-text-color); box-shadow: inset 0 0 0 1px ${COLOR.solar}; }
   details { margin-top: 14px; }
   summary { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--primary-text-color); font-size: 15px; padding: 6px 0; list-style: none; }
   summary::-webkit-details-marker { display: none; }

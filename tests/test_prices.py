@@ -21,6 +21,7 @@ from custom_components.alpha_ess_local.prices import (
     mk_return_price,
     mk_use_price,
     read_hour_prices,
+    read_hour_prices_with_source,
 )
 
 ENTSOE_ENTITY_ID = "sensor.entsoe_average_electricity_price_today"
@@ -184,6 +185,73 @@ def test_read_hour_prices_falls_back_to_frank_energie(hass: HomeAssistant):
     )
 
     assert prices == {5: 0.30}
+
+
+def _both_price_sources(hass: HomeAssistant) -> None:
+    hass.states.async_set(
+        ENTSOE_ENTITY_ID, "0.15", {"prices_today": [{"time": _local_iso(0), "price": 0.10}]}
+    )
+    hass.states.async_set(
+        FRANK_ENERGIE_ENTITY_ID, "0.20", {"prices": [{"from": _local_iso(0), "price": 0.99}]}
+    )
+
+
+def test_read_hour_prices_with_source_reports_entsoe_by_default(hass: HomeAssistant):
+    _both_price_sources(hass)
+
+    prices, source = read_hour_prices_with_source(
+        hass, ENTSOE_ENTITY_ID, FRANK_ENERGIE_ENTITY_ID, dt_util.now().date(), "prices_today"
+    )
+
+    assert (prices, source) == ({0: 0.10}, "entsoe")
+
+
+def test_read_hour_prices_with_source_frank_energie_first(hass: HomeAssistant):
+    _both_price_sources(hass)
+
+    prices, source = read_hour_prices_with_source(
+        hass,
+        ENTSOE_ENTITY_ID,
+        FRANK_ENERGIE_ENTITY_ID,
+        dt_util.now().date(),
+        "prices_today",
+        primary="frank_energie",
+    )
+
+    assert (prices, source) == ({0: 0.99}, "frank_energie")
+
+
+def test_read_hour_prices_with_source_falls_back_to_entsoe(hass: HomeAssistant):
+    _both_price_sources(hass)
+    hass.states.async_set(FRANK_ENERGIE_ENTITY_ID, "unknown", {})
+
+    prices, source = read_hour_prices_with_source(
+        hass,
+        ENTSOE_ENTITY_ID,
+        FRANK_ENERGIE_ENTITY_ID,
+        dt_util.now().date(),
+        "prices_today",
+        primary="frank_energie",
+    )
+
+    assert (prices, source) == ({0: 0.10}, "entsoe")
+
+
+def test_build_day_records_its_source(hass: HomeAssistant):
+    _both_price_sources(hass)
+
+    day = build_day(
+        hass,
+        dt_util.now().date(),
+        ENTSOE_ENTITY_ID,
+        FRANK_ENERGIE_ENTITY_ID,
+        0.0,
+        0.0,
+        21.0,
+        primary="frank_energie",
+    )
+
+    assert day.source == "frank_energie"
 
 
 def test_read_hour_prices_returns_none_when_both_missing(hass: HomeAssistant):

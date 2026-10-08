@@ -32,6 +32,7 @@ from custom_components.alpha_ess_local.const import (
     CONF_PV_PANEL_COUNT,
     CONF_PV_PANEL_WP,
     CONF_PV_POWER,
+    CONF_SOLAR_SOURCE_PRIMARY,
     CONF_SOLCAST_ENTRIES,
     DEFAULT_APPLY_VAT_ON_RETURN,
     DEFAULT_NETWORK_USE_FEE,
@@ -327,7 +328,8 @@ async def test_options_flow_solar_fields_in_forecast_solar_then_solcast_order(
     result = await _open_section(hass, entry, "solar_forecast")
 
     keys = [str(key) for key in result["data_schema"].schema]
-    assert keys == [CONF_FORECAST_SOLAR_ENTRIES, CONF_SOLCAST_ENTRIES]
+    # With both sources installed, their order (which is used first) too.
+    assert keys == [CONF_FORECAST_SOLAR_ENTRIES, CONF_SOLCAST_ENTRIES, CONF_SOLAR_SOURCE_PRIMARY]
 
 
 # --- house-load auto-detect (HomeWizard P1 / DSMR) --------------------------

@@ -6,16 +6,21 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from homeassistant.exceptions import Unauthorized
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.alpha_ess_local import LIVE_OPTIONS, async_reload_entry
 from custom_components.alpha_ess_local.const import DOMAIN
 from custom_components.alpha_ess_local.data import Day, FiveMin
 from custom_components.alpha_ess_local.frontend import (
     PANEL_COMPONENT,
     PANEL_URL_PATH,
+    SETTABLE_OPTIONS,
     _is_our_panel,
     _ws_set_option,
+    extra_pv_string_entities,
+    source_list,
     today_power_payload,
 )
 
@@ -143,6 +148,125 @@ def test_set_option_requires_admin(hass):
         )
 
     connection.send_result.assert_not_called()
+
+
+# --- price/solar source order ---------------------------------------------------
+
+
+def test_source_list_in_order_with_the_active_one_marked():
+    names = {"entsoe": "ENTSO-E", "frank_energie": "Frank Energie"}
+    configured = {"entsoe": "sensor.entsoe", "frank_energie": "sensor.frank"}
+
+    assert source_list(names, configured, "frank_energie", "entsoe") == [
+        {"name": "Frank Energie", "active": False},
+        {"name": "ENTSO-E", "active": True},
+    ]
+
+
+def test_source_list_skips_unconfigured_and_names_summed_locations():
+    names = {"forecast_solar": "Forecast.Solar", "solcast": "Solcast"}
+    configured = {"forecast_solar": ["Voorkant", "Achterkant"], "solcast": []}
+
+    assert source_list(names, configured, "forecast_solar", "forecast_solar") == [
+        {"name": "Forecast.Solar (Voorkant + Achterkant)", "active": True},
+    ]
+
+
+def test_source_list_single_location_shows_just_the_source():
+    names = {"forecast_solar": "Forecast.Solar", "solcast": "Solcast"}
+    configured = {"forecast_solar": ["Voorkant"], "solcast": ["Solcast Solar"]}
+
+    assert [s["name"] for s in source_list(names, configured, "solcast", "")] == [
+        "Solcast",
+        "Forecast.Solar",
+    ]
+
+
+# --- extra PV strings -----------------------------------------------------------
+
+
+def _sma_entry_with_strings(hass):
+    """An SMA config entry with total power, strings A/B, and disabled C."""
+    sma = MockConfigEntry(domain="sma")
+    sma.add_to_hass(hass)
+    registry = er.async_get(hass)
+
+    def add(key, object_id, **kwargs):
+        return registry.async_get_or_create(
+            "sensor", "sma", f"123-{key}", config_entry=sma, suggested_object_id=object_id, **kwargs
+        ).entity_id
+
+    total = add("6100_0046C200_0", "pv_power")
+    b = add("6380_40251E00_1", "pv_power_b")
+    a = add("6380_40251E00_0", "pv_power_a")
+    add("6380_40251E00_2", "pv_power_c", disabled_by=er.RegistryEntryDisabler.INTEGRATION)
+    return sma, total, a, b
+
+
+async def test_extra_pv_strings_from_the_sma_integration(hass):
+    sma, total, a, b = _sma_entry_with_strings(hass)
+
+    assert extra_pv_string_entities(hass, {"extra_pv_power_entity": total}) == [a, b]
+    assert extra_pv_string_entities(hass, {"extra_pv_power_entity": f"sma:{sma.entry_id}"}) == [
+        a,
+        b,
+    ]
+
+
+async def test_extra_pv_strings_picked_in_options_win(hass):
+    _, total, _, _ = _sma_entry_with_strings(hass)
+    options = {
+        "extra_pv_power_entity": total,
+        "extra_pv_string_entities": ["sensor.string_1", "sensor.string_2"],
+    }
+
+    assert extra_pv_string_entities(hass, options) == ["sensor.string_1", "sensor.string_2"]
+
+
+async def test_extra_pv_strings_none_for_a_non_sma_source(hass):
+    assert extra_pv_string_entities(hass, {"extra_pv_power_entity": "sensor.sma_ac_vermogen"}) == []
+    assert extra_pv_string_entities(hass, {}) == []
+
+
+# --- options update listener ---------------------------------------------------
+
+
+def _loaded_entry(hass, options):
+    entry = MockConfigEntry(domain=DOMAIN, options=options)
+    entry.add_to_hass(hass)
+    entry.runtime_data = SimpleNamespace(options=dict(options))
+    return entry
+
+
+def test_panel_toggles_are_all_live_options():
+    """Every option the panel toggles must apply without a reload, or the
+    reload blanks the panel right after the click."""
+    assert set(SETTABLE_OPTIONS) <= LIVE_OPTIONS
+
+
+async def test_live_option_change_skips_reload(hass):
+    entry = _loaded_entry(hass, {"extra_pv_control_enabled": False, "pv_power": 9800})
+    hass.config_entries.async_update_entry(
+        entry, options={"extra_pv_control_enabled": True, "pv_power": 9800}
+    )
+
+    with patch.object(hass.config_entries, "async_reload") as reload:
+        await async_reload_entry(hass, entry)
+
+    reload.assert_not_called()
+    assert entry.runtime_data.options["extra_pv_control_enabled"] is True
+
+
+async def test_other_option_change_reloads(hass):
+    entry = _loaded_entry(hass, {"extra_pv_control_enabled": False, "pv_power": 9800})
+    hass.config_entries.async_update_entry(
+        entry, options={"extra_pv_control_enabled": True, "pv_power": 10000}
+    )
+
+    with patch.object(hass.config_entries, "async_reload") as reload:
+        await async_reload_entry(hass, entry)
+
+    reload.assert_called_once_with(entry.entry_id)
 
 
 # --- sidebar panel identity -----------------------------------------------------

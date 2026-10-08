@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform
@@ -11,7 +12,12 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.event import async_track_time_change
 
 from .api import AlphaEssLocalApiClient
-from .const import DOMAIN
+from .const import (
+    CONF_CONTROL_ENABLED,
+    CONF_EXTRA_PV_CONTROL_ENABLED,
+    CONF_PERSIST_DAILY_CHARGE_LIMIT,
+    DOMAIN,
+)
 from .coordinator import (
     AlphaEssLocalDataUpdateCoordinator,
     AlphaEssLocalPricesCoordinator,
@@ -30,6 +36,13 @@ from .orchestrator import (
 )
 
 PLATFORMS: list[Platform] = [Platform.NUMBER, Platform.SENSOR, Platform.SWITCH]
+
+# Options the coordinators read from entry.options on every cycle, so a
+# change to only these takes effect without a reload. Reloading would drop
+# all entities for several seconds -- and blank the panel that toggled them.
+LIVE_OPTIONS = frozenset(
+    {CONF_CONTROL_ENABLED, CONF_EXTRA_PV_CONTROL_ENABLED, CONF_PERSIST_DAILY_CHARGE_LIMIT}
+)
 
 # Manual dispatch-override services — port of ReadConfigMinute's C/D/P/N
 # minute-config commands. Applied to every loaded config entry (this
@@ -61,6 +74,9 @@ class AlphaEssLocalRuntimeData:
     real_data_coordinator: AlphaEssLocalRealDataCoordinator
     schedule_coordinator: AlphaEssLocalScheduleCoordinator
     dispatch_coordinator: AlphaEssLocalDispatchCoordinator
+    # The options this entry was (re)loaded with, so the update listener
+    # can tell a live-read option change from one that needs a reload.
+    options: dict[str, Any] = field(default_factory=dict)
 
 
 type AlphaEssLocalConfigEntry = ConfigEntry[AlphaEssLocalRuntimeData]
@@ -130,6 +146,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry
         real_data_coordinator=real_data_coordinator,
         schedule_coordinator=schedule_coordinator,
         dispatch_coordinator=dispatch_coordinator,
+        options=dict(entry.options),
     )
 
     _async_register_dispatch_services(hass)
@@ -187,5 +204,14 @@ async def async_remove_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntr
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry) -> None:
-    """Reload the config entry when options change."""
+    """Reload the config entry when options change -- unless only live ones did."""
+    previous = entry.runtime_data.options
+    changed = {
+        key
+        for key in previous.keys() | entry.options.keys()
+        if previous.get(key) != entry.options.get(key)
+    }
+    if changed <= LIVE_OPTIONS:
+        entry.runtime_data.options = dict(entry.options)
+        return
     await hass.config_entries.async_reload(entry.entry_id)

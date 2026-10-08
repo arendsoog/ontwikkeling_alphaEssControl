@@ -125,11 +125,16 @@ class AlphaEssLocalApiClient:
         reads 0 on this specific installation (unused input) but is
         included for correctness -- see protocol.py's REG_PV_POWER comment.
         """
+        return sum((await self.async_get_pv_string_power()).values())
+
+    async def async_get_pv_string_power(self) -> dict[str, int]:
+        """Power per PV input (MPPT), in Watts: pv1_power/pv2_power/pv3_power."""
         registers = await self._read_registers(protocol.REG_PV_POWER, protocol.REG_PV_POWER_COUNT)
-        pv1 = protocol.to_unsigned_int(registers[0], registers[1])
-        pv2 = protocol.to_unsigned_int(registers[4], registers[5])
-        pv3 = protocol.to_unsigned_int(registers[8], registers[9])
-        return pv1 + pv2 + pv3
+        return {
+            "pv1_power": protocol.to_unsigned_int(registers[0], registers[1]),
+            "pv2_power": protocol.to_unsigned_int(registers[4], registers[5]),
+            "pv3_power": protocol.to_unsigned_int(registers[8], registers[9]),
+        }
 
     async def async_get_battery_power(self) -> int:
         """Battery power, in Watts. Negative = charge, positive = discharge."""
@@ -239,9 +244,11 @@ class AlphaEssLocalApiClient:
 
     async def async_get_data(self) -> dict:
         """Fetch the coordinator-facing snapshot of live inverter data."""
+        pv_strings = await self.async_get_pv_string_power()
         return {
             "battery_soc": await self.async_get_soc(),
-            "pv_power": await self.async_get_pv_power(),
+            "pv_power": sum(pv_strings.values()),
+            **pv_strings,
             "battery_power": await self.async_get_battery_power(),
             "grid_power": await self.async_get_total_active_power(),
             "total_energy_feed_to_grid": await self.async_get_total_energy_feed_to_grid(),
