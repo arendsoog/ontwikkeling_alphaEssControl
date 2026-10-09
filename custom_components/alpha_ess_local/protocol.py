@@ -68,9 +68,14 @@ REG_INVERTER_TEMPERATURE = 0x0435
 REG_TIME_PERIOD_CONTROL = 0x084F
 REG_TIME_PERIOD_CONTROL_COUNT = 17
 
-# Dispatch power on the wire is offset-encoded, not two's complement:
-# raw < POWER_DISCHARGE_OFFSET -> charging (positive); raw >= offset ->
-# discharging, actual value is -(raw - offset).
+# Dispatch power on the wire is offset-encoded around 32000 = 0 W, not two's
+# complement: charging P W is 32000 - P, discharging P W is 32000 + P (per
+# AlphaESS's register map, and the community `modbus:` package's force-
+# charge/-discharge scripts for this same inverter). Internally positive =
+# charge, so power = 32000 - raw both ways. In State-of-Charge control (the
+# grid-charge setpoint) charging used to be written as the bare value --
+# e.g. 5000 W went out as raw 5000 = 27 kW, so every grid charge ran at the
+# inverter's maximum, and "0 W" (stop) at 32 kW. Other modes: see below.
 POWER_DISCHARGE_OFFSET = 32000
 
 
@@ -139,12 +144,24 @@ def decode_battery_info(registers: list[int]) -> dict[str, float | int]:
 
 
 def decode_dispatch_power(raw: int) -> int:
-    """Decode the offset-encoded dispatch power register (see module docstring)."""
-    return -(raw - POWER_DISCHARGE_OFFSET) if raw >= POWER_DISCHARGE_OFFSET else raw
+    """Decode the offset-encoded dispatch power (positive = charge, W)."""
+    return POWER_DISCHARGE_OFFSET - raw
 
 
 def encode_dispatch_power(power: int) -> int:
-    """Encode a signed dispatch power value into its on-wire offset form."""
+    """Encode a signed dispatch power (positive = charge, W) for the wire."""
+    return max(0, min(0xFFFF, POWER_DISCHARGE_OFFSET - power))
+
+
+# Outside State-of-Charge control the power register isn't a setpoint, and
+# the values written there have always used the old (bare-value) form --
+# with which those modes behave as intended. They're kept bit-for-bit, so
+# fixing the charge setpoint doesn't change how any other mode behaves.
+def _decode_legacy_power(raw: int) -> int:
+    return -(raw - POWER_DISCHARGE_OFFSET) if raw >= POWER_DISCHARGE_OFFSET else raw
+
+
+def _encode_legacy_power(power: int) -> int:
     return POWER_DISCHARGE_OFFSET + abs(power) if power < 0 else power
 
 
@@ -154,10 +171,16 @@ def decode_dispatch_param(registers: list[int]) -> DispatchParam:
     # result to uint16_t, which discards registers[1] entirely (it only ever
     # carries the high word); the low word alone is preserved.
     power_raw = registers[2] & 0xFFFF
+    mode = DispatchMode(registers[5])
+    decode_power = (
+        decode_dispatch_power
+        if mode == DispatchMode.STATE_OF_CHARGE_CONTROL
+        else _decode_legacy_power
+    )
     return DispatchParam(
-        mode=DispatchMode(registers[5]),
+        mode=mode,
         started=(registers[0] == 1),
-        power=decode_dispatch_power(power_raw),
+        power=decode_power(power_raw),
         cutoff_soc=float(registers[6]) * 4,
         duration=to_unsigned_int(registers[7], registers[8]),
         para7=registers[9],
@@ -168,7 +191,10 @@ def decode_dispatch_param(registers: list[int]) -> DispatchParam:
 def encode_dispatch_param(param: DispatchParam) -> list[int]:
     """Encode a DispatchParam into the 11-register dispatch-parameter block."""
     cutoff_soc = min(param.cutoff_soc, 1000)
-    power = encode_dispatch_power(param.power)
+    if param.mode == DispatchMode.STATE_OF_CHARGE_CONTROL:
+        power = encode_dispatch_power(param.power)
+    else:
+        power = _encode_legacy_power(param.power)
     duration = param.duration
 
     registers = [0] * REG_DISPATCH_PARAM_COUNT

@@ -1219,8 +1219,36 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         await self.hass.async_add_executor_job(
             run_scheduler, cur_soc, now.hour, today, tomorrow, config
         )
+        _keep_past_hours(today, (self.data or {}).get("today"), now.hour)
 
         return {"today": today, "tomorrow": tomorrow}
+
+
+def _keep_past_hours(today: Day, previous: Day | None, cur_hour: int) -> None:
+    """Keep what the hours before `cur_hour` actually did.
+
+    `today` is rebuilt from prices/solar on every run, so without this the
+    plan would show the past hours as whatever the new schedule fills in --
+    e.g. a grid-charge hour turning into "charge from PV" an hour later.
+    Taken from the previous run's plan (same day); after a restart only the
+    once-per-day grid-charge/discharge hours are known (index_charge /
+    index_discharge, restored from storage).
+    """
+    if previous is not None and (previous.year, previous.mon, previous.day) == (
+        today.year,
+        today.mon,
+        today.day,
+    ):
+        for h in range(min(cur_hour, len(today.hour))):
+            past, kept = today.hour[h], previous.hour[h]
+            past.charge = kept.charge
+            past.cutoff_soc = kept.cutoff_soc
+            past.feed_in = kept.feed_in
+        return
+    if today.charge_on_grid_used and 0 <= today.index_charge < cur_hour:
+        today.hour[today.index_charge].charge = Charge.CHARGING_ON_GRID
+    if today.discharge_used and 0 <= today.index_discharge < cur_hour:
+        today.hour[today.index_discharge].charge = Charge.CHARGING_DISCHARGE
 
 
 # Dispatch cycle; halved while charging from the grid, so the grid-charge

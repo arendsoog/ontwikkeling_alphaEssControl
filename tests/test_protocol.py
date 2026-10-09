@@ -20,7 +20,8 @@ def test_to_signed_short_positive_and_negative():
 
 
 def test_decode_dispatch_power_charging_below_offset():
-    assert protocol.decode_dispatch_power(500) == 500
+    # 32000 - 500 = charging 500 W
+    assert protocol.decode_dispatch_power(31500) == 500
 
 
 def test_decode_dispatch_power_discharging_at_and_above_offset():
@@ -28,8 +29,18 @@ def test_decode_dispatch_power_discharging_at_and_above_offset():
     assert protocol.decode_dispatch_power(32500) == -500
 
 
+def test_encode_dispatch_power_charging_is_offset_minus_power():
+    """Regression: charging was written as the bare value, which the
+    inverter reads as 32000 - value -- 5000 W became 27 kW (its maximum)
+    and 0 W ("stop") 32 kW. Same encoding as the community package's
+    force-charge script: 32000 - power."""
+    assert protocol.encode_dispatch_power(5000) == 27000
+    assert protocol.encode_dispatch_power(0) == 32000
+    assert protocol.encode_dispatch_power(-1500) == 33500
+
+
 def test_encode_dispatch_power_round_trips_with_decode():
-    for power in (0, 500, 32000 - 1, -1, -500, -32000):
+    for power in (0, 500, 10484, 32000, -1, -500, -32000):
         raw = protocol.encode_dispatch_power(power)
         assert protocol.decode_dispatch_power(raw) == power
 
@@ -61,7 +72,7 @@ def test_decode_dispatch_param_ignores_high_word_of_power_register():
     """The C source truncates the combined power to uint16_t, discarding the high word."""
     registers = [0] * protocol.REG_DISPATCH_PARAM_COUNT
     registers[1] = 0xFFFF  # high word: must be ignored
-    registers[2] = 500
+    registers[2] = 500  # outside SOC control: the legacy bare value
     registers[5] = DispatchMode.DEFAULT
     registers[10] = 2  # PV off
 
@@ -85,12 +96,49 @@ def test_encode_dispatch_param_charging():
     registers = protocol.encode_dispatch_param(param)
 
     assert registers[0] == 1  # started
+    # Outside State-of-Charge control the power isn't a setpoint; kept in
+    # the legacy bare-value form these modes have always been written with.
     assert registers[2] == 1500  # power, low word
     assert registers[5] == DispatchMode.NORMAL
     assert registers[6] == 225  # 900 / 4
     assert registers[8] == 3600  # duration, low word
     assert registers[9] == 255  # always 255, per C source
     assert registers[10] == 1  # PV on -> 1
+
+
+def test_encode_dispatch_param_grid_charge_setpoint():
+    """State-of-Charge control charging: 32000 - power (5077 W -> 26923),
+    not the bare 5077 that the inverter read as a 27 kW charge."""
+    param = DispatchParam(
+        mode=DispatchMode.STATE_OF_CHARGE_CONTROL,
+        started=True,
+        power=5077,
+        cutoff_soc=350,
+        duration=3600,
+        para7=0,
+        pv_on=True,
+    )
+
+    registers = protocol.encode_dispatch_param(param)
+
+    assert registers[1] == 0
+    assert registers[2] == 26923
+    assert protocol.decode_dispatch_param(registers).power == 5077
+
+
+def test_encode_dispatch_param_grid_charge_stop_is_zero_watts():
+    """Regulation's "stop" (0 W) must be raw 32000, not raw 0 (= 32 kW)."""
+    param = DispatchParam(
+        mode=DispatchMode.STATE_OF_CHARGE_CONTROL,
+        started=True,
+        power=0,
+        cutoff_soc=350,
+        duration=3600,
+        para7=0,
+        pv_on=True,
+    )
+
+    assert protocol.encode_dispatch_param(param)[2] == 32000
 
 
 def test_encode_dispatch_param_discharging_and_pv_off():

@@ -1308,7 +1308,15 @@ class AlphaEssPanel extends HTMLElement {
     const solarFc = hourly("solar_forecast_w");
     const loadFc = hourly("house_load_w");
     const actual = this._powerSeries(x0, Math.min(now, x1));
+    // HA records a state only when it changes: an SOC that has stayed put
+    // since its last change would otherwise end the line there. Carry the
+    // current value through to now.
     const socPts = this._series("battery_soc");
+    const socNow = this._value("battery_soc");
+    const socEnd = Math.min(now, x1);
+    if (socNow !== null && (!socPts.length || socPts[socPts.length - 1][0] < socEnd)) {
+      socPts.push([socEnd, socNow]);
+    }
 
     const values = [
       ...solarFc.pts.map((p) => p[1]),

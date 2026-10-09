@@ -51,6 +51,7 @@ from custom_components.alpha_ess_local.orchestrator import (
     _grid_to_battery,
     _house_load_power,
     _house_load_tariff,
+    _keep_past_hours,
     _number_entity_value,
     _sample_hour,
     _sma_pv_power,
@@ -66,6 +67,50 @@ from custom_components.alpha_ess_local.orchestrator import (
 )
 from custom_components.alpha_ess_local.protocol import DispatchMode, DispatchParam
 from custom_components.alpha_ess_local.storage import HourMean
+
+# --- _keep_past_hours -------------------------------------------------------
+
+
+def test_keep_past_hours_keeps_what_earlier_hours_did():
+    """Regression: the 04:00 grid charge showed as "charge from PV" after the
+    05:00 recompute, since today is rebuilt from prices/solar every run."""
+    previous = Day(valid=True, year=2026, mon=10, day=9)
+    previous.hour[4].charge = Charge.CHARGING_ON_GRID
+    previous.hour[4].cutoff_soc = 350
+    today = Day(valid=True, year=2026, mon=10, day=9)
+    for hour in today.hour:
+        hour.charge = Charge.CHARGING_ON_PV
+
+    _keep_past_hours(today, previous, cur_hour=5)
+
+    assert today.hour[4].charge == Charge.CHARGING_ON_GRID
+    assert today.hour[4].cutoff_soc == 350
+    assert today.hour[5].charge == Charge.CHARGING_ON_PV  # current hour: new plan
+
+
+def test_keep_past_hours_after_restart_uses_the_stored_grid_charge_hour():
+    today = Day(valid=True, year=2026, mon=10, day=9)
+    for hour in today.hour:
+        hour.charge = Charge.CHARGING_ON_PV
+    today.charge_on_grid_used = True
+    today.index_charge = 4
+
+    _keep_past_hours(today, None, cur_hour=6)
+
+    assert today.hour[4].charge == Charge.CHARGING_ON_GRID
+    assert today.hour[3].charge == Charge.CHARGING_ON_PV
+
+
+def test_keep_past_hours_ignores_yesterdays_plan():
+    previous = Day(valid=True, year=2026, mon=10, day=8)
+    previous.hour[4].charge = Charge.CHARGING_ON_GRID
+    today = Day(valid=True, year=2026, mon=10, day=9)
+    today.hour[4].charge = Charge.CHARGING_ON_PV
+
+    _keep_past_hours(today, previous, cur_hour=6)
+
+    assert today.hour[4].charge == Charge.CHARGING_ON_PV
+
 
 # --- merge_day_sources -------------------------------------------------------
 
