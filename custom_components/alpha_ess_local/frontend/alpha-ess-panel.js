@@ -2244,6 +2244,18 @@ class AlphaEssPanel extends HTMLElement {
       if (d.feed_in_allowed === 0) parts.push("niet terugleveren");
       return parts.join(" · ");
     };
+    // When the battery would be empty serving only the house, as computed
+    // when the hour was planned (hours from the start of that hour).
+    const empty = (d) => {
+      if (d.empty_after === undefined) return "–";
+      if (d.empty_after === null) return '<span class="muted">niet binnen de planning</span>';
+      const minutes = Math.round((d.hour + d.empty_after) * 60);
+      const days = Math.floor(minutes / 1440);
+      const rest = minutes % 1440;
+      const time = `${pad2(Math.floor(rest / 60))}:${pad2(rest % 60)}`;
+      if (days === 0) return time;
+      return days === 1 ? `morgen ${time}` : `over ${days} dagen ${time}`;
+    };
     const rows = decisions
       .map((d) => {
         const info = ACTIONS[d.action] || { label: d.action || "–", color: "transparent" };
@@ -2257,6 +2269,7 @@ class AlphaEssPanel extends HTMLElement {
             <td>${inverter(d)}</td>
             <td>${target}</td>
             <td>${sun(d)}</td>
+            <td>${empty(d)}</td>
           </tr>`;
       })
       .join("");
@@ -2264,7 +2277,7 @@ class AlphaEssPanel extends HTMLElement {
       <div class="section-title">Beslissingen per uur</div>
       <div class="table-scroll">
         <table class="hist-table decision-table">
-          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th><th>Zon gaat voor</th></tr></thead>
+          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th><th>Zon gaat voor</th><th>Batterij leeg (alleen thuis)</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;

@@ -652,11 +652,13 @@ def test_decision_log_notes_estimates_and_the_suns_claim(tmp_path):
         solar_room=4500.0,
         solar_after=14000.0,
         feed_in_allowed=False,
+        empty_after=5.5,
     )
 
     (row,) = retrieve_day_decisions(db_path, 2026, 10, 9)
     assert (row["multiple"], row["tomorrow_estimated"]) == (1, 1)
     assert (row["solar_room"], row["solar_after"], row["feed_in_allowed"]) == (4500.0, 14000.0, 0)
+    assert row["empty_after"] == 5.5
 
 
 def test_dispatch_only_hour_has_no_action(tmp_path):

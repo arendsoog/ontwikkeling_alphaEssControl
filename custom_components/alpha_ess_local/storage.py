@@ -156,6 +156,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ("solar_room", "REAL"),
         ("solar_after", "REAL"),
         ("feed_in_allowed", "INTEGER"),
+        # Hours from the hour's start until the battery would be empty
+        # serving only the house (schedule.battery_empty_after); NULL: not
+        # within the known hours.
+        ("empty_after", "REAL"),
     ):
         _add_column_if_missing(conn, "hour_action", column, sql_type)
     # Migrated in after the fact — solar/grid-to-battery attribution
@@ -1010,13 +1014,15 @@ def store_hour_action(
     solar_room: float | None = None,
     solar_after: float | None = None,
     feed_in_allowed: bool | None = None,
+    empty_after: float | None = None,
 ) -> None:
     """Record the planned action (data.Charge) for an hour and why it was
     chosen; the latest run wins. Leaves the dispatch columns alone.
     `multiple_per_day`: several grid charges a day allowed.
     `tomorrow_estimated`: tomorrow's prices weren't out, so the plan took
     them as today's. `solar_room`/`solar_after`/`feed_in_allowed`: see
-    schedule.solar_reservation and ScheduleConfig.discharge_enabled."""
+    schedule.solar_reservation and ScheduleConfig.discharge_enabled.
+    `empty_after`: see schedule.battery_empty_after."""
     with _connection(db_path) as conn:
         _ensure_schema(conn)
         conn.execute(
@@ -1024,8 +1030,8 @@ def store_hour_action(
             INSERT INTO hour_action
                 (year, mon, day, hour, charge, selection, opt_extra, min_profit, price,
                  cutoff_soc, multiple, tomorrow_estimated, solar_room, solar_after,
-                 feed_in_allowed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 feed_in_allowed, empty_after)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (year, mon, day, hour) DO UPDATE SET
                 charge=excluded.charge, selection=excluded.selection,
                 opt_extra=excluded.opt_extra, min_profit=excluded.min_profit,
@@ -1033,7 +1039,7 @@ def store_hour_action(
                 multiple=excluded.multiple,
                 tomorrow_estimated=excluded.tomorrow_estimated,
                 solar_room=excluded.solar_room, solar_after=excluded.solar_after,
-                feed_in_allowed=excluded.feed_in_allowed
+                feed_in_allowed=excluded.feed_in_allowed, empty_after=excluded.empty_after
             """,
             (
                 year,
@@ -1051,6 +1057,7 @@ def store_hour_action(
                 solar_room,
                 solar_after,
                 None if feed_in_allowed is None else int(feed_in_allowed),
+                empty_after,
             ),
         )
         conn.commit()
@@ -1094,7 +1101,8 @@ def retrieve_day_decisions(db_path: str, year: int, mon: int, day: int) -> list[
             """
             SELECT hour, charge, selection, opt_extra, min_profit, price, cutoff_soc,
                    mode, power, power_max, written, manual, multiple,
-                   tomorrow_estimated, solar_room, solar_after, feed_in_allowed
+                   tomorrow_estimated, solar_room, solar_after, feed_in_allowed,
+                   empty_after
             FROM hour_action WHERE year = ? AND mon = ? AND day = ? ORDER BY hour
             """,
             (year, mon, day),
@@ -1117,6 +1125,7 @@ def retrieve_day_decisions(db_path: str, year: int, mon: int, day: int) -> list[
         "solar_room",
         "solar_after",
         "feed_in_allowed",
+        "empty_after",
     )
     return [dict(zip(keys, row, strict=True)) for row in rows]
 

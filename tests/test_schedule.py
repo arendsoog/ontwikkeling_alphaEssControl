@@ -26,6 +26,7 @@ from custom_components.alpha_ess_local.schedule import (
     _inverter_efficiency,
     _net_solar_wh,
     _percentile,
+    battery_empty_after,
     scenario_percentiles,
     set_charging_msg,
     set_schedule,
@@ -1110,3 +1111,31 @@ def test_solar_reservation_caps_the_room_at_the_battery_and_nets_the_morning():
     span = (config.max_soc_negative_price - SOC_MIN) / 1000 * 10000
     assert room == pytest.approx(span - 7 * 500)
     assert solar_reservation(today, 23, config) == (0.0, 0.0)
+
+
+def test_battery_empty_after_serving_only_the_house():
+    """50% of 10 kWh, 10% floor: 4 kWh of battery for a 1 kWh/h house --
+    each hour takes a bit more than 1 kWh (losses), so empty within the
+    4th hour, mid-hour, counted from the start of the planning hour."""
+    today = _flat_day(price=0.30, solar=0, house_load=1000)
+    empty = battery_empty_after(500, 18, today, Day(valid=False), _config())
+
+    assert empty is not None
+    assert 3.0 < empty < 4.0
+
+
+def test_battery_empty_after_counts_the_sun_and_tomorrow():
+    today = _flat_day(price=0.30, solar=0, house_load=500)
+    tomorrow = _flat_day(price=0.30, solar=0, house_load=500, day=16)
+    # Starting at 20:00 with 50%: ~4 kWh at ~0.55 kWh/h lasts past midnight.
+    empty = battery_empty_after(500, 20, today, tomorrow, _config())
+    assert 4.0 < empty < 4.0 + 4.0  # tomorrow 00:00-04:00
+
+    # A sunny hour before it runs out tops it up: empty later.
+    today.hour[21].estimated_solar_power = 4000
+    assert battery_empty_after(500, 20, today, tomorrow, _config()) > empty
+
+
+def test_battery_empty_after_none_when_it_lasts_the_known_hours():
+    today = _flat_day(price=0.30, solar=0, house_load=100)
+    assert battery_empty_after(900, 20, today, Day(valid=False), _config()) is None

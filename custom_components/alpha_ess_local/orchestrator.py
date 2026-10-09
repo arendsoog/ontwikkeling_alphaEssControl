@@ -95,7 +95,12 @@ from .data import (
 )
 from .prices import mk_return_price, mk_use_price
 from .protocol import DispatchMode, DispatchParam
-from .schedule import ScheduleConfig, scenario_percentiles, solar_reservation
+from .schedule import (
+    ScheduleConfig,
+    battery_empty_after,
+    scenario_percentiles,
+    solar_reservation,
+)
 from .schedule import set_schedule as run_scheduler
 from .storage import HourMean
 
@@ -1292,6 +1297,7 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         if today.valid:
             cur = today.hour[now.hour]
             solar_room, solar_after = solar_reservation(today, now.hour, config)
+            empty_after = battery_empty_after(cur_soc, now.hour, today, planning_tomorrow, config)
             await self.hass.async_add_executor_job(
                 partial(
                     storage.store_hour_action,
@@ -1309,6 +1315,7 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                     solar_room=solar_room,
                     solar_after=solar_after,
                     feed_in_allowed=config.discharge_enabled,
+                    empty_after=empty_after,
                     price=cur.price if cur.valid else None,
                     cutoff_soc=cur.cutoff_soc,
                 )

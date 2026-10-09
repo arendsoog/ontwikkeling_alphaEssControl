@@ -207,6 +207,40 @@ def solar_reservation(day: Day, hour: int, config: ScheduleConfig) -> tuple[floa
     return room, surplus
 
 
+def battery_empty_after(
+    cur_soc: int, cur_hour: int, today: Day, tomorrow: Day, config: ScheduleConfig
+) -> float | None:
+    """Hours from the start of `cur_hour` until the battery would reach its
+    minimum SOC if it only served the house: its calculated load drawn from
+    the battery, the expected solar surplus charged into it, no grid charge
+    and no discharge to the grid. `cur_soc` in SOC_MAX_BATTERY units. None:
+    not empty within the known hours. For the decision log."""
+    capacity = config.usable_battery_capacity
+    soc_wh = cur_soc / SOC_MAX_BATTERY * capacity
+    min_wh = SOC_MIN / SOC_MAX_BATTERY * capacity
+    hours = list(today.hour[cur_hour:]) + (list(tomorrow.hour) if tomorrow.valid else [])
+    for index, the_hour in enumerate(hours):
+        if soc_wh <= min_wh + 1.0:
+            return float(index)
+        if not the_hour.valid:
+            return None
+        new_soc_wh, profit, _cu, _du = _evaluate_hour_action(
+            Charge.CHARGING_ON_PV, the_hour, soc_wh, True, True, config
+        )
+        if profit == float("-inf"):
+            new_soc_wh = soc_wh  # a surplus too small to charge: unchanged
+        if new_soc_wh <= min_wh + 1.0 < soc_wh:
+            # The hour's whole drain (unclipped by the floor) sets how far
+            # into it the battery runs out.
+            full_wh, _profit, _cu, _du = _evaluate_hour_action(
+                Charge.CHARGING_ON_PV, the_hour, capacity, True, True, config
+            )
+            drain = capacity - full_wh
+            return index + (min(1.0, (soc_wh - min_wh) / drain) if drain > 0 else 1.0)
+        soc_wh = new_soc_wh
+    return None
+
+
 def _evaluate_hour_action(
     action: Charge,
     the_hour: Hour,
