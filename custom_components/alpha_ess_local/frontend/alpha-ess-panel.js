@@ -1834,12 +1834,19 @@ class AlphaEssPanel extends HTMLElement {
     }
   }
 
+  // Ticks on round local times (counted from local midnight, not from the
+  // epoch -- that put a whole day's 6-hour ticks on 02/08/14/20 h here).
   _timeTicks(x0, x1) {
     const span = x1 - x0;
     const hour = 3600 * 1000;
-    const step = span <= 2 * hour ? 15 * 60 * 1000 : span <= 7 * hour ? hour : span <= 13 * hour ? 2 * hour : 6 * hour;
+    let step = 2 * hour;
+    if (span <= 2 * hour) step = 15 * 60 * 1000;
+    else if (span <= 7 * hour) step = hour;
+    const base = startOfDayOf(x0);
     const ticks = [];
-    for (let t = Math.ceil(x0 / step) * step; t <= x1; t += step) ticks.push({ t, label: fmtTime(t) });
+    for (let t = base + Math.ceil((x0 - base) / step) * step; t <= x1; t += step) {
+      ticks.push({ t, label: step >= hour ? pad2(new Date(t).getHours()) : fmtTime(t) });
+    }
     return ticks;
   }
 
