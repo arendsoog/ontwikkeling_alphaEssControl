@@ -2247,7 +2247,8 @@ class AlphaEssPanel extends HTMLElement {
     // When the battery would be empty serving only the house, as computed
     // when the hour was planned (hours from the start of that hour).
     const empty = (d) => {
-      if (d.empty_after === undefined) return "–";
+      // Rows from before this was logged have no solar figures either.
+      if (d.empty_after === undefined || d.solar_after === null || d.solar_after === undefined) return "–";
       if (d.empty_after === null) return '<span class="muted">niet binnen de planning</span>';
       const minutes = Math.round((d.hour + d.empty_after) * 60);
       const days = Math.floor(minutes / 1440);
