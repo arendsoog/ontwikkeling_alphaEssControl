@@ -2240,7 +2240,7 @@ class AlphaEssPanel extends HTMLElement {
     const sun = (d) => {
       if (d.solar_after === null || d.solar_after === undefined) return "–";
       const kwh = (v) => fmtNum((v || 0) / 1000, 1);
-      const parts = [`${kwh(d.solar_room)} kWh vrij`, `${kwh(d.solar_after)} kWh verwacht`];
+      const parts = [`${kwh(d.solar_room)} kWh vrij`, `${kwh(d.solar_after)} kWh overschot verwacht tot 24:00`];
       if (d.feed_in_allowed === 0) parts.push("niet terugleveren");
       return parts.join(" · ");
     };
