@@ -524,7 +524,12 @@ class _Plan:
         else:
             charge_spent, discharge_spent = state >> 1, state & 1
             if option.action == Charge.CHARGING_ON_GRID:
-                if charge_spent:
+                # Solar goes first here too: no grid charge the sun can do
+                # (the morning before it is then charged for the day before).
+                if (
+                    charge_spent
+                    or option.budget_units + self.solar_units_after[hour] > BUDGET_STEPS
+                ):
                     return None
                 nxt = (int(option.charge_done) << 1) | discharge_spent
             elif option.action == Charge.CHARGING_DISCHARGE:
