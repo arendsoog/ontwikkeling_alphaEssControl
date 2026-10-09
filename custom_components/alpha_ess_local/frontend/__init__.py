@@ -374,6 +374,7 @@ def day_details(db_path: str, day: date) -> dict[str, Any]:
         decision["action"] = None if charge is None else set_charging_msg(Charge(charge))
         decision["written"] = bool(decision["written"])
         decision["manual"] = bool(decision["manual"])
+        decision["multiple"] = bool(decision["multiple"])
     five_min = storage.retrieve_day_five_min(db_path, day.year, day.month, day.day)
     midnight = dt_util.start_of_local_day(day)
     samples = [

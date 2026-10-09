@@ -115,6 +115,13 @@ class ScheduleConfig:
     # BTW-exempt teruglevering formula) -- None means "no override, apply
     # vat_percentage to both sides", same as prior behavior.
     return_vat_percentage: float | None = None
+    # False: one grid charge and one grid discharge per day at most (the
+    # original's limit). True: any number of grid-charge sessions, each one
+    # costing daily_min_profit in the DP (so it's only planned when it earns
+    # more than that), and no discharging to the grid -- the battery only
+    # supplies the house. In this mode charge_used means "the previous hour
+    # was a grid charge" (an ongoing session, which doesn't pay again).
+    multiple_per_day: bool = False
 
 
 @dataclass(frozen=True)
@@ -292,7 +299,7 @@ def _evaluate_hour_action(
             profit = feed_in * price_use
 
     elif action == Charge.CHARGING_ON_GRID:
-        if not charge_used:
+        if not charge_used or config.multiple_per_day:
             # The target itself (what _finalise_schedule turns into
             # cutoff_soc) is purely solar-reservation-driven. max_grid_load
             # *does* throttle how much of that target a single hour can
@@ -316,13 +323,16 @@ def _evaluate_hour_action(
                     new_soc_wh = soc_wh + charge_soc
                     feed_in -= charge_ac
                     profit = feed_in * (price_return if feed_in > 0.0 else price_use)
-                    next_charge_used = charge_soc >= target_soc - 1e-6
+                    next_charge_used = (
+                        True if config.multiple_per_day else charge_soc >= target_soc - 1e-6
+                    )
 
     elif (
         action == Charge.CHARGING_DISCHARGE
         and earning != Earning.EARNING_ON_USE
         and not discharge_used
         and config.discharge_enabled
+        and not config.multiple_per_day  # then the battery only supplies the house
     ):
         discharge_soc = min(soc_wh - max(min_soc, max_discharge_after), DISCHARGE_LIMIT)
         if discharge_soc > 0.0:
@@ -334,6 +344,9 @@ def _evaluate_hour_action(
                 feed_in += discharge_ac
                 profit = feed_in * (price_return if feed_in > 0.0 else price_use)
                 next_discharge_used = True
+
+    if config.multiple_per_day and action != Charge.CHARGING_ON_GRID:
+        next_charge_used = False  # a grid-charge session ends with any other hour
 
     new_soc_wh = _clamp(new_soc_wh, 0.0, float(battery_capacity))
     return new_soc_wh, profit, next_charge_used, next_discharge_used
@@ -434,6 +447,10 @@ def _calculate_best_schedule(
                             reset_cu, reset_du = False, False
 
                         result = profit + dp[hour + 1][ns][reset_cu][reset_du].result
+                        if config.multiple_per_day and action == Charge.CHARGING_ON_GRID and not cu:
+                            # A new grid-charge session must earn more than
+                            # the minimum profit to be worth planning.
+                            result -= config.daily_min_profit
 
                         if result > best_result:
                             best_result = result
@@ -750,20 +767,25 @@ def set_schedule(
         config,
     )
 
+    # With several sessions a day, each new one already paid the minimum
+    # profit inside the DP, so the optimum only has to beat the baseline.
+    minimum = 0.0 if config.multiple_per_day else config.daily_min_profit
+
     if opt_valid:
-        if today.charge_on_grid_used and 0 <= today.index_charge < cur_hour:
-            result_opt += today.hour[today.index_charge].real_result
-            result_bl += today_bl.hour[today.index_charge].estimated_result
-        if today.discharge_used and 0 <= today.index_discharge < cur_hour:
-            result_opt += today.hour[today.index_discharge].real_result
-            result_bl += today_bl.hour[today.index_discharge].estimated_result
+        if not config.multiple_per_day:
+            if today.charge_on_grid_used and 0 <= today.index_charge < cur_hour:
+                result_opt += today.hour[today.index_charge].real_result
+                result_bl += today_bl.hour[today.index_charge].estimated_result
+            if today.discharge_used and 0 <= today.index_discharge < cur_hour:
+                result_opt += today.hour[today.index_discharge].real_result
+                result_bl += today_bl.hour[today.index_discharge].estimated_result
 
         opt_extra = result_opt - result_bl
-        if opt_extra < config.daily_min_profit:
+        if opt_extra < minimum:
             LOGGER.debug(
                 "set_schedule: optimum extra %.2f < minimum %.2f, selecting baseline",
                 opt_extra,
-                config.daily_min_profit,
+                minimum,
             )
             _select_baseline(
                 today,
@@ -778,7 +800,7 @@ def set_schedule(
             LOGGER.debug(
                 "set_schedule: optimum extra %.2f >= minimum %.2f, selecting optimum (%s)",
                 opt_extra,
-                config.daily_min_profit,
+                minimum,
                 set_charging_msg(best_action),
             )
             _assign_day(today, today_opt)

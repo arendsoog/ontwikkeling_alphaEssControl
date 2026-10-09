@@ -1172,7 +1172,17 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             today_date.month,
             today_date.day,
         )
-        _mark_finished_grid_charge(today, stored_actions, now.hour)
+        once_per_day = options.get(
+            CONF_PERSIST_DAILY_CHARGE_LIMIT, DEFAULT_PERSIST_DAILY_CHARGE_LIMIT
+        )
+        if once_per_day:
+            _mark_finished_grid_charge(today, stored_actions, now.hour)
+        else:
+            # Several sessions a day: "used" only means a session is going
+            # on (the previous hour was a grid charge), which can continue
+            # without paying the minimum profit again; no grid discharge.
+            today.charge_on_grid_used = stored_actions.get(now.hour - 1) == Charge.CHARGING_ON_GRID
+            today.discharge_used = False
         # Before the planner, so its own bookkeeping (index_charge, the
         # once-per-day result comparison) sees what the past hours did.
         _keep_past_hours(today, (self.data or {}).get("today"), now.hour, stored_actions)
@@ -1237,6 +1247,7 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                 self.hass, self.config_entry, "discharge_enabled", True
             ),
             max_grid_load=max_grid_load_wh,
+            multiple_per_day=not once_per_day,
         )
 
         modbus_data = self._modbus_coordinator.data or {}
@@ -1259,6 +1270,7 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                     selection=today.selection,
                     opt_extra=today.opt_extra,
                     min_profit=config.daily_min_profit,
+                    multiple_per_day=config.multiple_per_day,
                     price=cur.price if cur.valid else None,
                     cutoff_soc=cur.cutoff_soc,
                 )

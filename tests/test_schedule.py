@@ -532,6 +532,62 @@ def test_calculate_best_schedule_grid_charge_leaves_room_for_next_hours_solar():
     assert today.hour[23].estimated_start_soc == round((9000 - reserved) / 100)
 
 
+def _two_valley_day(cheap=0.05, dear=0.60):
+    """Cheap at 00-03 and 10-13, dear in between and after."""
+    today = _flat_day(price=dear, solar=0, house_load=1000)
+    for h in (*range(0, 4), *range(10, 14)):
+        today.hour[h].price = cheap
+    return today
+
+
+def _sessions(day):
+    """Grid-charge sessions in a day: runs of consecutive grid-charge hours."""
+    starts = 0
+    for h, hour in enumerate(day.hour):
+        if hour.charge == Charge.CHARGING_ON_GRID and (
+            h == 0 or day.hour[h - 1].charge != Charge.CHARGING_ON_GRID
+        ):
+            starts += 1
+    return starts
+
+
+def test_once_per_day_plans_a_single_grid_charge_session():
+    today = _two_valley_day()
+    _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, _config())
+
+    assert _sessions(today) == 1
+
+
+def test_multiple_per_day_charges_in_each_cheap_valley():
+    today = _two_valley_day()
+    config = _config(multiple_per_day=True)
+    _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
+
+    assert _sessions(today) == 2
+    assert any(today.hour[h].charge == Charge.CHARGING_ON_GRID for h in range(0, 4))
+    assert any(today.hour[h].charge == Charge.CHARGING_ON_GRID for h in range(10, 14))
+
+
+def test_multiple_per_day_skips_a_session_worth_less_than_the_minimum():
+    today = _two_valley_day(cheap=0.05, dear=0.60)
+    # Each session's gain is a few euros at most -- a 1000 EUR minimum
+    # per session makes none of them worth it.
+    config = _config(multiple_per_day=True, daily_min_profit=1000.0)
+    _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
+
+    assert _sessions(today) == 0
+
+
+def test_multiple_per_day_never_discharges_to_the_grid():
+    today = _flat_day(price=0.10, solar=0, house_load=300)
+    for h in range(18, 21):
+        today.hour[h].price = 2.00  # a spike that would pay to sell into
+    config = _config(multiple_per_day=True)
+    _calculate_best_schedule(90, 0, today, Day(valid=False), False, False, None, config)
+
+    assert all(hour.charge != Charge.CHARGING_DISCHARGE for hour in today.hour)
+
+
 def test_solar_room_ignores_tomorrow_and_nets_out_deficit_hours():
     """Regression: the room kept free for later solar summed every later
     surplus hour, tomorrow's included, and ignored the house draining the

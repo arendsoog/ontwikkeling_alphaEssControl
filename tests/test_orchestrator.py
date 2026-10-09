@@ -19,6 +19,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
 
+from custom_components.alpha_ess_local import storage
 from custom_components.alpha_ess_local.config_flow import SMA_PV_POWER_STRING_KEY
 from custom_components.alpha_ess_local.const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
@@ -1526,6 +1527,53 @@ async def test_schedule_coordinator_uses_peak_load_sensor_when_higher_than_slide
     config = mock_run_scheduler.call_args.args[4]
     # 8.5 kW sensor > 6.0 kW slider -> the sensor wins, in whole kW (8 kW).
     assert config.max_grid_load == pytest.approx(8000.0)
+
+
+@pytest.mark.parametrize(
+    ("once_per_day", "previous_hour_charge", "expected_used"),
+    [
+        (False, Charge.CHARGING_ON_GRID, True),  # an ongoing session may continue
+        (False, Charge.NO_DISCHARGING, False),
+        (True, Charge.NO_DISCHARGING, False),
+    ],
+)
+async def test_schedule_coordinator_follows_the_once_per_day_switch(
+    hass: HomeAssistant, freezer, once_per_day, previous_hour_charge, expected_used
+):
+    freezer.move_to("2024-01-15 14:00:00")
+    entry = MockConfigEntry(domain=DOMAIN, options={CONF_PERSIST_DAILY_CHARGE_LIMIT: once_per_day})
+    entry.add_to_hass(hass)
+    now = dt_util.now()  # local time: the test timezone isn't UTC
+    storage.store_hour_action(
+        get_db_path(hass, entry),
+        now.year,
+        now.month,
+        now.day,
+        now.hour - 1,
+        int(previous_hour_charge),
+    )
+
+    modbus_coordinator = SimpleNamespace(data={"battery_soc": 55.0})
+    prices_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+    solar_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+    coordinator = AlphaEssLocalScheduleCoordinator(
+        hass, entry, modbus_coordinator, prices_coordinator, solar_coordinator
+    )
+
+    with (
+        patch(
+            "custom_components.alpha_ess_local.storage.retrieve_mean_data",
+            MagicMock(return_value=None),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.run_scheduler", MagicMock()
+        ) as mock_run_scheduler,
+    ):
+        await coordinator._async_update_data()
+
+    _soc, _hour, today, _tomorrow, config = mock_run_scheduler.call_args.args
+    assert config.multiple_per_day is (not once_per_day)
+    assert today.charge_on_grid_used is expected_used
 
 
 async def test_schedule_coordinator_ignores_peak_load_sensor_when_lower_than_slider(
