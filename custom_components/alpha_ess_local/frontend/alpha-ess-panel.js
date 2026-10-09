@@ -2530,7 +2530,7 @@ const STYLE = `
   @keyframes pulse { 50% { opacity: 0.3; } }
 
   /* energy flow scene (photo + traced flow paths, labels in bands) */
-  .scene { background: #fff; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+  .scene { background: none; overflow: hidden; }
   .scene-img { position: relative; }
   .scene-img img { display: block; width: 100%; height: auto; user-select: none; }
   .scene-img svg { position: absolute; inset: 0; width: 100%; height: 100%; }
