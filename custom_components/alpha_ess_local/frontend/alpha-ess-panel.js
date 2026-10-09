@@ -330,8 +330,10 @@ function barChart(o, metaStore) {
 // ---------------------------------------------------------------- house scene
 
 // Cut-away house illustration (house.webp, 1260x848) with the flow paths
-// traced over its drawn cables in the same pixel coordinates.
-const SCENE_IMAGE = "/alpha_ess_local/frontend/house.webp";
+// traced over its drawn cables in the same pixel coordinates. The version
+// in the URL changes with the image, so browsers don't keep showing the old
+// one from their cache.
+const SCENE_IMAGE = "/alpha_ess_local/frontend/house.webp?v=6203cdce";
 const SCENE_PATHS = {
   // roof panels -> battery
   solar: ["M566,272 L566,349 L521,349 L521,566"],
