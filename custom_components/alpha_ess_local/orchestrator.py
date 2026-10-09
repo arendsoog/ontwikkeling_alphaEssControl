@@ -1154,6 +1154,15 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                 today.index_charge = index_charge
                 today.index_discharge = index_discharge
 
+        stored_actions = await self.hass.async_add_executor_job(
+            storage.retrieve_day_actions,
+            db_path,
+            today_date.year,
+            today_date.month,
+            today_date.day,
+        )
+        _mark_finished_grid_charge(today, stored_actions, now.hour)
+
         max_grid_load_wh = _effective_max_grid_load_wh(self.hass, self.config_entry)
 
         vat_percentage = options.get(CONF_VAT_PERCENTAGE, DEFAULT_VAT_PERCENTAGE)
@@ -1232,16 +1241,33 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                 now.hour,
                 int(today.hour[now.hour].charge),
             )
-        stored_actions = await self.hass.async_add_executor_job(
-            storage.retrieve_day_actions,
-            db_path,
-            today_date.year,
-            today_date.month,
-            today_date.day,
-        )
         _keep_past_hours(today, (self.data or {}).get("today"), now.hour, stored_actions)
 
         return {"today": today, "tomorrow": tomorrow}
+
+
+def _mark_finished_grid_charge(today: Day, stored_actions: dict[int, int], cur_hour: int) -> None:
+    """Spend today's once-per-day grid charge once a session has really ended.
+
+    The planner only marks it spent when it *predicts* the target is reached
+    within the hour; a session that ended differently (target reached
+    sooner, or not continued the next hour) left it unspent, so a second
+    grid charge could follow later the same day. A grid-charge hour followed
+    by an hour that wasn't one is a finished session. The hour just before
+    `cur_hour` doesn't count yet: the session may still continue now.
+    """
+    if today.charge_on_grid_used:
+        return
+    finished = [
+        hour
+        for hour, charge in stored_actions.items()
+        if hour < cur_hour - 1
+        and charge == Charge.CHARGING_ON_GRID
+        and stored_actions.get(hour + 1) != Charge.CHARGING_ON_GRID
+    ]
+    if finished:
+        today.charge_on_grid_used = True
+        today.index_charge = max(finished)
 
 
 def _keep_past_hours(
