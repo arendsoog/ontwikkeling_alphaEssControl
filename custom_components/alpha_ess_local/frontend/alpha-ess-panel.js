@@ -1348,7 +1348,8 @@ class AlphaEssPanel extends HTMLElement {
         x1,
         left: { min: 0, max: top, fmt: (v) => `${fmtNum(v, 1)} kW` },
         right: { min: 0, max: 100, fmt: (v) => `${Math.round(v)}%` },
-        xTicks: Array.from({ length: 13 }, (_, i) => ({ t: day0 + i * 2 * hourMs, label: pad2(i * 2) })),
+        // Every hour, in the middle of it -- lined up with the price bars below.
+        xTicks: Array.from({ length: 24 }, (_, i) => ({ t: day0 + (i + 0.5) * hourMs, label: pad2(i) })),
         bands,
         now,
         series: [
