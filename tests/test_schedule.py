@@ -12,9 +12,11 @@ import pytest
 
 from custom_components.alpha_ess_local.data import Charge, Day, Earning
 from custom_components.alpha_ess_local.schedule import (
+    SCENARIOS,
     SELECTION_BELOW_MINIMUM,
     SELECTION_BUDGET_USED,
     SOC_STEPS,
+    SOLAR_SCENARIO_MIN_WH,
     ScheduleConfig,
     _apply_scenario_to_day,
     _battery_efficiency,
@@ -24,6 +26,7 @@ from custom_components.alpha_ess_local.schedule import (
     _inverter_efficiency,
     _net_solar_wh,
     _percentile,
+    scenario_percentiles,
     set_charging_msg,
     set_schedule,
 )
@@ -530,6 +533,27 @@ def test_calculate_best_schedule_grid_charge_leaves_room_for_next_hours_solar():
     reserved = _net_solar_wh(today.hour[23], config)
     assert 1000 < reserved < 1200
     assert today.hour[23].estimated_start_soc == round((9000 - reserved) / 100)
+
+
+def test_scenario_percentiles_sit_in_the_middle_of_each_probability_mass():
+    # SCENARIOS sorted by solar: 0.6 (28%), 0.85 (27%), 1.0 (15%),
+    # 1.15 (18%), 1.25 (12%) -> midpoints 0.14, 0.415, 0.625, 0.79, 0.94
+    assert scenario_percentiles() == pytest.approx([0.14, 0.415, 0.625, 0.79, 0.94])
+
+
+def test_scenario_uses_the_learned_solar_factor_for_its_lead_time():
+    today = _flat_day(price=0.20, solar=2000, house_load=300)
+    tomorrow = Day(valid=False)
+    # learned: 6-11 h ahead (group 2) the pessimistic scenario sees 30%
+    spread = {2: (0.3, 0.8, 1.0, 1.1, 1.3)}
+
+    today_sc, _ = _apply_scenario_to_day(today, tomorrow, SCENARIOS[0], 0, spread, 0)
+
+    solar_weight = 2000 / (2000 + SOLAR_SCENARIO_MIN_WH)
+    expected = int(2000 * (1.0 + solar_weight * (0.3 - 1.0)))
+    assert today_sc.hour[8].estimated_solar_power == expected  # 8 h ahead: learned
+    # 0-1 h ahead has nothing learned: the fixed factor (0.6) still applies
+    assert today_sc.hour[0].estimated_solar_power == int(2000 * (1.0 + solar_weight * (0.6 - 1.0)))
 
 
 def _two_valley_day(cheap=0.05, dear=0.60):

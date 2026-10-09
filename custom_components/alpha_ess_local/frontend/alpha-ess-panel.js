@@ -330,8 +330,10 @@ function barChart(o, metaStore) {
 // ---------------------------------------------------------------- house scene
 
 // Cut-away house illustration (house.webp, 1260x848) with the flow paths
-// traced over its drawn cables in the same pixel coordinates.
-const SCENE_IMAGE = "/alpha_ess_local/frontend/house.webp";
+// traced over its drawn cables in the same pixel coordinates. The version
+// in the URL changes with the image, so browsers don't keep showing the old
+// one from their cache.
+const SCENE_IMAGE = "/alpha_ess_local/frontend/house.webp?v=6203cdce";
 const SCENE_PATHS = {
   // roof panels -> battery
   solar: ["M566,272 L566,349 L521,349 L521,566"],
@@ -2131,7 +2133,15 @@ class AlphaEssPanel extends HTMLElement {
     const lastHour = data.rows.filter((r) => r.hours).map((r) => Number(r.key)).pop();
     const stepEnd = lastHour === undefined ? x1 : day0 + (lastHour + 1) * hourMs;
     const soc = this._histSoc || [];
-    const top = niceMax(Math.max(0.5, ...solar.map((p) => p[1]), ...house.map((p) => p[1])));
+    // The forecast from the day's first planning run (dashed), Wh per hour
+    // == average W -- next to what really happened.
+    const forecast = data.forecast || [];
+    const fcEnd = forecast.length ? day0 + (forecast[forecast.length - 1].hour + 1) * hourMs : x1;
+    const solarFc = forecast.map((f) => [day0 + f.hour * hourMs, (f.solar || 0) / 1000]);
+    const loadFc = forecast.map((f) => [day0 + f.hour * hourMs, (f.house_load || 0) / 1000]);
+    const top = niceMax(
+      Math.max(0.5, ...solar.map((p) => p[1]), ...house.map((p) => p[1]), ...solarFc.map((p) => p[1]), ...loadFc.map((p) => p[1]))
+    );
 
     const chart = lineChart(
       {
@@ -2146,6 +2156,8 @@ class AlphaEssPanel extends HTMLElement {
         xTicks: Array.from({ length: 24 }, (_, i) => ({ t: day0 + (i + 0.5) * hourMs, label: pad2(i) })),
         bands,
         series: [
+          { name: "Zon (verwacht)", color: COLOR.forecast, points: solarFc, step: true, stepEnd: fcEnd, dashed: true },
+          { name: "Verbruik (verwacht)", color: COLOR.house, points: loadFc, step: true, stepEnd: fcEnd, dashed: true },
           { name: "Zon", color: COLOR.solar, points: solar, width: 2, step, stepEnd },
           { name: "Verbruik", color: "#64748b", points: house, width: 2, step, stepEnd },
           { name: "SOC", color: COLOR.soc, points: soc, axis: "right", step: true, width: 2 },
@@ -2158,6 +2170,12 @@ class AlphaEssPanel extends HTMLElement {
     );
     const legend = this._legend([
       ...Object.entries(ACTIONS).map(([, a]) => ({ color: a.color, label: a.label })),
+      ...(forecast.length
+        ? [
+            { color: COLOR.forecast, label: "Zon (verwacht begin van de dag)", line: true },
+            { color: COLOR.house, label: "Verbruik (verwacht begin van de dag)", line: true },
+          ]
+        : []),
       { color: COLOR.solar, label: "Zon", line: true },
       { color: "#64748b", label: "Verbruik", line: true },
       { color: COLOR.soc, label: "SOC", line: true },
@@ -2512,7 +2530,7 @@ const STYLE = `
   @keyframes pulse { 50% { opacity: 0.3; } }
 
   /* energy flow scene (photo + traced flow paths, labels in bands) */
-  .scene { background: #fff; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+  .scene { background: none; overflow: hidden; }
   .scene-img { position: relative; }
   .scene-img img { display: block; width: 100%; height: auto; user-select: none; }
   .scene-img svg { position: absolute; inset: 0; width: 100%; height: 100%; }

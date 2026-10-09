@@ -187,6 +187,29 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # The forecast for each coming hour as it stood at every planning run,
+    # with how many hours ahead it was made (lead) -- to learn how far off
+    # the forecast is at the lead times decisions are taken, and to show it
+    # next to what really happened. Pruned after FORECAST_KEEP_DAYS.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS forecast_log (
+            year INTEGER, mon INTEGER, day INTEGER, hour INTEGER, lead INTEGER,
+            solar_raw REAL, solar REAL, house_load REAL,
+            PRIMARY KEY (year, mon, day, hour, lead)
+        )
+        """
+    )
+    # What learn_forecast_spread learned: per lead-time group, the factor
+    # (real / forecast solar) at each scenario's percentile.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS forecast_spread (
+            bucket INTEGER, idx INTEGER, p REAL, factor REAL, samples INTEGER,
+            PRIMARY KEY (bucket, idx)
+        )
+        """
+    )
     # The EV charger's share of house_load: left out of the learned house
     # load (it only charges on solar surplus, so it's no load to plan for).
     _add_column_if_missing(conn, "five_min_data", "ev_power", "REAL DEFAULT 0")
@@ -793,6 +816,174 @@ def delete_hour_progress(db_path: str, year: int, mon: int, day: int, hour: int)
         conn.commit()
 
 
+FORECAST_KEEP_DAYS = 180
+
+
+@dataclass
+class ForecastRow:
+    """One coming hour's forecast as it stood at a planning run."""
+
+    year: int
+    mon: int
+    day: int
+    hour: int
+    lead: int  # hours between the planning run's hour and this hour
+    solar_raw: float  # the source's forecast (Wh), before local correction
+    solar: float  # after the learned hourly correction -- what was planned with
+    house_load: float  # expected house load (Wh)
+
+
+def store_forecasts(db_path: str, rows: list[ForecastRow]) -> None:
+    """Record a planning run's forecasts (a later run in the same hour
+    overwrites, same target and lead) and prune old ones."""
+    if not rows:
+        return
+    first = min(date_cls(r.year, r.mon, r.day) for r in rows)
+    keep_from = first - timedelta(days=FORECAST_KEEP_DAYS)
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO forecast_log
+                (year, mon, day, hour, lead, solar_raw, solar, house_load)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (r.year, r.mon, r.day, r.hour, r.lead, r.solar_raw, r.solar, r.house_load)
+                for r in rows
+            ],
+        )
+        conn.execute(
+            "DELETE FROM forecast_log WHERE year * 10000 + mon * 100 + day < ?",
+            (_date_key(keep_from.year, keep_from.month, keep_from.day),),
+        )
+        conn.commit()
+
+
+def retrieve_day_forecast(db_path: str, year: int, mon: int, day: int) -> dict[int, dict]:
+    """A day's forecast per hour as it stood at its first planning run that
+    same day (the one the night's decisions were taken with): {hour:
+    {"solar", "solar_raw", "house_load", "lead"}}."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT hour, lead, solar_raw, solar, house_load FROM forecast_log
+            WHERE year = ? AND mon = ? AND day = ? AND lead <= hour
+            ORDER BY hour, lead DESC
+            """,
+            (year, mon, day),
+        ).fetchall()
+    result: dict[int, dict] = {}
+    for hour, lead, solar_raw, solar, house_load in rows:
+        result.setdefault(
+            hour, {"solar": solar, "solar_raw": solar_raw, "house_load": house_load, "lead": lead}
+        )
+    return result
+
+
+# Lead-time groups (hours ahead, inclusive) the forecast error is learned
+# per -- a forecast for the next hour is far closer than one for tomorrow.
+LEAD_BUCKETS: tuple[tuple[int, int], ...] = ((0, 1), (2, 5), (6, 11), (12, 23), (24, 47))
+# Fewer usable hours than this in a group: keep the fixed scenario factors.
+MIN_SPREAD_SAMPLES = 15
+
+
+def lead_bucket(lead: int) -> int:
+    """The LEAD_BUCKETS index for a lead time (the last one for anything further)."""
+    for index, (low, high) in enumerate(LEAD_BUCKETS):
+        if low <= lead <= high:
+            return index
+    return len(LEAD_BUCKETS) - 1
+
+
+def _weighted_quantile(pairs: list[tuple[float, float]], p: float) -> float:
+    """The p-quantile of (value, weight) pairs, linearly between midpoints."""
+    pairs = sorted(pairs)
+    total = sum(w for _, w in pairs)
+    cumulative = 0.0
+    previous_mid, previous_value = None, pairs[0][0]
+    for value, weight in pairs:
+        mid = (cumulative + weight / 2) / total
+        if mid >= p:
+            if previous_mid is None:
+                return value
+            frac = (p - previous_mid) / (mid - previous_mid)
+            return previous_value + frac * (value - previous_value)
+        previous_mid, previous_value = mid, value
+        cumulative += weight
+    return pairs[-1][0]
+
+
+def learn_forecast_spread(db_path: str, pv_power: float, percentiles: list[float]) -> bool:
+    """Learn, per lead-time group, how the real solar compares with the
+    forecast made that many hours ahead -- the factors (real / forecast) at
+    the given percentiles, stored for the planner's scenarios.
+
+    Uses the corrected forecast (what was planned with), so a remaining bias
+    at longer leads shows up in the factors too. Recent days and sunnier
+    hours weigh more; hours with a negative price are left out (the panels
+    may have been switched off then), and so are hours with too little
+    forecast solar to say anything. Returns whether anything was stored.
+    """
+    min_forecast = max(MIN_EXPECTED_SOLAR_POWER, 0.05 * pv_power)
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT f.year, f.mon, f.day, f.hour, f.lead, f.solar,
+                   h.solar_power_roof + COALESCE(h.extra_pv_power, 0)
+            FROM forecast_log f JOIN hour_data h
+              ON h.year = f.year AND h.mon = f.mon AND h.day = f.day AND h.hour = f.hour
+            WHERE f.solar >= ? AND h.price >= 0
+            """,
+            (min_forecast,),
+        ).fetchall()
+    now = datetime.now()
+    groups: dict[int, list[tuple[float, float]]] = {}
+    for year, mon, day, hour, lead, forecast, real in rows:
+        try:
+            when = datetime(year, mon, day, hour)
+        except ValueError:
+            continue
+        weight = _recency_weight(now, when, SOLAR_TAU_DAYS) * forecast
+        ratio = min(max(real / forecast, 0.0), 3.0)
+        groups.setdefault(lead_bucket(lead), []).append((ratio, weight))
+
+    learned = [
+        (bucket, index, p, _weighted_quantile(pairs, p), len(pairs))
+        for bucket, pairs in groups.items()
+        if len(pairs) >= MIN_SPREAD_SAMPLES
+        for index, p in enumerate(percentiles)
+    ]
+    with _connection(db_path) as conn:
+        conn.execute("DELETE FROM forecast_spread")
+        conn.executemany(
+            "INSERT INTO forecast_spread (bucket, idx, p, factor, samples) VALUES (?, ?, ?, ?, ?)",
+            learned,
+        )
+        conn.commit()
+    LOGGER.info(
+        "learn_forecast_spread: %s",
+        {bucket: len(pairs) for bucket, pairs in sorted(groups.items())},
+    )
+    return bool(learned)
+
+
+def retrieve_forecast_spread(db_path: str) -> dict[int, tuple[float, ...]]:
+    """{lead-time group: the learned factors, one per percentile} -- groups
+    with too little data are absent."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            "SELECT bucket, idx, factor FROM forecast_spread ORDER BY bucket, idx"
+        ).fetchall()
+    spread: dict[int, list[float]] = {}
+    for bucket, _index, factor in rows:
+        spread.setdefault(bucket, []).append(factor)
+    return {bucket: tuple(factors) for bucket, factors in spread.items()}
+
+
 def store_hour_action(
     db_path: str,
     year: int,
@@ -1292,14 +1483,22 @@ def _store_mean_data(db_path: str, mean_data: _MeanData) -> None:
 
 def calculate_and_store_mean_data(db_path: str, pv_power: float) -> bool:
     """Port of CalculateAndStoreMeanData: recompute the weighted house-load
-    mean/sigma and solar-regression correction from all stored history."""
+    mean/sigma and solar-regression correction from all stored history.
+
+    `pv_power` is the installed peak power the forecast covers -- roof and
+    extra installation together (the regression's sanity gates scale with
+    it)."""
     with _connection(db_path) as conn:
         _ensure_schema(conn)
         # The house load without the EV charger: it only charges on solar
         # surplus, so it's no load the battery planning has to cover.
+        # Solar: roof plus the extra installation -- the forecast covers all
+        # panels, so learning against the roof alone would teach it to
+        # shrink every forecast to the roof's share.
         rows = conn.execute(
             "SELECT year, mon, day, hour, MAX(0, house_load - COALESCE(ev_load, 0)),"
-            " solar_power_roof, estimated_solar_power_raw FROM hour_data"
+            " solar_power_roof + COALESCE(extra_pv_power, 0), estimated_solar_power_raw"
+            " FROM hour_data"
         ).fetchall()
 
     if not rows:
