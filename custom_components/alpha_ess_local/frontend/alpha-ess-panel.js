@@ -635,6 +635,12 @@ class AlphaEssPanel extends HTMLElement {
     return [...history, ...live.filter((p) => p[0] > last)];
   }
 
+  // The SOC without its "unavailable" spells (a restart, a Modbus hiccup):
+  // the battery's charge doesn't vanish then, so the line bridges them.
+  _socSeries() {
+    return this._series("battery_soc").filter((p) => p[1] !== null);
+  }
+
   // True when the recorder returned nothing for this sensor today, which
   // usually means it is excluded in configuration.yaml.
   _noHistory(key) {
@@ -1272,7 +1278,7 @@ class AlphaEssPanel extends HTMLElement {
 
   _renderSoc() {
     const soc = this._value("battery_soc");
-    const points = this._series("battery_soc");
+    const points = this._socSeries();
     const header = this._header("mdi:chart-areaspline", "SOC · vandaag", `<span class="muted big">${soc === null ? "" : `${Math.round(soc)}%`}</span>`);
     if (!points.length) {
       return `${header}<div class="card-body"><div class="empty">${this._history === null ? "Laden…" : "Geen geschiedenis beschikbaar."}</div></div>`;
@@ -1326,7 +1332,7 @@ class AlphaEssPanel extends HTMLElement {
     // HA records a state only when it changes: an SOC that has stayed put
     // since its last change would otherwise end the line there. Carry the
     // current value through to now.
-    const socPts = this._series("battery_soc");
+    const socPts = this._socSeries();
     const socNow = this._value("battery_soc");
     const socEnd = Math.min(now, x1);
     if (socNow !== null && (!socPts.length || socPts[socPts.length - 1][0] < socEnd)) {
