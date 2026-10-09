@@ -47,6 +47,7 @@ from .const import (
     CONF_EXTRA_PV_MODBUS_OFF_VALUE,
     CONF_EXTRA_PV_MODBUS_ON_VALUE,
     CONF_EXTRA_PV_MODBUS_SLAVE,
+    CONF_EXTRA_PV_POWER_CAPACITY,
     CONF_EXTRA_PV_POWER_ENTITY,
     CONF_HOUSE_LOAD_POWER_ENTITY,
     CONF_INVERTER_NOMINAL_POWER,
@@ -1847,7 +1848,8 @@ async def async_handle_daily_rollover(
 ) -> None:
     """Port of DoDailyWork's mean-data recompute + rebuild-and-reschedule."""
     options = entry.options
-    pv_power = options.get(CONF_PV_POWER, 0)
+    # The forecast covers roof and extra installation, so learn against both.
+    pv_power = options.get(CONF_PV_POWER, 0) + options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0)
     db_path = get_db_path(hass, entry)
     await hass.async_add_executor_job(storage.calculate_and_store_mean_data, db_path, pv_power)
     await solar_coordinator.async_request_refresh()

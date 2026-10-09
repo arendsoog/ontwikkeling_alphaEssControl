@@ -847,6 +847,28 @@ def test_solar_regression_becomes_reliable_with_enough_samples(tmp_path, freezer
     assert 0.2 <= result[14].solar_factor <= 2.5
 
 
+def test_solar_regression_learns_against_roof_plus_extra_pv(tmp_path, freezer):
+    """Regression: the forecast covers all panels, but the correction was
+    learned against the roof alone -- teaching it to shrink every forecast
+    to the roof's share (here ~0.5)."""
+    freezer.move_to("2024-05-15 12:00:00")
+    db_path = str(tmp_path / "test.db")
+    for day, raw in ((10, 1400), (11, 1500), (12, 1600), (13, 1700), (14, 1800)):
+        the_day = Day(year=2024, mon=5, day=day, valid=True)
+        hour = the_day.hour[14]
+        hour.valid = True
+        hour.real_house_load = 500
+        hour.estimated_solar_power_raw = raw
+        hour.real_solar_power_roof = raw / 2  # half on the roof ...
+        hour.real_extra_pv_power = raw / 2  # ... half on the garage
+        store_hour_data(db_path, the_day, 14, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+
+    assert calculate_and_store_mean_data(db_path, pv_power=2000) is True
+
+    result = retrieve_mean_data(db_path, month=5, wday=c_weekday_for(2024, 5, 14))
+    assert result[14].solar_factor == pytest.approx(1.0, abs=0.05)
+
+
 def c_weekday_for(year, mon, day) -> int:
     return c_weekday(datetime(year, mon, day).date())
 

@@ -1292,14 +1292,22 @@ def _store_mean_data(db_path: str, mean_data: _MeanData) -> None:
 
 def calculate_and_store_mean_data(db_path: str, pv_power: float) -> bool:
     """Port of CalculateAndStoreMeanData: recompute the weighted house-load
-    mean/sigma and solar-regression correction from all stored history."""
+    mean/sigma and solar-regression correction from all stored history.
+
+    `pv_power` is the installed peak power the forecast covers -- roof and
+    extra installation together (the regression's sanity gates scale with
+    it)."""
     with _connection(db_path) as conn:
         _ensure_schema(conn)
         # The house load without the EV charger: it only charges on solar
         # surplus, so it's no load the battery planning has to cover.
+        # Solar: roof plus the extra installation -- the forecast covers all
+        # panels, so learning against the roof alone would teach it to
+        # shrink every forecast to the roof's share.
         rows = conn.execute(
             "SELECT year, mon, day, hour, MAX(0, house_load - COALESCE(ev_load, 0)),"
-            " solar_power_roof, estimated_solar_power_raw FROM hour_data"
+            " solar_power_roof + COALESCE(extra_pv_power, 0), estimated_solar_power_raw"
+            " FROM hour_data"
         ).fetchall()
 
     if not rows:
