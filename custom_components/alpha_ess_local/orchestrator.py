@@ -16,6 +16,7 @@ phase (see the plan doc).
 
 from __future__ import annotations
 
+import copy
 import glob
 import math
 import os
@@ -94,7 +95,12 @@ from .data import (
 )
 from .prices import mk_return_price, mk_use_price
 from .protocol import DispatchMode, DispatchParam
-from .schedule import ScheduleConfig, scenario_percentiles
+from .schedule import (
+    ScheduleConfig,
+    battery_empty_after,
+    scenario_percentiles,
+    solar_reservation,
+)
 from .schedule import set_schedule as run_scheduler
 from .storage import HourMean
 
@@ -221,6 +227,28 @@ def merge_day_sources(
     day.index_highest = price_day.index_highest
     day.earning_on_return_all_day = price_day.earning_on_return_all_day
     return day
+
+
+def _planning_tomorrow(today: Day, tomorrow: Day, price_tomorrow: Day) -> Day:
+    """Tomorrow as the planner sees it.
+
+    Before tomorrow's prices are out (early afternoon) its hours carry only
+    solar and the calculated house load, at price 0 -- so what the battery
+    still holds at midnight for the calculated use after it looked worth
+    next to nothing, and nothing was charged for it. Until the real prices
+    come, each such hour is priced like the same hour today. Returns a copy
+    then (the estimated prices aren't shown as tomorrow's)."""
+    if not today.valid or all(hour.valid for hour in price_tomorrow.hour):
+        return tomorrow
+    planned = copy.deepcopy(tomorrow)
+    for hour, price_hour, ref in zip(planned.hour, price_tomorrow.hour, today.hour, strict=True):
+        if price_hour.valid or not ref.valid:
+            continue
+        hour.valid = True
+        hour.price = ref.price
+        hour.earning = ref.earning
+    planned.valid = True
+    return planned
 
 
 def _solar_to_battery(sample: FiveMin) -> float:
@@ -1179,10 +1207,9 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         if once_per_day:
             _mark_finished_grid_charge(today, stored_actions, now.hour)
         else:
-            # Several sessions a day: "used" only means a session is going
-            # on (the previous hour was a grid charge), which can continue
-            # without paying the minimum profit again; no grid discharge.
-            today.charge_on_grid_used = stored_actions.get(now.hour - 1) == Charge.CHARGING_ON_GRID
+            # Several charges a day, in any hours: no once-per-day flags,
+            # no grid discharge.
+            today.charge_on_grid_used = False
             today.discharge_used = False
         # Before the planner, so its own bookkeeping (index_charge, the
         # once-per-day result comparison) sees what the past hours did.
@@ -1261,11 +1288,16 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         modbus_data = self._modbus_coordinator.data or {}
         cur_soc = round(modbus_data.get("battery_soc", 0) * SOC_MAX_BATTERY / 100)
 
+        planning_tomorrow = _planning_tomorrow(
+            today, tomorrow, self._prices_coordinator.data["tomorrow"]
+        )
         await self.hass.async_add_executor_job(
-            run_scheduler, cur_soc, now.hour, today, tomorrow, config
+            run_scheduler, cur_soc, now.hour, today, planning_tomorrow, config
         )
         if today.valid:
             cur = today.hour[now.hour]
+            solar_room, solar_after = solar_reservation(today, now.hour, config)
+            empty_after = battery_empty_after(cur_soc, now.hour, today, planning_tomorrow, config)
             await self.hass.async_add_executor_job(
                 partial(
                     storage.store_hour_action,
@@ -1279,6 +1311,11 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                     opt_extra=today.opt_extra,
                     min_profit=config.daily_min_profit,
                     multiple_per_day=config.multiple_per_day,
+                    tomorrow_estimated=planning_tomorrow is not tomorrow,
+                    solar_room=solar_room,
+                    solar_after=solar_after,
+                    feed_in_allowed=config.discharge_enabled,
+                    empty_after=empty_after,
                     price=cur.price if cur.valid else None,
                     cutoff_soc=cur.cutoff_soc,
                 )

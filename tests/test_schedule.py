@@ -10,7 +10,7 @@ under test.
 
 import pytest
 
-from custom_components.alpha_ess_local.data import Charge, Day, Earning
+from custom_components.alpha_ess_local.data import SOC_MIN, Charge, Day, Earning
 from custom_components.alpha_ess_local.schedule import (
     SCENARIOS,
     SELECTION_BELOW_MINIMUM,
@@ -26,9 +26,11 @@ from custom_components.alpha_ess_local.schedule import (
     _inverter_efficiency,
     _net_solar_wh,
     _percentile,
+    battery_empty_after,
     scenario_percentiles,
     set_charging_msg,
     set_schedule,
+    solar_reservation,
 )
 
 
@@ -592,14 +594,115 @@ def test_multiple_per_day_charges_in_each_cheap_valley():
     assert any(today.hour[h].charge == Charge.CHARGING_ON_GRID for h in range(10, 14))
 
 
-def test_multiple_per_day_skips_a_session_worth_less_than_the_minimum():
+def test_multiple_per_day_skips_charging_worth_less_than_the_minimum():
     today = _two_valley_day(cheap=0.05, dear=0.60)
-    # Each session's gain is a few euros at most -- a 1000 EUR minimum
-    # per session makes none of them worth it.
+    # The day's gain is a few euros at most -- a 1000 EUR minimum makes
+    # grid charging not worth it.
     config = _config(multiple_per_day=True, daily_min_profit=1000.0)
-    _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
+    set_schedule(100, 0, today, Day(valid=False), config)
 
     assert _sessions(today) == 0
+    assert today.selection == SELECTION_BELOW_MINIMUM
+
+
+def test_multiple_per_day_charges_for_the_morning_before_a_sunny_day():
+    """Several charges a day: the 02:00 charge for the dear morning is fine
+    even though the sun fills the battery later -- it only has to leave
+    room for that sun, net of what the house drains first."""
+    today = _flat_day(price=0.60, solar=0, house_load=500)
+    today.hour[2].price = 0.05
+    for h in range(10, 16):
+        today.hour[h].estimated_solar_power = 3000
+        today.hour[h].price = 0.02
+    config = _config(multiple_per_day=True, discharge_enabled=False)
+    _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
+
+    assert today.hour[2].charge == Charge.CHARGING_ON_GRID
+    assert today.hour[16].estimated_start_soc >= 80  # the sun still filled it
+
+
+def test_once_per_day_no_grid_charge_on_a_day_the_sun_fills_the_battery():
+    """Once per day, the sun goes first: no grid charge on a day its
+    surplus alone fills the battery."""
+    today = _flat_day(price=0.60, solar=0, house_load=500)
+    today.hour[2].price = 0.05
+    for h in range(10, 16):
+        today.hour[h].estimated_solar_power = 3000
+        today.hour[h].price = 0.02
+    config = _config(discharge_enabled=False)
+    _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
+
+    assert all(hour.charge != Charge.CHARGING_ON_GRID for hour in today.hour)
+
+
+@pytest.mark.parametrize(("discharge_enabled", "stores"), [(False, True), (True, False)])
+def test_solar_is_fed_in_only_when_discharging_to_the_grid_is_allowed(discharge_enabled, stores):
+    """At a flat 0.60 feeding in beats storing (round-trip losses), but
+    with discharging to the grid off the surplus must go into the battery."""
+    today = _flat_day(price=0.60, solar=0, house_load=500)
+    for h in (11, 12):
+        today.hour[h].estimated_solar_power = 2500
+    config = _config(discharge_enabled=discharge_enabled)
+    _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
+
+    assert today.hour[11].charge != Charge.NO_CHARGING or discharge_enabled
+    rose = today.hour[13].estimated_start_soc > today.hour[11].estimated_start_soc
+    assert rose is stores
+
+
+def test_multiple_per_day_charges_in_separate_cheap_hours():
+    """The cheapest hours needn't be next to each other: with a low grid
+    cap the charge spreads over 01 and 03, skipping the dearer 02."""
+    today = _flat_day(price=0.60, solar=0, house_load=250)
+    today.hour[1].price = 0.05
+    today.hour[2].price = 0.30
+    today.hour[3].price = 0.05
+    config = _config(multiple_per_day=True, max_grid_load=4000)
+    _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
+
+    assert today.hour[1].charge == Charge.CHARGING_ON_GRID
+    assert today.hour[3].charge == Charge.CHARGING_ON_GRID
+    assert today.hour[2].charge != Charge.CHARGING_ON_GRID
+
+
+@pytest.mark.parametrize("multiple", [False, True])
+def test_afternoon_charge_also_covers_dear_hours_after_midnight(multiple):
+    """Cheap at 14, dear from 17 through tomorrow 06: the afternoon charge
+    takes what the evening *and* the night after midnight need (13 hours
+    x 500 Wh), not just what lasts until midnight (7 hours)."""
+    today = _flat_day(price=0.60, solar=0, house_load=500)
+    today.hour[14].price = 0.05
+    for h in (15, 16):
+        today.hour[h].price = 0.30
+    tomorrow = _flat_day(price=0.60, solar=0, house_load=500, day=16)
+    for h in range(7, 24):
+        tomorrow.hour[h].price = 0.05
+    config = _config(multiple_per_day=multiple, discharge_enabled=False)
+    _calculate_best_schedule(10, 14, today, tomorrow, False, False, None, config)
+
+    assert today.hour[14].charge == Charge.CHARGING_ON_GRID
+    # Still well above the 10% floor at midnight, run down by 07:00.
+    assert tomorrow.hour[0].estimated_start_soc >= 35
+    assert tomorrow.hour[7].estimated_start_soc <= 15
+
+
+@pytest.mark.parametrize("multiple", [False, True])
+def test_grid_charge_takes_only_what_lasts_until_the_next_cheap_hours(multiple):
+    """Cheap at 02, dear 03-08 (6 x 1 kWh), as cheap again from 09:
+    charging more than the dear hours need only carries energy into hours
+    just as cheap, losing the round trip on it."""
+    today = _flat_day(price=0.05, solar=0, house_load=1000)
+    for h in range(3, 9):
+        today.hour[h].price = 0.60
+    config = _config(multiple_per_day=multiple, discharge_enabled=False)
+    _calculate_best_schedule(10, 2, today, Day(valid=False), False, False, None, config)
+
+    assert today.hour[2].charge == Charge.CHARGING_ON_GRID
+    charged = (today.hour[3].estimated_start_soc - today.hour[2].estimated_start_soc) * 100
+    # 6 kWh from the battery is ~6.6 kWh of charge: the 7 kWh level, not
+    # the 8 kWh up to the 90% ceiling.
+    assert 6000 <= charged <= 7000
+    assert today.hour[9].estimated_start_soc <= 15
 
 
 def test_multiple_per_day_never_discharges_to_the_grid():
@@ -612,29 +715,41 @@ def test_multiple_per_day_never_discharges_to_the_grid():
     assert all(hour.charge != Charge.CHARGING_DISCHARGE for hour in today.hour)
 
 
-def test_solar_room_ignores_tomorrow_and_nets_out_deficit_hours():
+def test_solar_room_ignores_tomorrows_sun():
     """Regression: the room kept free for later solar summed every later
-    surplus hour, tomorrow's included, and ignored the house draining the
-    battery in between -- so too little was grid-charged."""
+    surplus hour, tomorrow's included -- so too little was grid-charged."""
     today = _flat_day(price=0.50, solar=0, house_load=1000)
     today.hour[4].price = 0.05  # the cheap hour to charge in
-    for h in (11, 12, 13):
-        today.hour[h].estimated_solar_power = 3000  # ~+1.9 kWh each
     tomorrow = _flat_day(price=0.50, solar=0, house_load=300)
     for h in range(9, 16):
         tomorrow.hour[h].estimated_solar_power = 5000  # lots of sun tomorrow
-    config = _config()
+    config = _config(discharge_enabled=False)
 
     valid, _result = _calculate_best_schedule(10, 4, today, tomorrow, False, False, None, config)
 
     assert valid is True
     assert today.hour[4].charge == Charge.CHARGING_ON_GRID
-    # The 6 deficit hours 05-10 (1 kWh each) drain the battery before the
-    # sun, so the room needed at 05:00 is the surplus of 11-13 minus that.
-    surplus = sum(_net_solar_wh(today.hour[h], config) for h in (11, 12, 13))
-    room = max(0.0, surplus - 6 * 1000)
-    expected_soc = round((9000 - room) / 100)
-    assert today.hour[5].estimated_start_soc == expected_soc
+    assert today.hour[5].estimated_start_soc == 90  # full: tomorrow's sun doesn't count
+
+
+def test_the_evening_before_charges_for_a_morning_the_sun_fills_after():
+    """Once per day: dear 05-10 before a sun that fills the battery, so no
+    grid charge that day (the sun goes first) -- the evening before charges
+    for the morning and enough is left at midnight."""
+    today = _flat_day(price=0.60, solar=0, house_load=500)
+    today.hour[20].price = 0.05
+    tomorrow = _flat_day(price=0.60, solar=0, house_load=500, day=16)
+    tomorrow.hour[4].price = 0.05  # tempting, but the sun fills the battery later
+    for h in range(10, 16):
+        tomorrow.hour[h].estimated_solar_power = 3000
+        tomorrow.hour[h].price = 0.02
+    config = _config(discharge_enabled=False)
+    _calculate_best_schedule(10, 19, today, tomorrow, False, False, None, config)
+
+    assert today.hour[20].charge == Charge.CHARGING_ON_GRID
+    assert all(hour.charge != Charge.CHARGING_ON_GRID for hour in tomorrow.hour)
+    # 05-10 take ~6 x 0.55 kWh from the battery on top of the 10% floor.
+    assert tomorrow.hour[5].estimated_start_soc >= 40
 
 
 def test_calculate_best_schedule_forced_action_rejected_when_already_used():
@@ -979,3 +1094,48 @@ def test_calculate_best_schedule_charge_on_grid_used_stays_false_mid_session():
     assert valid is True
     assert today.hour[1].charge == Charge.CHARGING_ON_GRID
     assert today.charge_on_grid_used is False
+
+
+def test_solar_reservation_caps_the_room_at_the_battery_and_nets_the_morning():
+    """14 kWh of midday surplus, 3.5 kWh drained 03-09 first: the room left
+    at 02:00 is the battery's 8 kWh span minus that drain."""
+    today = _flat_day(price=0.60, solar=0, house_load=500)
+    for h in range(10, 16):
+        today.hour[h].estimated_solar_power = 3000
+    config = _config()
+
+    room, surplus = solar_reservation(today, 2, config)
+
+    nets = [_net_solar_wh(today.hour[h], config) for h in range(10, 16)]
+    assert surplus == pytest.approx(sum(nets))
+    span = (config.max_soc_negative_price - SOC_MIN) / 1000 * 10000
+    assert room == pytest.approx(span - 7 * 500)
+    assert solar_reservation(today, 23, config) == (0.0, 0.0)
+
+
+def test_battery_empty_after_serving_only_the_house():
+    """50% of 10 kWh, 10% floor: 4 kWh of battery for a 1 kWh/h house --
+    each hour takes a bit more than 1 kWh (losses), so empty within the
+    4th hour, mid-hour, counted from the start of the planning hour."""
+    today = _flat_day(price=0.30, solar=0, house_load=1000)
+    empty = battery_empty_after(500, 18, today, Day(valid=False), _config())
+
+    assert empty is not None
+    assert 3.0 < empty < 4.0
+
+
+def test_battery_empty_after_counts_the_sun_and_tomorrow():
+    today = _flat_day(price=0.30, solar=0, house_load=500)
+    tomorrow = _flat_day(price=0.30, solar=0, house_load=500, day=16)
+    # Starting at 20:00 with 50%: ~4 kWh at ~0.55 kWh/h lasts past midnight.
+    empty = battery_empty_after(500, 20, today, tomorrow, _config())
+    assert 4.0 < empty < 4.0 + 4.0  # tomorrow 00:00-04:00
+
+    # A sunny hour before it runs out tops it up: empty later.
+    today.hour[21].estimated_solar_power = 4000
+    assert battery_empty_after(500, 20, today, tomorrow, _config()) > empty
+
+
+def test_battery_empty_after_none_when_it_lasts_the_known_hours():
+    today = _flat_day(price=0.30, solar=0, house_load=100)
+    assert battery_empty_after(900, 20, today, Day(valid=False), _config()) is None

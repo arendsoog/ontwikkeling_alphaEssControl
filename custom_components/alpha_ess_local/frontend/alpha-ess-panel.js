@@ -635,6 +635,12 @@ class AlphaEssPanel extends HTMLElement {
     return [...history, ...live.filter((p) => p[0] > last)];
   }
 
+  // The SOC without its "unavailable" spells (a restart, a Modbus hiccup):
+  // the battery's charge doesn't vanish then, so the line bridges them.
+  _socSeries() {
+    return this._series("battery_soc").filter((p) => p[1] !== null);
+  }
+
   // True when the recorder returned nothing for this sensor today, which
   // usually means it is excluded in configuration.yaml.
   _noHistory(key) {
@@ -1272,7 +1278,7 @@ class AlphaEssPanel extends HTMLElement {
 
   _renderSoc() {
     const soc = this._value("battery_soc");
-    const points = this._series("battery_soc");
+    const points = this._socSeries();
     const header = this._header("mdi:chart-areaspline", "SOC · vandaag", `<span class="muted big">${soc === null ? "" : `${Math.round(soc)}%`}</span>`);
     if (!points.length) {
       return `${header}<div class="card-body"><div class="empty">${this._history === null ? "Laden…" : "Geen geschiedenis beschikbaar."}</div></div>`;
@@ -1326,7 +1332,7 @@ class AlphaEssPanel extends HTMLElement {
     // HA records a state only when it changes: an SOC that has stayed put
     // since its last change would otherwise end the line there. Carry the
     // current value through to now.
-    const socPts = this._series("battery_soc");
+    const socPts = this._socSeries();
     const socNow = this._value("battery_soc");
     const socEnd = Math.min(now, x1);
     if (socNow !== null && (!socPts.length || socPts[socPts.length - 1][0] < socEnd)) {
@@ -1726,13 +1732,13 @@ class AlphaEssPanel extends HTMLElement {
           option: "persist_daily_charge_limit",
           icon: "mdi:numeric-1-circle-outline",
           label: "Netladen/ontladen maximaal 1x per dag",
-          info: "Aan: hooguit één keer per dag laden vanaf het net en één keer ontladen naar het net, ook na een herstart. Uit: meerdere laadbeurten per dag, elk alleen als die meer dan de minimale dagelijkse winst oplevert; de batterij ontlaadt dan alleen voor eigen verbruik, niet naar het net.",
+          info: "Aan: hooguit één keer per dag laden vanaf het net en één keer ontladen naar het net, ook na een herstart; vult de zon de batterij die dag, dan niet laden vanaf het net (dan laadt hij de avond ervoor bij). Uit: laden vanaf het net in de goedkoopste uren, ook verspreid over de dag, met ruimte voor het verwachte zonne-overschot van die dag, zolang het plan meer dan de minimale dagelijkse winst oplevert; de batterij ontlaadt dan alleen voor eigen verbruik, niet naar het net. In beide standen laadt hij alleen zoveel als het oplevert, bijvoorbeeld tot de volgende goedkope uren.",
         }),
         toggle({
           entity: "discharge_enabled",
           icon: "mdi:battery-arrow-down-outline",
           label: "Ontladen naar het net via schema toestaan",
-          info: "Mag de planning één keer per dag op een duur uur extra ontladen (ook naar het net), als het schema de minimale dagelijkse winst haalt. Huisverbruik uit de batterij gaat altijd door.",
+          info: "Mag de planning één keer per dag op een duur uur extra ontladen (ook naar het net), als het schema de minimale dagelijkse winst haalt. Ook zon terugleveren terwijl de batterij nog ruimte heeft mag alleen als dit aan staat; anders gaat het zonne-overschot eerst de batterij in. Huisverbruik uit de batterij gaat altijd door.",
         }),
       ].join("") || '<div class="empty">Status laden…</div>'
     );
@@ -2198,16 +2204,13 @@ class AlphaEssPanel extends HTMLElement {
       const extra = d.opt_extra === null || d.opt_extra === undefined ? null : d.opt_extra;
       const min = d.min_profit === null || d.min_profit === undefined ? null : d.min_profit;
       const known = extra !== null && min !== null;
-      // Several sessions a day: each new grid charge already paid the
-      // minimum profit, so the optimum only had to beat the baseline.
-      const perSession = d.multiple && known ? ` (na ${eur(min)} per laadbeurt)` : "";
       switch (d.selection) {
         case "optimum":
           if (!known) return "Geoptimaliseerd";
-          return d.multiple ? `Geoptimaliseerd: +${eur(extra)}${perSession}` : `Geoptimaliseerd: +${eur(extra)} ≥ ${eur(min)}`;
+          return `Geoptimaliseerd: +${eur(extra)} ≥ ${eur(min)}`;
         case "below_minimum":
           if (!known) return "Basisschema: onder de minimale winst";
-          return d.multiple ? `Basisschema: +${eur(extra)}${perSession}` : `Basisschema: +${eur(extra)} < ${eur(min)}`;
+          return `Basisschema: +${eur(extra)} < ${eur(min)}`;
         case "budget_used":
           return "Basisschema: laden én ontladen vandaag al gedaan";
         case "no_option":
@@ -2231,6 +2234,29 @@ class AlphaEssPanel extends HTMLElement {
       const flags = [d.manual ? "handmatig" : "", d.written ? "" : "alleen berekend"].filter(Boolean);
       return `${esc(modes)}${power}${flags.length ? ` <span class="muted">(${flags.join(", ")})</span>` : ""}`;
     };
+    // What the sun claimed the rest of that day: the room a grid charge had
+    // to leave free, the surplus still expected, and whether feeding solar
+    // in was allowed (otherwise it goes into the battery first).
+    const sun = (d) => {
+      if (d.solar_after === null || d.solar_after === undefined) return "–";
+      const kwh = (v) => fmtNum((v || 0) / 1000, 1);
+      const parts = [`${kwh(d.solar_room)} kWh vrij`, `${kwh(d.solar_after)} kWh overschot verwacht tot 24:00`];
+      if (d.feed_in_allowed === 0) parts.push("niet terugleveren");
+      return parts.join(" · ");
+    };
+    // When the battery would be empty serving only the house, as computed
+    // when the hour was planned (hours from the start of that hour).
+    const empty = (d) => {
+      // Rows from before this was logged have no solar figures either.
+      if (d.empty_after === undefined || d.solar_after === null || d.solar_after === undefined) return "–";
+      if (d.empty_after === null) return '<span class="muted">niet binnen de planning</span>';
+      const minutes = Math.round((d.hour + d.empty_after) * 60);
+      const days = Math.floor(minutes / 1440);
+      const rest = minutes % 1440;
+      const time = `${pad2(Math.floor(rest / 60))}:${pad2(rest % 60)}`;
+      if (days === 0) return time;
+      return days === 1 ? `morgen ${time}` : `over ${days} dagen ${time}`;
+    };
     const rows = decisions
       .map((d) => {
         const info = ACTIONS[d.action] || { label: d.action || "–", color: "transparent" };
@@ -2240,9 +2266,11 @@ class AlphaEssPanel extends HTMLElement {
             <td>${pad2(d.hour)}:00</td>
             <td>${d.price === null || d.price === undefined ? "–" : `€ ${fmtNum(d.price, 3)}`}</td>
             <td><span class="swatch" style="background:${info.color}"></span>${esc(info.label)}</td>
-            <td>${why(d)}</td>
+            <td>${why(d)}${d.tomorrow_estimated ? ' <span class="muted">(prijzen morgen geschat als vandaag)</span>' : ""}</td>
             <td>${inverter(d)}</td>
             <td>${target}</td>
+            <td>${sun(d)}</td>
+            <td>${empty(d)}</td>
           </tr>`;
       })
       .join("");
@@ -2250,7 +2278,7 @@ class AlphaEssPanel extends HTMLElement {
       <div class="section-title">Beslissingen per uur</div>
       <div class="table-scroll">
         <table class="hist-table decision-table">
-          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th></tr></thead>
+          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th><th>Zon gaat voor</th><th>Batterij leeg (alleen thuis)</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;
