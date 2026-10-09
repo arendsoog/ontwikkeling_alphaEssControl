@@ -22,6 +22,7 @@ from custom_components.alpha_ess_local.schedule import (
     _evaluate_hour_action,
     _finalise_schedule,
     _inverter_efficiency,
+    _net_solar_wh,
     _percentile,
     set_charging_msg,
     set_schedule,
@@ -524,8 +525,36 @@ def test_calculate_best_schedule_grid_charge_leaves_room_for_next_hours_solar():
     assert valid is True
     assert today.hour[22].charge == Charge.CHARGING_ON_GRID
     # step_wh = 10000 / 100 = 100 Wh/step; SOC after hour 22's grid charge is
-    # exactly (9000 - 1200) / 100 = 78, i.e. the 1200 Wh reservation held.
-    assert today.hour[23].estimated_start_soc == 78
+    # the 9000 Wh cap minus hour 23's surplus (its AC solar after inverter
+    # losses, ~1140 Wh, minus the 300 Wh load), i.e. the reservation held.
+    reserved = _net_solar_wh(today.hour[23], config)
+    assert 1000 < reserved < 1200
+    assert today.hour[23].estimated_start_soc == round((9000 - reserved) / 100)
+
+
+def test_solar_room_ignores_tomorrow_and_nets_out_deficit_hours():
+    """Regression: the room kept free for later solar summed every later
+    surplus hour, tomorrow's included, and ignored the house draining the
+    battery in between -- so too little was grid-charged."""
+    today = _flat_day(price=0.50, solar=0, house_load=1000)
+    today.hour[4].price = 0.05  # the cheap hour to charge in
+    for h in (11, 12, 13):
+        today.hour[h].estimated_solar_power = 3000  # ~+1.9 kWh each
+    tomorrow = _flat_day(price=0.50, solar=0, house_load=300)
+    for h in range(9, 16):
+        tomorrow.hour[h].estimated_solar_power = 5000  # lots of sun tomorrow
+    config = _config()
+
+    valid, _result = _calculate_best_schedule(10, 4, today, tomorrow, False, False, None, config)
+
+    assert valid is True
+    assert today.hour[4].charge == Charge.CHARGING_ON_GRID
+    # The 6 deficit hours 05-10 (1 kWh each) drain the battery before the
+    # sun, so the room needed at 05:00 is the surplus of 11-13 minus that.
+    surplus = sum(_net_solar_wh(today.hour[h], config) for h in (11, 12, 13))
+    room = max(0.0, surplus - 6 * 1000)
+    expected_soc = round((9000 - room) / 100)
+    assert today.hour[5].estimated_start_soc == expected_soc
 
 
 def test_calculate_best_schedule_forced_action_rejected_when_already_used():

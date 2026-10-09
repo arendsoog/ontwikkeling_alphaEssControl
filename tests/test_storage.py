@@ -750,6 +750,23 @@ def test_weighted_mean_favors_recent_samples(tmp_path, freezer):
     assert 650 < result[10].house_load < 950
 
 
+def test_learned_house_load_leaves_out_the_ev_charger(tmp_path, freezer):
+    """The EV charger only charges on solar surplus, so it's no load the
+    battery planning has to cover: it's taken out before learning."""
+    freezer.move_to("2024-01-29 12:00:00")
+    db_path = str(tmp_path / "test.db")
+    with_ev = Day(year=2024, mon=1, day=22, valid=True)  # a Monday
+    with_ev.hour[10].valid = True
+    with_ev.hour[10].real_house_load = 4000  # 3200 W of it the EV charger
+    with_ev.hour[10].real_ev_load = 3200
+    store_hour_data(db_path, with_ev, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+
+    assert calculate_and_store_mean_data(db_path, pv_power=5000) is True
+
+    result = retrieve_mean_data(db_path, month=1, wday=1)
+    assert result[10].house_load == pytest.approx(800, abs=1)
+
+
 def test_fallback_fills_missing_weekday_same_day_class(tmp_path, freezer):
     freezer.move_to("2024-01-29 12:00:00")
     db_path = str(tmp_path / "test.db")

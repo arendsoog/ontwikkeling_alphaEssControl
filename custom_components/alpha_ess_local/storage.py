@@ -186,6 +186,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # The EV charger's share of house_load: left out of the learned house
+    # load (it only charges on solar surplus, so it's no load to plan for).
+    _add_column_if_missing(conn, "five_min_data", "ev_power", "REAL DEFAULT 0")
+    _add_column_if_missing(conn, "hour_data", "ev_load", "REAL DEFAULT 0")
 
 
 def store_hour_data(
@@ -235,8 +239,8 @@ def store_hour_data(
                 (year, mon, day, hour, house_load, solar_power_roof,
                  estimated_solar_power_raw, extra_pv_power, feed_in, price, use_fee, return_fee,
                  solar_to_battery, grid_to_battery, vat_percentage,
-                 battery_charge_energy, battery_discharge_energy)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 battery_charge_energy, battery_discharge_energy, ev_load)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (year, mon, day, hour) DO UPDATE SET
                 house_load=excluded.house_load,
                 solar_power_roof=excluded.solar_power_roof,
@@ -250,7 +254,8 @@ def store_hour_data(
                 grid_to_battery=excluded.grid_to_battery,
                 vat_percentage=excluded.vat_percentage,
                 battery_charge_energy=excluded.battery_charge_energy,
-                battery_discharge_energy=excluded.battery_discharge_energy
+                battery_discharge_energy=excluded.battery_discharge_energy,
+                ev_load=excluded.ev_load
             """,
             (
                 day.year,
@@ -270,6 +275,7 @@ def store_hour_data(
                 vat_percentage,
                 the_hour.real_battery_charge_energy,
                 the_hour.real_battery_discharge_energy,
+                the_hour.real_ev_load,
             ),
         )
         conn.commit()
@@ -723,8 +729,8 @@ def store_five_min_sample(
             """
             INSERT OR REPLACE INTO five_min_data
                 (year, mon, day, hour, slot, solar_power_roof, extra_pv_power,
-                 total_active_power, battery_power, house_load)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 total_active_power, battery_power, house_load, ev_power)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 year,
@@ -737,6 +743,7 @@ def store_five_min_sample(
                 sample.total_active_power,
                 sample.battery_power,
                 sample.real_house_load,
+                sample.ev_power,
             ),
         )
         conn.execute(
@@ -755,20 +762,21 @@ def retrieve_day_five_min(
         rows = conn.execute(
             """
             SELECT hour, slot, solar_power_roof, extra_pv_power, total_active_power,
-                   battery_power, house_load
+                   battery_power, house_load, ev_power
             FROM five_min_data
             WHERE year = ? AND mon = ? AND day = ?
             """,
             (year, mon, day),
         ).fetchall()
     samples: dict[int, dict[int, FiveMin]] = {}
-    for hour, slot, roof, extra, grid, battery, house in rows:
+    for hour, slot, roof, extra, grid, battery, house, ev in rows:
         samples.setdefault(hour, {})[slot] = FiveMin(
             real_solar_power_roof=roof,
             real_extra_pv_power=extra,
             total_active_power=grid,
             battery_power=battery,
             real_house_load=house,
+            ev_power=ev or 0.0,
         )
     return samples
 
@@ -1268,9 +1276,11 @@ def calculate_and_store_mean_data(db_path: str, pv_power: float) -> bool:
     mean/sigma and solar-regression correction from all stored history."""
     with _connection(db_path) as conn:
         _ensure_schema(conn)
+        # The house load without the EV charger: it only charges on solar
+        # surplus, so it's no load the battery planning has to cover.
         rows = conn.execute(
-            "SELECT year, mon, day, hour, house_load, solar_power_roof, estimated_solar_power_raw "
-            "FROM hour_data"
+            "SELECT year, mon, day, hour, MAX(0, house_load - COALESCE(ev_load, 0)),"
+            " solar_power_roof, estimated_solar_power_raw FROM hour_data"
         ).fetchall()
 
     if not rows:

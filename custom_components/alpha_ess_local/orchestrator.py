@@ -40,6 +40,7 @@ from .const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
+    CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_EXTRA_PV_MODBUS_ADDRESS,
     CONF_EXTRA_PV_MODBUS_HUB,
@@ -269,12 +270,14 @@ def _sample_hour(
     return_fee: float,
     vat_percentage: float,
     return_vat_percentage: float | None = None,
+    ev_power: float = 0.0,
 ) -> None:
     """Port of CalculatePower: accumulate one 5-minute sample into hour.five_min[].
 
     `return_vat_percentage` overrides `vat_percentage` for the return-price
     side of `hour.real_result` only -- defaults to `vat_percentage` when
-    omitted (apply VAT to both sides, prior behavior).
+    omitted (apply VAT to both sides, prior behavior). `ev_power` is the EV
+    charger's power (part of the house load), kept apart in real_ev_load.
     """
     real_house_load = pv_roof + extra_pv + total_active_power + battery_power
     if real_house_load < 0.0:
@@ -297,6 +300,7 @@ def _sample_hour(
     sample.battery_power = battery_power
     sample.solar_to_battery = _solar_to_battery(sample)
     sample.grid_to_battery = _grid_to_battery(sample)
+    sample.ev_power = max(0.0, min(ev_power, real_house_load))
 
     if hour.five_min_count < MAX_FIVE_MINS:
         hour.five_min_count += 1
@@ -306,6 +310,7 @@ def _sample_hour(
     hour.real_solar_power_roof = round(sum(s.real_solar_power_roof for s in samples) / count)
     hour.real_extra_pv_power = round(sum(s.real_extra_pv_power for s in samples) / count)
     hour.real_house_load = round(sum(s.real_house_load for s in samples) / count)
+    hour.real_ev_load = round(sum(s.ev_power for s in samples) / count)
     hour.total_active_power = round(sum(s.total_active_power for s in samples) / count)
     hour.real_solar_to_battery = round(sum(s.solar_to_battery for s in samples) / count)
     hour.real_grid_to_battery = round(sum(s.grid_to_battery for s in samples) / count)
@@ -897,6 +902,7 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                         sample.total_active_power = stored.total_active_power
                         sample.battery_power = stored.battery_power
                         sample.real_house_load = stored.real_house_load
+                        sample.ev_power = stored.ev_power
                 if hour_index != now.hour:
                     restored_hour.five_min_count = max(
                         restored_hour.five_min_count, min(MAX_FIVE_MINS, max(slots) + 1)
@@ -942,6 +948,10 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
             return_fee,
             vat_percentage,
             return_vat_percentage,
+            ev_power=_entity_power(
+                self.hass, self.config_entry.options.get(CONF_EV_CHARGER_POWER_ENTITY)
+            )
+            or 0.0,
         )
 
         pv_total_energy_kwh = modbus_data.get("pv_total_energy")

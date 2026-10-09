@@ -169,6 +169,16 @@ def _battery_efficiency(power: float, battery_capacity: float) -> float:
     return 0.975
 
 
+def _net_solar_wh(the_hour: Hour, config: ScheduleConfig) -> float:
+    """An hour's expected solar (AC, as _evaluate_hour_action counts it)
+    minus its expected house load, in Wh -- negative when the house needs
+    more than the sun gives."""
+    solar_dc = 0 if the_hour.earning == Earning.EARNING_ON_USE else the_hour.estimated_solar_power
+    nominal = config.inverter_nominal_power
+    solar_ac = min(solar_dc * _inverter_efficiency(min(solar_dc, nominal), nominal), nominal)
+    return solar_ac - the_hour.estimated_house_load
+
+
 def _evaluate_hour_action(
     action: Charge,
     the_hour: Hour,
@@ -183,12 +193,12 @@ def _evaluate_hour_action(
     Simulates one action for one hour. Returns (new_soc_wh, profit,
     next_charge_used, next_discharge_used).
 
-    `future_solar_surplus_wh`: total expected solar surplus (solar minus
-    house load, summed over every later hour in this DP run) — used only by
+    `future_solar_surplus_wh`: the room to keep free for solar still coming
+    later the same day (the largest rise of a running solar-minus-house-load
+    sum over the later hours, see _calculate_best_schedule) — used only by
     CHARGING_ON_GRID, so the once-a-day grid charge doesn't fill the battery
-    right up to the cap and leave no room for solar that's still coming
-    later today (which would otherwise just spill to a worse-priced feed-in
-    instead of being stored).
+    right up to the cap and leave no room for that solar (which would
+    otherwise just spill to a worse-priced feed-in instead of being stored).
     """
     inverter_nominal_power = config.inverter_nominal_power
     battery_capacity = config.usable_battery_capacity
@@ -385,6 +395,12 @@ def _calculate_best_schedule(
             hour_layer.append(soc_layer)
         dp.append(hour_layer)
 
+    # Room the battery must keep free at the end of each hour for solar
+    # still to come *that same day*: the largest rise of a running sum of
+    # (solar - house load) over its later hours -- a deficit hour lowers it,
+    # since the house then drains the battery first. Tomorrow's sun doesn't
+    # count (the battery empties overnight anyway). Built backwards:
+    # room(h) = max(0, net(h+1) + room(h+1)), 0 for the last hour of a day.
     future_solar_surplus_after = 0.0
     for hour in range(end_hour - 1, start_hour - 1, -1):
         the_hour = tomorrow.hour[hour - MAX_HOURS] if hour >= MAX_HOURS else today.hour[hour]
@@ -436,9 +452,12 @@ def _calculate_best_schedule(
                         next_discharge_used=best_next_du,
                     )
 
-        future_solar_surplus_after += max(
-            0.0, the_hour.estimated_solar_power - the_hour.estimated_house_load
-        )
+        if hour % 24 == 0:
+            future_solar_surplus_after = 0.0  # the hour before is another day's last
+        else:
+            future_solar_surplus_after = max(
+                0.0, _net_solar_wh(the_hour, config) + future_solar_surplus_after
+            )
 
     si = cur_soc_index
     cu = charge_used_before

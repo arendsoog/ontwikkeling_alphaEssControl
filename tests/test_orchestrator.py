@@ -316,6 +316,17 @@ def test_sample_hour_accumulates_solar_and_grid_to_battery_averages():
     assert hour.real_grid_to_battery == round((200.0 + 800.0) / 2)
 
 
+def test_sample_hour_keeps_the_ev_chargers_share_apart():
+    hour = Hour()
+    # house = 0 solar + 4000 grid + 0 battery = 4000 W, 3000 W of it the EV
+    _sample_hour(hour, 0.0, 0.0, 4000.0, 0.0, 0.02, 0.01, 21.0, ev_power=3000.0)
+    # an EV reading above the whole house load is capped at it
+    _sample_hour(hour, 0.0, 0.0, 1000.0, 0.0, 0.02, 0.01, 21.0, ev_power=1500.0)
+
+    assert hour.real_house_load == 2500
+    assert hour.real_ev_load == round((3000 + 1000) / 2)
+
+
 def test_sample_hour_return_vat_percentage_overrides_export_side_real_result():
     hour = Hour()
     hour.price = 0.20

@@ -51,6 +51,8 @@ class FiveMin:
     # reproduce it.
     solar_to_battery: float = 0.0
     grid_to_battery: float = 0.0
+    # The EV charger's share of real_house_load (W), if one is configured.
+    ev_power: float = 0.0
 
 
 @dataclass
@@ -88,6 +90,10 @@ class Hour:
     estimated_house_load: int = 0
     estimated_house_load_sigma: float = 0.0  # onzekerheid huislast (voor scenario's)
     real_house_load: int = 0
+    # The EV charger's share of real_house_load (hourly-average W) -- left
+    # out of the learned house load: it only charges on solar surplus, so
+    # it isn't a load the battery planning has to cover.
+    real_ev_load: int = 0
     total_active_power: int = 0
     # Wh (hourly-average W): battery charging power attributed to each
     # source this hour, via energy balance — solar surplus (solar minus
