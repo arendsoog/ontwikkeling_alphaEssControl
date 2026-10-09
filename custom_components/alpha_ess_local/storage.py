@@ -148,6 +148,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ("written", "INTEGER"),
         ("manual", "INTEGER"),
         ("multiple", "INTEGER"),
+        # Several charges a day: what had gone into the battery that day
+        # when the hour was planned, and the day's limit (Wh).
+        ("charged_today", "REAL"),
+        ("day_budget", "REAL"),
     ):
         _add_column_if_missing(conn, "hour_action", column, sql_type)
     # Migrated in after the fact — solar/grid-to-battery attribution
@@ -1026,24 +1030,27 @@ def store_hour_action(
     price: float | None = None,
     cutoff_soc: int | None = None,
     multiple_per_day: bool = False,
+    charged_today: float | None = None,
+    day_budget: float | None = None,
 ) -> None:
     """Record the planned action (data.Charge) for an hour and why it was
     chosen; the latest run wins. Leaves the dispatch columns alone.
-    `multiple_per_day`: several grid-charge sessions allowed, each one
-    already charged `min_profit` inside `opt_extra`."""
+    `multiple_per_day`: several charges a day allowed, together within
+    `day_budget` Wh, of which `charged_today` Wh had gone in already."""
     with _connection(db_path) as conn:
         _ensure_schema(conn)
         conn.execute(
             """
             INSERT INTO hour_action
                 (year, mon, day, hour, charge, selection, opt_extra, min_profit, price,
-                 cutoff_soc, multiple)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 cutoff_soc, multiple, charged_today, day_budget)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (year, mon, day, hour) DO UPDATE SET
                 charge=excluded.charge, selection=excluded.selection,
                 opt_extra=excluded.opt_extra, min_profit=excluded.min_profit,
                 price=excluded.price, cutoff_soc=excluded.cutoff_soc,
-                multiple=excluded.multiple
+                multiple=excluded.multiple, charged_today=excluded.charged_today,
+                day_budget=excluded.day_budget
             """,
             (
                 year,
@@ -1057,6 +1064,8 @@ def store_hour_action(
                 price,
                 cutoff_soc,
                 int(multiple_per_day),
+                charged_today,
+                day_budget,
             ),
         )
         conn.commit()
@@ -1099,7 +1108,8 @@ def retrieve_day_decisions(db_path: str, year: int, mon: int, day: int) -> list[
         rows = conn.execute(
             """
             SELECT hour, charge, selection, opt_extra, min_profit, price, cutoff_soc,
-                   mode, power, power_max, written, manual, multiple
+                   mode, power, power_max, written, manual, multiple,
+                   charged_today, day_budget
             FROM hour_action WHERE year = ? AND mon = ? AND day = ? ORDER BY hour
             """,
             (year, mon, day),
@@ -1118,6 +1128,8 @@ def retrieve_day_decisions(db_path: str, year: int, mon: int, day: int) -> list[
         "written",
         "manual",
         "multiple",
+        "charged_today",
+        "day_budget",
     )
     return [dict(zip(keys, row, strict=True)) for row in rows]
 

@@ -1288,6 +1288,8 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                     opt_extra=today.opt_extra,
                     min_profit=config.daily_min_profit,
                     multiple_per_day=config.multiple_per_day,
+                    charged_today=today.charged_today_wh if config.multiple_per_day else None,
+                    day_budget=config.usable_battery_capacity if config.multiple_per_day else None,
                     price=cur.price if cur.valid else None,
                     cutoff_soc=cur.cutoff_soc,
                 )

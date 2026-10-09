@@ -2238,6 +2238,11 @@ class AlphaEssPanel extends HTMLElement {
       .map((d) => {
         const info = ACTIONS[d.action] || { label: d.action || "–", color: "transparent" };
         const target = (d.action === "Charge-grid" || d.action === "Discharge") && d.cutoff_soc ? `${fmtNum(d.cutoff_soc / 10, 0)}%` : "–";
+        // Several charges a day: how much of the day's one battery had gone in.
+        const charged =
+          d.day_budget && d.charged_today !== null && d.charged_today !== undefined
+            ? `${fmtNum(d.charged_today / 1000, 1)} / ${fmtNum(d.day_budget / 1000, 0)} kWh`
+            : "–";
         return `
           <tr>
             <td>${pad2(d.hour)}:00</td>
@@ -2246,6 +2251,7 @@ class AlphaEssPanel extends HTMLElement {
             <td>${why(d)}</td>
             <td>${inverter(d)}</td>
             <td>${target}</td>
+            <td>${charged}</td>
           </tr>`;
       })
       .join("");
@@ -2253,7 +2259,7 @@ class AlphaEssPanel extends HTMLElement {
       <div class="section-title">Beslissingen per uur</div>
       <div class="table-scroll">
         <table class="hist-table decision-table">
-          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th></tr></thead>
+          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th><th>Vandaag geladen</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;
