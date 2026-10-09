@@ -647,6 +647,27 @@ def test_multiple_per_day_charges_in_separate_cheap_hours():
 
 
 @pytest.mark.parametrize("multiple", [False, True])
+def test_afternoon_charge_also_covers_dear_hours_after_midnight(multiple):
+    """Cheap at 14, dear from 17 through tomorrow 06: the afternoon charge
+    takes what the evening *and* the night after midnight need (13 hours
+    x 500 Wh), not just what lasts until midnight (7 hours)."""
+    today = _flat_day(price=0.60, solar=0, house_load=500)
+    today.hour[14].price = 0.05
+    for h in (15, 16):
+        today.hour[h].price = 0.30
+    tomorrow = _flat_day(price=0.60, solar=0, house_load=500, day=16)
+    for h in range(7, 24):
+        tomorrow.hour[h].price = 0.05
+    config = _config(multiple_per_day=multiple, discharge_enabled=False)
+    _calculate_best_schedule(10, 14, today, tomorrow, False, False, None, config)
+
+    assert today.hour[14].charge == Charge.CHARGING_ON_GRID
+    # Still well above the 10% floor at midnight, run down by 07:00.
+    assert tomorrow.hour[0].estimated_start_soc >= 35
+    assert tomorrow.hour[7].estimated_start_soc <= 15
+
+
+@pytest.mark.parametrize("multiple", [False, True])
 def test_grid_charge_takes_only_what_lasts_until_the_next_cheap_hours(multiple):
     """Cheap at 02, dear 03-08 (6 x 1 kWh), as cheap again from 09:
     charging more than the dear hours need only carries energy into hours
