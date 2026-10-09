@@ -2131,7 +2131,15 @@ class AlphaEssPanel extends HTMLElement {
     const lastHour = data.rows.filter((r) => r.hours).map((r) => Number(r.key)).pop();
     const stepEnd = lastHour === undefined ? x1 : day0 + (lastHour + 1) * hourMs;
     const soc = this._histSoc || [];
-    const top = niceMax(Math.max(0.5, ...solar.map((p) => p[1]), ...house.map((p) => p[1])));
+    // The forecast from the day's first planning run (dashed), Wh per hour
+    // == average W -- next to what really happened.
+    const forecast = data.forecast || [];
+    const fcEnd = forecast.length ? day0 + (forecast[forecast.length - 1].hour + 1) * hourMs : x1;
+    const solarFc = forecast.map((f) => [day0 + f.hour * hourMs, (f.solar || 0) / 1000]);
+    const loadFc = forecast.map((f) => [day0 + f.hour * hourMs, (f.house_load || 0) / 1000]);
+    const top = niceMax(
+      Math.max(0.5, ...solar.map((p) => p[1]), ...house.map((p) => p[1]), ...solarFc.map((p) => p[1]), ...loadFc.map((p) => p[1]))
+    );
 
     const chart = lineChart(
       {
@@ -2146,6 +2154,8 @@ class AlphaEssPanel extends HTMLElement {
         xTicks: Array.from({ length: 24 }, (_, i) => ({ t: day0 + (i + 0.5) * hourMs, label: pad2(i) })),
         bands,
         series: [
+          { name: "Zon (verwacht)", color: COLOR.forecast, points: solarFc, step: true, stepEnd: fcEnd, dashed: true },
+          { name: "Verbruik (verwacht)", color: COLOR.house, points: loadFc, step: true, stepEnd: fcEnd, dashed: true },
           { name: "Zon", color: COLOR.solar, points: solar, width: 2, step, stepEnd },
           { name: "Verbruik", color: "#64748b", points: house, width: 2, step, stepEnd },
           { name: "SOC", color: COLOR.soc, points: soc, axis: "right", step: true, width: 2 },
@@ -2158,6 +2168,12 @@ class AlphaEssPanel extends HTMLElement {
     );
     const legend = this._legend([
       ...Object.entries(ACTIONS).map(([, a]) => ({ color: a.color, label: a.label })),
+      ...(forecast.length
+        ? [
+            { color: COLOR.forecast, label: "Zon (verwacht begin van de dag)", line: true },
+            { color: COLOR.house, label: "Verbruik (verwacht begin van de dag)", line: true },
+          ]
+        : []),
       { color: COLOR.solar, label: "Zon", line: true },
       { color: "#64748b", label: "Verbruik", line: true },
       { color: COLOR.soc, label: "SOC", line: true },

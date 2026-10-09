@@ -363,10 +363,12 @@ async def _ws_history(
 
 
 def day_details(db_path: str, day: date) -> dict[str, Any]:
-    """One day's decision log and 5-minute samples, for the history tab.
+    """One day's decision log, 5-minute samples and forecast, for the history tab.
 
     The samples are only kept for a few days (storage.FIVE_MIN_KEEP_DAYS);
-    for older days the panel draws the hourly averages instead.
+    for older days the panel draws the hourly averages instead. The forecast
+    is the one from the day's first planning run (the night's decisions were
+    taken with it).
     """
     decisions = storage.retrieve_day_decisions(db_path, day.year, day.month, day.day)
     for decision in decisions:
@@ -387,7 +389,13 @@ def day_details(db_path: str, day: date) -> dict[str, Any]:
         for hour, slots in sorted(five_min.items())
         for slot, sample in sorted(slots.items())
     ]
-    return {"decisions": decisions, "samples": samples}
+    forecast = [
+        {"hour": hour, **values}
+        for hour, values in sorted(
+            storage.retrieve_day_forecast(db_path, day.year, day.month, day.day).items()
+        )
+    ]
+    return {"decisions": decisions, "samples": samples, "forecast": forecast}
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/today_power"})

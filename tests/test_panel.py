@@ -139,6 +139,24 @@ def test_day_details_labels_actions_and_stamps_samples(tmp_path):
     (sample,) = details["samples"]
     assert sample["t"] == (_midnight() + timedelta(hours=4, minutes=5)).timestamp() * 1000
     assert sample["house"] == 1042
+    assert details["forecast"] == []
+
+
+def test_day_details_forecast_is_the_days_first(tmp_path):
+    from custom_components.alpha_ess_local import storage
+
+    db_path = str(tmp_path / "test.db")
+    storage.store_forecasts(
+        db_path,
+        [
+            storage.ForecastRow(2026, 10, 6, 12, 12, 3000, 2900, 800),  # made 00:00
+            storage.ForecastRow(2026, 10, 6, 12, 2, 2500, 2400, 700),  # made 10:00
+        ],
+    )
+
+    (hour,) = day_details(db_path, date(2026, 10, 6))["forecast"]
+
+    assert hour == {"hour": 12, "solar": 2900, "solar_raw": 3000, "house_load": 800, "lead": 12}
 
 
 # --- set_option websocket command --------------------------------------------
