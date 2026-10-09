@@ -23,6 +23,7 @@ from custom_components.alpha_ess_local.storage import (
     c_weekday,
     calculate_and_store_mean_data,
     delete_hour_progress,
+    retrieve_day_actions,
     retrieve_day_five_min,
     retrieve_day_hours,
     retrieve_day_savings,
@@ -32,6 +33,7 @@ from custom_components.alpha_ess_local.storage import (
     retrieve_period_summary,
     store_dispatch_daily_state,
     store_five_min_sample,
+    store_hour_action,
     store_hour_data,
     store_hour_progress,
 )
@@ -573,6 +575,17 @@ def test_dispatch_daily_state_excludes_other_dates(tmp_path):
     store_dispatch_daily_state(db_path, 2024, 1, 15, True, False, 6, -1)
 
     assert retrieve_dispatch_daily_state(db_path, 2024, 1, 16) is None
+
+
+def test_hour_actions_latest_wins_per_hour_and_stay_per_day(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    store_hour_action(db_path, 2026, 10, 9, 4, 0)
+    store_hour_action(db_path, 2026, 10, 9, 4, 3)  # replanned mid-hour
+    store_hour_action(db_path, 2026, 10, 9, 5, 2)
+    store_hour_action(db_path, 2026, 10, 8, 4, 1)
+
+    assert retrieve_day_actions(db_path, 2026, 10, 9) == {4: 3, 5: 2}
+    assert retrieve_day_actions(db_path, 2026, 10, 10) == {}
 
 
 # --- pure helper functions --------------------------------------------------

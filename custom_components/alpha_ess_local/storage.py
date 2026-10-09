@@ -123,6 +123,17 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # The planned action (data.Charge) each hour was run with, so the
+    # panel's plan keeps showing what past hours did -- also after a restart.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS hour_action (
+            year INTEGER, mon INTEGER, day INTEGER, hour INTEGER,
+            charge INTEGER,
+            PRIMARY KEY (year, mon, day, hour)
+        )
+        """
+    )
     # Migrated in after the fact — solar/grid-to-battery attribution
     # (energy-balance estimate, see orchestrator._solar_to_battery).
     _add_column_if_missing(conn, "hour_data", "solar_to_battery", "REAL DEFAULT 0")
@@ -756,6 +767,31 @@ def delete_hour_progress(db_path: str, year: int, mon: int, day: int, hour: int)
             (year, mon, day, hour),
         )
         conn.commit()
+
+
+def store_hour_action(db_path: str, year: int, mon: int, day: int, hour: int, charge: int) -> None:
+    """Record the planned action (data.Charge) for an hour; the latest wins."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO hour_action (year, mon, day, hour, charge) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (year, mon, day, hour) DO UPDATE SET charge=excluded.charge
+            """,
+            (year, mon, day, hour, charge),
+        )
+        conn.commit()
+
+
+def retrieve_day_actions(db_path: str, year: int, mon: int, day: int) -> dict[int, int]:
+    """The recorded action per hour for one day: {hour: data.Charge value}."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            "SELECT hour, charge FROM hour_action WHERE year = ? AND mon = ? AND day = ?",
+            (year, mon, day),
+        ).fetchall()
+    return dict(rows)
 
 
 def store_dispatch_daily_state(

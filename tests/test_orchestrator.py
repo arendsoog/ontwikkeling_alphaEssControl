@@ -82,21 +82,37 @@ def test_keep_past_hours_keeps_what_earlier_hours_did():
     for hour in today.hour:
         hour.charge = Charge.CHARGING_ON_PV
 
-    _keep_past_hours(today, previous, cur_hour=5)
+    _keep_past_hours(today, previous, cur_hour=5, stored_actions={})
 
     assert today.hour[4].charge == Charge.CHARGING_ON_GRID
     assert today.hour[4].cutoff_soc == 350
     assert today.hour[5].charge == Charge.CHARGING_ON_PV  # current hour: new plan
 
 
-def test_keep_past_hours_after_restart_uses_the_stored_grid_charge_hour():
+def test_keep_past_hours_after_restart_uses_the_recorded_actions():
+    """After a restart there's no previous plan: the actions recorded per
+    hour still show the 04:00 grid charge (and nothing for the current hour)."""
+    today = Day(valid=True, year=2026, mon=10, day=9)
+    for hour in today.hour:
+        hour.charge = Charge.CHARGING_ON_PV
+    stored = {3: int(Charge.NO_DISCHARGING), 4: int(Charge.CHARGING_ON_GRID), 6: 4}
+
+    _keep_past_hours(today, None, cur_hour=6, stored_actions=stored)
+
+    assert today.hour[3].charge == Charge.NO_DISCHARGING
+    assert today.hour[4].charge == Charge.CHARGING_ON_GRID
+    assert today.hour[5].charge == Charge.CHARGING_ON_PV  # nothing recorded
+    assert today.hour[6].charge == Charge.CHARGING_ON_PV  # current hour: new plan
+
+
+def test_keep_past_hours_falls_back_to_the_daily_grid_charge_hour():
     today = Day(valid=True, year=2026, mon=10, day=9)
     for hour in today.hour:
         hour.charge = Charge.CHARGING_ON_PV
     today.charge_on_grid_used = True
     today.index_charge = 4
 
-    _keep_past_hours(today, None, cur_hour=6)
+    _keep_past_hours(today, None, cur_hour=6, stored_actions={})
 
     assert today.hour[4].charge == Charge.CHARGING_ON_GRID
     assert today.hour[3].charge == Charge.CHARGING_ON_PV
@@ -108,7 +124,7 @@ def test_keep_past_hours_ignores_yesterdays_plan():
     today = Day(valid=True, year=2026, mon=10, day=9)
     today.hour[4].charge = Charge.CHARGING_ON_PV
 
-    _keep_past_hours(today, previous, cur_hour=6)
+    _keep_past_hours(today, previous, cur_hour=6, stored_actions={})
 
     assert today.hour[4].charge == Charge.CHARGING_ON_PV
 
