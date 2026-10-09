@@ -665,11 +665,21 @@ def test_decision_log_combines_planner_and_dispatch(tmp_path):
 def test_decision_log_keeps_the_days_charge_budget(tmp_path):
     db_path = str(tmp_path / "test.db")
     store_hour_action(
-        db_path, 2026, 10, 9, 15, 3, multiple_per_day=True, charged_today=4600.0, day_budget=22000.0
+        db_path,
+        2026,
+        10,
+        9,
+        15,
+        3,
+        multiple_per_day=True,
+        charged_today=4600.0,
+        day_budget=22000.0,
+        tomorrow_estimated=True,
     )
 
     (row,) = retrieve_day_decisions(db_path, 2026, 10, 9)
     assert (row["multiple"], row["charged_today"], row["day_budget"]) == (1, 4600.0, 22000.0)
+    assert row["tomorrow_estimated"] == 1
 
 
 def test_dispatch_only_hour_has_no_action(tmp_path):

@@ -1293,13 +1293,11 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         modbus_data = self._modbus_coordinator.data or {}
         cur_soc = round(modbus_data.get("battery_soc", 0) * SOC_MAX_BATTERY / 100)
 
+        planning_tomorrow = _planning_tomorrow(
+            today, tomorrow, self._prices_coordinator.data["tomorrow"]
+        )
         await self.hass.async_add_executor_job(
-            run_scheduler,
-            cur_soc,
-            now.hour,
-            today,
-            _planning_tomorrow(today, tomorrow, self._prices_coordinator.data["tomorrow"]),
-            config,
+            run_scheduler, cur_soc, now.hour, today, planning_tomorrow, config
         )
         if today.valid:
             cur = today.hour[now.hour]
@@ -1318,6 +1316,7 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                     multiple_per_day=config.multiple_per_day,
                     charged_today=today.charged_today_wh if config.multiple_per_day else None,
                     day_budget=config.usable_battery_capacity if config.multiple_per_day else None,
+                    tomorrow_estimated=planning_tomorrow is not tomorrow,
                     price=cur.price if cur.valid else None,
                     cutoff_soc=cur.cutoff_soc,
                 )

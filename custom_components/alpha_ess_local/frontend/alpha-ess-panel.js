@@ -2248,7 +2248,7 @@ class AlphaEssPanel extends HTMLElement {
             <td>${pad2(d.hour)}:00</td>
             <td>${d.price === null || d.price === undefined ? "–" : `€ ${fmtNum(d.price, 3)}`}</td>
             <td><span class="swatch" style="background:${info.color}"></span>${esc(info.label)}</td>
-            <td>${why(d)}</td>
+            <td>${why(d)}${d.tomorrow_estimated ? ' <span class="muted">(prijzen morgen geschat als vandaag)</span>' : ""}</td>
             <td>${inverter(d)}</td>
             <td>${target}</td>
             <td>${charged}</td>
