@@ -638,12 +638,25 @@ def test_decision_log_combines_planner_and_dispatch(tmp_path):
     assert (row["power"], row["power_max"], row["written"], row["manual"]) == (5077, 10484, 1, 0)
 
 
-def test_decision_log_notes_estimated_tomorrow_prices(tmp_path):
+def test_decision_log_notes_estimates_and_the_suns_claim(tmp_path):
     db_path = str(tmp_path / "test.db")
-    store_hour_action(db_path, 2026, 10, 9, 15, 3, multiple_per_day=True, tomorrow_estimated=True)
+    store_hour_action(
+        db_path,
+        2026,
+        10,
+        9,
+        15,
+        3,
+        multiple_per_day=True,
+        tomorrow_estimated=True,
+        solar_room=4500.0,
+        solar_after=14000.0,
+        feed_in_allowed=False,
+    )
 
     (row,) = retrieve_day_decisions(db_path, 2026, 10, 9)
     assert (row["multiple"], row["tomorrow_estimated"]) == (1, 1)
+    assert (row["solar_room"], row["solar_after"], row["feed_in_allowed"]) == (4500.0, 14000.0, 0)
 
 
 def test_dispatch_only_hour_has_no_action(tmp_path):

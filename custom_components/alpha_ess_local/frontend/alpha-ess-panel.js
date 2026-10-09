@@ -2234,6 +2234,16 @@ class AlphaEssPanel extends HTMLElement {
       const flags = [d.manual ? "handmatig" : "", d.written ? "" : "alleen berekend"].filter(Boolean);
       return `${esc(modes)}${power}${flags.length ? ` <span class="muted">(${flags.join(", ")})</span>` : ""}`;
     };
+    // What the sun claimed the rest of that day: the room a grid charge had
+    // to leave free, the surplus still expected, and whether feeding solar
+    // in was allowed (otherwise it goes into the battery first).
+    const sun = (d) => {
+      if (d.solar_after === null || d.solar_after === undefined) return "–";
+      const kwh = (v) => fmtNum((v || 0) / 1000, 1);
+      const parts = [`${kwh(d.solar_room)} kWh vrij`, `${kwh(d.solar_after)} kWh verwacht`];
+      if (d.feed_in_allowed === 0) parts.push("niet terugleveren");
+      return parts.join(" · ");
+    };
     const rows = decisions
       .map((d) => {
         const info = ACTIONS[d.action] || { label: d.action || "–", color: "transparent" };
@@ -2246,6 +2256,7 @@ class AlphaEssPanel extends HTMLElement {
             <td>${why(d)}${d.tomorrow_estimated ? ' <span class="muted">(prijzen morgen geschat als vandaag)</span>' : ""}</td>
             <td>${inverter(d)}</td>
             <td>${target}</td>
+            <td>${sun(d)}</td>
           </tr>`;
       })
       .join("");
@@ -2253,7 +2264,7 @@ class AlphaEssPanel extends HTMLElement {
       <div class="section-title">Beslissingen per uur</div>
       <div class="table-scroll">
         <table class="hist-table decision-table">
-          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th></tr></thead>
+          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th><th>Zon gaat voor</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;

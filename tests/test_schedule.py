@@ -10,7 +10,7 @@ under test.
 
 import pytest
 
-from custom_components.alpha_ess_local.data import Charge, Day, Earning
+from custom_components.alpha_ess_local.data import SOC_MIN, Charge, Day, Earning
 from custom_components.alpha_ess_local.schedule import (
     SCENARIOS,
     SELECTION_BELOW_MINIMUM,
@@ -29,6 +29,7 @@ from custom_components.alpha_ess_local.schedule import (
     scenario_percentiles,
     set_charging_msg,
     set_schedule,
+    solar_reservation,
 )
 
 
@@ -1092,3 +1093,20 @@ def test_calculate_best_schedule_charge_on_grid_used_stays_false_mid_session():
     assert valid is True
     assert today.hour[1].charge == Charge.CHARGING_ON_GRID
     assert today.charge_on_grid_used is False
+
+
+def test_solar_reservation_caps_the_room_at_the_battery_and_nets_the_morning():
+    """14 kWh of midday surplus, 3.5 kWh drained 03-09 first: the room left
+    at 02:00 is the battery's 8 kWh span minus that drain."""
+    today = _flat_day(price=0.60, solar=0, house_load=500)
+    for h in range(10, 16):
+        today.hour[h].estimated_solar_power = 3000
+    config = _config()
+
+    room, surplus = solar_reservation(today, 2, config)
+
+    nets = [_net_solar_wh(today.hour[h], config) for h in range(10, 16)]
+    assert surplus == pytest.approx(sum(nets))
+    span = (config.max_soc_negative_price - SOC_MIN) / 1000 * 10000
+    assert room == pytest.approx(span - 7 * 500)
+    assert solar_reservation(today, 23, config) == (0.0, 0.0)

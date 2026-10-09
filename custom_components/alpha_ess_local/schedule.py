@@ -191,6 +191,22 @@ def _net_solar_wh(the_hour: Hour, config: ScheduleConfig) -> float:
     return solar_ac - the_hour.estimated_house_load
 
 
+def solar_reservation(day: Day, hour: int, config: ScheduleConfig) -> tuple[float, float]:
+    """What the sun claims after `hour` that same day, in Wh, as the planner
+    weighs it: the room a grid charge must leave free in the battery
+    (_Plan's room, capped at the battery's span) and the whole solar
+    surplus still expected (once per day: no grid charge when a charge
+    plus this exceeds one battery, see CYCLE_STEPS). For the decision log."""
+    span = (config.max_soc_negative_price - SOC_MIN) / SOC_MAX_BATTERY
+    span_wh = span * config.usable_battery_capacity
+    room = surplus = 0.0
+    for later in range(MAX_HOURS - 1, hour, -1):
+        net = _net_solar_wh(day.hour[later], config) if day.hour[later].valid else 0.0
+        room = min(span_wh, max(0.0, net + room))
+        surplus += max(0.0, net)
+    return room, surplus
+
+
 def _evaluate_hour_action(
     action: Charge,
     the_hour: Hour,
