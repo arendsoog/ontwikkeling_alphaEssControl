@@ -45,6 +45,7 @@ from custom_components.alpha_ess_local.orchestrator import (
     AlphaEssLocalScheduleCoordinator,
     _dsmr_net_power,
     _dsmr_tariff_indicator,
+    _effective_max_grid_load_wh,
     _effective_use_fee,
     _entity_power,
     _extra_pv_power,
@@ -1451,8 +1452,8 @@ async def test_schedule_coordinator_uses_peak_load_sensor_when_higher_than_slide
         await coordinator._async_update_data()
 
     config = mock_run_scheduler.call_args.args[4]
-    # 8.5 kW sensor > 6.0 kW slider -> the sensor's value (in Wh) wins.
-    assert config.max_grid_load == pytest.approx(8500.0)
+    # 8.5 kW sensor > 6.0 kW slider -> the sensor wins, in whole kW (8 kW).
+    assert config.max_grid_load == pytest.approx(8000.0)
 
 
 async def test_schedule_coordinator_ignores_peak_load_sensor_when_lower_than_slider(
@@ -1682,6 +1683,30 @@ async def test_dispatch_coordinator_control_enabled_writes_when_changed(
 
     client.async_set_max_feed_into_grid.assert_awaited_once_with(decision.target_feed_in_percentage)
     client.async_set_dispatch_param.assert_awaited_once_with(decision.param)
+
+
+@pytest.mark.parametrize(
+    ("slider_kw", "peak_kw", "expected_w"),
+    [
+        (6.0, "11.407", 11000),  # the month's peak, rounded down to whole kW
+        (6.0, "4.047", 6000),  # peak under the slider: the slider
+        (6.0, "6.9", 6000),  # 6.9 -> 6 kW, not above the slider
+        (6.0, None, 6000),  # no peak reading: the slider
+    ],
+)
+async def test_effective_max_grid_load_uses_whole_kw_of_the_months_peak(
+    hass: HomeAssistant, slider_kw, peak_kw, expected_w
+):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={CONF_PEAK_LOAD_THIS_MONTH_ENTITY: "sensor.peak_this_month"},
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(_register_soc_number(hass, entry, "max_grid_load"), str(slider_kw))
+    if peak_kw is not None:
+        hass.states.async_set("sensor.peak_this_month", peak_kw, {"unit_of_measurement": "kW"})
+
+    assert _effective_max_grid_load_wh(hass, entry) == expected_w
 
 
 async def test_dispatch_coordinator_throttles_charging_on_grid_by_effective_max_grid_load(

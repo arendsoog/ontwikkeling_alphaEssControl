@@ -17,6 +17,7 @@ phase (see the plan doc).
 from __future__ import annotations
 
 import glob
+import math
 import os
 import re
 from collections.abc import Callable
@@ -425,9 +426,10 @@ def _effective_max_grid_load_wh(hass: HomeAssistant, entry: ConfigEntry) -> floa
     capaciteitstarief (billed on the month's single highest 15-min grid-
     import peak), once house load alone has already pushed that peak above
     the slider this month, charging up to that already-paid-for level costs
-    nothing extra. Shared by the schedule coordinator (hourly planning) and
-    the dispatch coordinator (the live ~20s power command), so both layers
-    always agree on the same cap.
+    nothing extra. The month's peak is rounded *down* to whole kW (11.4 kW
+    -> 11 kW), keeping some margin under it. Shared by the schedule
+    coordinator (hourly planning) and the dispatch coordinator (the live
+    ~20s power command), so both layers always agree on the same cap.
     """
     max_grid_load_wh = (
         _number_entity_value(hass, entry, "max_grid_load", DEFAULT_MAX_GRID_LOAD) * 1000
@@ -436,7 +438,8 @@ def _effective_max_grid_load_wh(hass: HomeAssistant, entry: ConfigEntry) -> floa
         hass, entry.options.get(CONF_PEAK_LOAD_THIS_MONTH_ENTITY)
     )
     if peak_load_this_month_w is not None:
-        max_grid_load_wh = max(max_grid_load_wh, peak_load_this_month_w)
+        whole_kw_w = math.floor(peak_load_this_month_w / 1000) * 1000
+        max_grid_load_wh = max(max_grid_load_wh, whole_kw_w)
     return max_grid_load_wh
 
 
