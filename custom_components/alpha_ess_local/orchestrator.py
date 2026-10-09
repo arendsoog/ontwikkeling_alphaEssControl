@@ -1162,6 +1162,9 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             today_date.day,
         )
         _mark_finished_grid_charge(today, stored_actions, now.hour)
+        # Before the planner, so its own bookkeeping (index_charge, the
+        # once-per-day result comparison) sees what the past hours did.
+        _keep_past_hours(today, (self.data or {}).get("today"), now.hour, stored_actions)
 
         max_grid_load_wh = _effective_max_grid_load_wh(self.hass, self.config_entry)
 
@@ -1241,7 +1244,6 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                 now.hour,
                 int(today.hour[now.hour].charge),
             )
-        _keep_past_hours(today, (self.data or {}).get("today"), now.hour, stored_actions)
 
         return {"today": today, "tomorrow": tomorrow}
 
@@ -1363,6 +1365,7 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         self._last_extra_pv_state: dispatch.ExtraPvState | None = None
         self._last_charge_on_grid_used = False
         self._last_discharge_used = False
+        self._last_spent_hours: tuple[int | None, int | None] = (None, None)
         # Grid-charge regulation state: the charge power currently being
         # regulated (None when not charging from the grid) and when it was
         # last written, so a correction only uses a grid reading taken after
@@ -1563,9 +1566,19 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
             budget_newly_used = (
                 schedule_day.charge_on_grid_used and not self._last_charge_on_grid_used
             ) or (schedule_day.discharge_used and not self._last_discharge_used)
+            # Also when a spent session's hour changes (e.g. only known once
+            # the past hours were restored), so storage has the right one.
+            spent_hours = (
+                schedule_day.index_charge if schedule_day.charge_on_grid_used else None,
+                schedule_day.index_discharge if schedule_day.discharge_used else None,
+            )
+            hours_changed = spent_hours != self._last_spent_hours and any(
+                hour is not None for hour in spent_hours
+            )
             self._last_charge_on_grid_used = schedule_day.charge_on_grid_used
             self._last_discharge_used = schedule_day.discharge_used
-            if persist_daily_limit and budget_newly_used:
+            self._last_spent_hours = spent_hours
+            if persist_daily_limit and (budget_newly_used or hours_changed):
                 await self.hass.async_add_executor_job(
                     storage.store_dispatch_daily_state,
                     db_path,
