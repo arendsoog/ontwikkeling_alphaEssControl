@@ -1187,6 +1187,9 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         # Before the planner, so its own bookkeeping (index_charge, the
         # once-per-day result comparison) sees what the past hours did.
         _keep_past_hours(today, (self.data or {}).get("today"), now.hour, stored_actions)
+        await self.hass.async_add_executor_job(
+            storage.store_forecasts, db_path, _forecast_rows(today, tomorrow, now.hour)
+        )
 
         max_grid_load_wh = _effective_max_grid_load_wh(self.hass, self.config_entry)
 
@@ -1278,6 +1281,32 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             )
 
         return {"today": today, "tomorrow": tomorrow}
+
+
+def _forecast_rows(today: Day, tomorrow: Day, cur_hour: int) -> list[storage.ForecastRow]:
+    """This planning run's forecast for every coming hour (this one on),
+    with how many hours ahead it is -- see storage.store_forecasts."""
+    rows = []
+    for offset, the_day in ((0, today), (MAX_HOURS, tomorrow)):
+        if not the_day.valid:
+            continue
+        for h, hour in enumerate(the_day.hour):
+            lead = offset + h - cur_hour
+            if lead < 0 or not hour.valid:
+                continue
+            rows.append(
+                storage.ForecastRow(
+                    year=the_day.year,
+                    mon=the_day.mon,
+                    day=the_day.day,
+                    hour=h,
+                    lead=lead,
+                    solar_raw=hour.estimated_solar_power_raw,
+                    solar=hour.estimated_solar_power,
+                    house_load=hour.estimated_house_load,
+                )
+            )
+    return rows
 
 
 def _mark_finished_grid_charge(today: Day, stored_actions: dict[int, int], cur_hour: int) -> None:

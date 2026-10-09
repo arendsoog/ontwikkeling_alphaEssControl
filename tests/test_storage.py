@@ -16,6 +16,7 @@ from custom_components.alpha_ess_local.data import Day, Earning, FiveMin
 from custom_components.alpha_ess_local.storage import (
     LOAD_TAU_DAYS,
     MIN_SAMPLES,
+    ForecastRow,
     _day_class,
     _ensure_schema,
     _is_factor_reliable,
@@ -26,6 +27,7 @@ from custom_components.alpha_ess_local.storage import (
     retrieve_day_actions,
     retrieve_day_decisions,
     retrieve_day_five_min,
+    retrieve_day_forecast,
     retrieve_day_hours,
     retrieve_day_savings,
     retrieve_dispatch_daily_state,
@@ -34,6 +36,7 @@ from custom_components.alpha_ess_local.storage import (
     retrieve_period_summary,
     store_dispatch_daily_state,
     store_five_min_sample,
+    store_forecasts,
     store_hour_action,
     store_hour_data,
     store_hour_dispatch,
@@ -867,6 +870,35 @@ def test_solar_regression_learns_against_roof_plus_extra_pv(tmp_path, freezer):
 
     result = retrieve_mean_data(db_path, month=5, wday=c_weekday_for(2024, 5, 14))
     assert result[14].solar_factor == pytest.approx(1.0, abs=0.05)
+
+
+def test_day_forecast_is_the_first_one_made_that_day(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    store_forecasts(
+        db_path,
+        [
+            # made the evening before (lead > hour): not this day's own
+            ForecastRow(2026, 10, 9, 12, 15, 4000, 3900, 800),
+            # made at 00:00 (lead == hour) and at 06:00 (lead 6)
+            ForecastRow(2026, 10, 9, 12, 12, 3000, 2900, 800),
+            ForecastRow(2026, 10, 9, 12, 6, 2500, 2450, 750),
+            ForecastRow(2026, 10, 9, 3, 3, 0, 0, 900),
+        ],
+    )
+
+    result = retrieve_day_forecast(db_path, 2026, 10, 9)
+
+    assert result[12] == {"solar": 2900, "solar_raw": 3000, "house_load": 800, "lead": 12}
+    assert result[3]["house_load"] == 900
+
+
+def test_store_forecasts_prunes_old_rows(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    store_forecasts(db_path, [ForecastRow(2026, 1, 1, 12, 2, 1000, 1000, 500)])
+    store_forecasts(db_path, [ForecastRow(2026, 10, 9, 12, 2, 1000, 1000, 500)])
+
+    assert retrieve_day_forecast(db_path, 2026, 1, 1) == {}
+    assert retrieve_day_forecast(db_path, 2026, 10, 9) != {}
 
 
 def c_weekday_for(year, mon, day) -> int:

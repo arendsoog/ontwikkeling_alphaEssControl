@@ -50,6 +50,7 @@ from custom_components.alpha_ess_local.orchestrator import (
     _effective_use_fee,
     _entity_power,
     _extra_pv_power,
+    _forecast_rows,
     _grid_to_battery,
     _house_load_power,
     _house_load_tariff,
@@ -129,6 +130,38 @@ def test_keep_past_hours_ignores_yesterdays_plan():
     _keep_past_hours(today, previous, cur_hour=6, stored_actions={})
 
     assert today.hour[4].charge == Charge.CHARGING_ON_PV
+
+
+# --- _forecast_rows -----------------------------------------------------------
+
+
+def test_forecast_rows_cover_the_coming_hours_with_their_lead():
+    today = Day(valid=True, year=2026, mon=10, day=9)
+    tomorrow = Day(valid=True, year=2026, mon=10, day=10)
+    for the_day in (today, tomorrow):
+        for hour in the_day.hour:
+            hour.valid = True
+            hour.estimated_solar_power_raw = 1000.0
+            hour.estimated_solar_power = 900
+            hour.estimated_house_load = 500
+
+    rows = _forecast_rows(today, tomorrow, cur_hour=20)
+
+    # 20-23 today (lead 0-3) and all 24 hours of tomorrow (lead 4-27)
+    assert len(rows) == 4 + 24
+    assert (rows[0].day, rows[0].hour, rows[0].lead) == (9, 20, 0)
+    assert (rows[-1].day, rows[-1].hour, rows[-1].lead) == (10, 23, 27)
+    assert (rows[0].solar_raw, rows[0].solar, rows[0].house_load) == (1000.0, 900, 500)
+
+
+def test_forecast_rows_skip_a_day_without_data():
+    today = Day(valid=True, year=2026, mon=10, day=9)
+    for hour in today.hour:
+        hour.valid = True
+
+    rows = _forecast_rows(today, Day(valid=False), cur_hour=22)
+
+    assert [r.hour for r in rows] == [22, 23]
 
 
 # --- _mark_finished_grid_charge ---------------------------------------------

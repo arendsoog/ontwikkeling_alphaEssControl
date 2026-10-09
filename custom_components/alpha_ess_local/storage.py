@@ -187,6 +187,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # The forecast for each coming hour as it stood at every planning run,
+    # with how many hours ahead it was made (lead) -- to learn how far off
+    # the forecast is at the lead times decisions are taken, and to show it
+    # next to what really happened. Pruned after FORECAST_KEEP_DAYS.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS forecast_log (
+            year INTEGER, mon INTEGER, day INTEGER, hour INTEGER, lead INTEGER,
+            solar_raw REAL, solar REAL, house_load REAL,
+            PRIMARY KEY (year, mon, day, hour, lead)
+        )
+        """
+    )
     # The EV charger's share of house_load: left out of the learned house
     # load (it only charges on solar surplus, so it's no load to plan for).
     _add_column_if_missing(conn, "five_min_data", "ev_power", "REAL DEFAULT 0")
@@ -791,6 +804,72 @@ def delete_hour_progress(db_path: str, year: int, mon: int, day: int, hour: int)
             (year, mon, day, hour),
         )
         conn.commit()
+
+
+FORECAST_KEEP_DAYS = 180
+
+
+@dataclass
+class ForecastRow:
+    """One coming hour's forecast as it stood at a planning run."""
+
+    year: int
+    mon: int
+    day: int
+    hour: int
+    lead: int  # hours between the planning run's hour and this hour
+    solar_raw: float  # the source's forecast (Wh), before local correction
+    solar: float  # after the learned hourly correction -- what was planned with
+    house_load: float  # expected house load (Wh)
+
+
+def store_forecasts(db_path: str, rows: list[ForecastRow]) -> None:
+    """Record a planning run's forecasts (a later run in the same hour
+    overwrites, same target and lead) and prune old ones."""
+    if not rows:
+        return
+    first = min(date_cls(r.year, r.mon, r.day) for r in rows)
+    keep_from = first - timedelta(days=FORECAST_KEEP_DAYS)
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO forecast_log
+                (year, mon, day, hour, lead, solar_raw, solar, house_load)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (r.year, r.mon, r.day, r.hour, r.lead, r.solar_raw, r.solar, r.house_load)
+                for r in rows
+            ],
+        )
+        conn.execute(
+            "DELETE FROM forecast_log WHERE year * 10000 + mon * 100 + day < ?",
+            (_date_key(keep_from.year, keep_from.month, keep_from.day),),
+        )
+        conn.commit()
+
+
+def retrieve_day_forecast(db_path: str, year: int, mon: int, day: int) -> dict[int, dict]:
+    """A day's forecast per hour as it stood at its first planning run that
+    same day (the one the night's decisions were taken with): {hour:
+    {"solar", "solar_raw", "house_load", "lead"}}."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT hour, lead, solar_raw, solar, house_load FROM forecast_log
+            WHERE year = ? AND mon = ? AND day = ? AND lead <= hour
+            ORDER BY hour, lead DESC
+            """,
+            (year, mon, day),
+        ).fetchall()
+    result: dict[int, dict] = {}
+    for hour, lead, solar_raw, solar, house_load in rows:
+        result.setdefault(
+            hour, {"solar": solar, "solar_raw": solar_raw, "house_load": house_load, "lead": lead}
+        )
+    return result
 
 
 def store_hour_action(
