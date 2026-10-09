@@ -17,11 +17,13 @@ phase (see the plan doc).
 from __future__ import annotations
 
 import glob
+import math
 import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
+from functools import partial
 from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntry
@@ -38,6 +40,7 @@ from .const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
+    CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_EXTRA_PV_MODBUS_ADDRESS,
     CONF_EXTRA_PV_MODBUS_HUB,
@@ -267,12 +270,14 @@ def _sample_hour(
     return_fee: float,
     vat_percentage: float,
     return_vat_percentage: float | None = None,
+    ev_power: float = 0.0,
 ) -> None:
     """Port of CalculatePower: accumulate one 5-minute sample into hour.five_min[].
 
     `return_vat_percentage` overrides `vat_percentage` for the return-price
     side of `hour.real_result` only -- defaults to `vat_percentage` when
-    omitted (apply VAT to both sides, prior behavior).
+    omitted (apply VAT to both sides, prior behavior). `ev_power` is the EV
+    charger's power (part of the house load), kept apart in real_ev_load.
     """
     real_house_load = pv_roof + extra_pv + total_active_power + battery_power
     if real_house_load < 0.0:
@@ -295,6 +300,7 @@ def _sample_hour(
     sample.battery_power = battery_power
     sample.solar_to_battery = _solar_to_battery(sample)
     sample.grid_to_battery = _grid_to_battery(sample)
+    sample.ev_power = max(0.0, min(ev_power, real_house_load))
 
     if hour.five_min_count < MAX_FIVE_MINS:
         hour.five_min_count += 1
@@ -304,6 +310,7 @@ def _sample_hour(
     hour.real_solar_power_roof = round(sum(s.real_solar_power_roof for s in samples) / count)
     hour.real_extra_pv_power = round(sum(s.real_extra_pv_power for s in samples) / count)
     hour.real_house_load = round(sum(s.real_house_load for s in samples) / count)
+    hour.real_ev_load = round(sum(s.ev_power for s in samples) / count)
     hour.total_active_power = round(sum(s.total_active_power for s in samples) / count)
     hour.real_solar_to_battery = round(sum(s.solar_to_battery for s in samples) / count)
     hour.real_grid_to_battery = round(sum(s.grid_to_battery for s in samples) / count)
@@ -425,9 +432,10 @@ def _effective_max_grid_load_wh(hass: HomeAssistant, entry: ConfigEntry) -> floa
     capaciteitstarief (billed on the month's single highest 15-min grid-
     import peak), once house load alone has already pushed that peak above
     the slider this month, charging up to that already-paid-for level costs
-    nothing extra. Shared by the schedule coordinator (hourly planning) and
-    the dispatch coordinator (the live ~20s power command), so both layers
-    always agree on the same cap.
+    nothing extra. The month's peak is rounded *down* to whole kW (11.4 kW
+    -> 11 kW), keeping some margin under it. Shared by the schedule
+    coordinator (hourly planning) and the dispatch coordinator (the live
+    ~20s power command), so both layers always agree on the same cap.
     """
     max_grid_load_wh = (
         _number_entity_value(hass, entry, "max_grid_load", DEFAULT_MAX_GRID_LOAD) * 1000
@@ -436,7 +444,8 @@ def _effective_max_grid_load_wh(hass: HomeAssistant, entry: ConfigEntry) -> floa
         hass, entry.options.get(CONF_PEAK_LOAD_THIS_MONTH_ENTITY)
     )
     if peak_load_this_month_w is not None:
-        max_grid_load_wh = max(max_grid_load_wh, peak_load_this_month_w)
+        whole_kw_w = math.floor(peak_load_this_month_w / 1000) * 1000
+        max_grid_load_wh = max(max_grid_load_wh, whole_kw_w)
     return max_grid_load_wh
 
 
@@ -893,6 +902,7 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                         sample.total_active_power = stored.total_active_power
                         sample.battery_power = stored.battery_power
                         sample.real_house_load = stored.real_house_load
+                        sample.ev_power = stored.ev_power
                 if hour_index != now.hour:
                     restored_hour.five_min_count = max(
                         restored_hour.five_min_count, min(MAX_FIVE_MINS, max(slots) + 1)
@@ -938,6 +948,10 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
             return_fee,
             vat_percentage,
             return_vat_percentage,
+            ev_power=_entity_power(
+                self.hass, self.config_entry.options.get(CONF_EV_CHARGER_POWER_ENTITY)
+            )
+            or 0.0,
         )
 
         pv_total_energy_kwh = modbus_data.get("pv_total_energy")
@@ -1151,6 +1165,28 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                 today.index_charge = index_charge
                 today.index_discharge = index_discharge
 
+        stored_actions = await self.hass.async_add_executor_job(
+            storage.retrieve_day_actions,
+            db_path,
+            today_date.year,
+            today_date.month,
+            today_date.day,
+        )
+        once_per_day = options.get(
+            CONF_PERSIST_DAILY_CHARGE_LIMIT, DEFAULT_PERSIST_DAILY_CHARGE_LIMIT
+        )
+        if once_per_day:
+            _mark_finished_grid_charge(today, stored_actions, now.hour)
+        else:
+            # Several sessions a day: "used" only means a session is going
+            # on (the previous hour was a grid charge), which can continue
+            # without paying the minimum profit again; no grid discharge.
+            today.charge_on_grid_used = stored_actions.get(now.hour - 1) == Charge.CHARGING_ON_GRID
+            today.discharge_used = False
+        # Before the planner, so its own bookkeeping (index_charge, the
+        # once-per-day result comparison) sees what the past hours did.
+        _keep_past_hours(today, (self.data or {}).get("today"), now.hour, stored_actions)
+
         max_grid_load_wh = _effective_max_grid_load_wh(self.hass, self.config_entry)
 
         vat_percentage = options.get(CONF_VAT_PERCENTAGE, DEFAULT_VAT_PERCENTAGE)
@@ -1211,6 +1247,7 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                 self.hass, self.config_entry, "discharge_enabled", True
             ),
             max_grid_load=max_grid_load_wh,
+            multiple_per_day=not once_per_day,
         )
 
         modbus_data = self._modbus_coordinator.data or {}
@@ -1219,8 +1256,84 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         await self.hass.async_add_executor_job(
             run_scheduler, cur_soc, now.hour, today, tomorrow, config
         )
+        if today.valid:
+            cur = today.hour[now.hour]
+            await self.hass.async_add_executor_job(
+                partial(
+                    storage.store_hour_action,
+                    db_path,
+                    today_date.year,
+                    today_date.month,
+                    today_date.day,
+                    now.hour,
+                    int(cur.charge),
+                    selection=today.selection,
+                    opt_extra=today.opt_extra,
+                    min_profit=config.daily_min_profit,
+                    multiple_per_day=config.multiple_per_day,
+                    price=cur.price if cur.valid else None,
+                    cutoff_soc=cur.cutoff_soc,
+                )
+            )
 
         return {"today": today, "tomorrow": tomorrow}
+
+
+def _mark_finished_grid_charge(today: Day, stored_actions: dict[int, int], cur_hour: int) -> None:
+    """Spend today's once-per-day grid charge once a session has really ended.
+
+    The planner only marks it spent when it *predicts* the target is reached
+    within the hour; a session that ended differently (target reached
+    sooner, or not continued the next hour) left it unspent, so a second
+    grid charge could follow later the same day. A grid-charge hour followed
+    by an hour that wasn't one is a finished session. The hour just before
+    `cur_hour` doesn't count yet: the session may still continue now.
+    """
+    if today.charge_on_grid_used:
+        return
+    finished = [
+        hour
+        for hour, charge in stored_actions.items()
+        if hour < cur_hour - 1
+        and charge == Charge.CHARGING_ON_GRID
+        and stored_actions.get(hour + 1) != Charge.CHARGING_ON_GRID
+    ]
+    if finished:
+        today.charge_on_grid_used = True
+        today.index_charge = max(finished)
+
+
+def _keep_past_hours(
+    today: Day, previous: Day | None, cur_hour: int, stored_actions: dict[int, int]
+) -> None:
+    """Keep what the hours before `cur_hour` actually did.
+
+    `today` is rebuilt from prices/solar on every run, so without this the
+    plan would show the past hours as whatever the new schedule fills in --
+    e.g. a grid-charge hour turning into "charge from PV" an hour later.
+    The action each hour ran with comes from storage (recorded every run,
+    so it survives a restart); the previous run's plan (same day) adds its
+    cutoff SOC and feed-in. Before storage had an hour, the once-per-day
+    grid-charge/discharge hours (index_charge/index_discharge) still mark it.
+    """
+    same_day = previous is not None and (previous.year, previous.mon, previous.day) == (
+        today.year,
+        today.mon,
+        today.day,
+    )
+    for h in range(min(cur_hour, len(today.hour))):
+        past = today.hour[h]
+        if same_day:
+            kept = previous.hour[h]
+            past.charge = kept.charge
+            past.cutoff_soc = kept.cutoff_soc
+            past.feed_in = kept.feed_in
+        if h in stored_actions:
+            past.charge = Charge(stored_actions[h])
+        elif not same_day and today.charge_on_grid_used and h == today.index_charge:
+            past.charge = Charge.CHARGING_ON_GRID
+        elif not same_day and today.discharge_used and h == today.index_discharge:
+            past.charge = Charge.CHARGING_DISCHARGE
 
 
 # Dispatch cycle; halved while charging from the grid, so the grid-charge
@@ -1283,6 +1396,9 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         self._last_extra_pv_state: dispatch.ExtraPvState | None = None
         self._last_charge_on_grid_used = False
         self._last_discharge_used = False
+        self._last_spent_hours: tuple[int | None, int | None] = (None, None)
+        # This hour's dispatch as last stored for the decision log.
+        self._dispatch_record: dict | None = None
         # Grid-charge regulation state: the charge power currently being
         # regulated (None when not charging from the grid) and when it was
         # last written, so a correction only uses a grid reading taken after
@@ -1377,6 +1493,49 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
                 self._grid_charge_power = new
 
         return replace(decision, param=replace(decision.param, power=self._grid_charge_power))
+
+    async def _record_dispatch(
+        self,
+        db_path: str,
+        now: datetime,
+        decision: dispatch.DispatchDecision,
+        control_enabled: bool,
+    ) -> None:
+        """Keep this hour's dispatch for the decision log: the mode(s) in
+        order, the first power and the largest one. Stored only when that
+        changes, not every cycle."""
+        key = (now.date(), now.hour)
+        mode = dispatch.set_dispatch_msg(decision.param.mode)
+        power = decision.param.power
+        record = self._dispatch_record
+        if record is None or record["key"] != key:
+            record = {"key": key, "modes": [mode], "power": power, "power_max": power}
+        else:
+            record = dict(record, modes=list(record["modes"]))
+            if record["modes"][-1] != mode:
+                record["modes"].append(mode)
+            if abs(power) > abs(record["power_max"]):
+                record["power_max"] = power
+        record["written"] = control_enabled
+        record["manual"] = self._manual_override is not None
+        if record == self._dispatch_record:
+            return
+        self._dispatch_record = record
+        await self.hass.async_add_executor_job(
+            partial(
+                storage.store_hour_dispatch,
+                db_path,
+                now.year,
+                now.month,
+                now.day,
+                now.hour,
+                mode=" → ".join(record["modes"]),
+                power=record["power"],
+                power_max=record["power_max"],
+                written=record["written"],
+                manual=record["manual"],
+            )
+        )
 
     def set_manual_override(self, charge: Charge | None, cutoff_soc: int | None = None) -> None:
         """Force the next decision to use `charge` (and optionally its
@@ -1483,9 +1642,19 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
             budget_newly_used = (
                 schedule_day.charge_on_grid_used and not self._last_charge_on_grid_used
             ) or (schedule_day.discharge_used and not self._last_discharge_used)
+            # Also when a spent session's hour changes (e.g. only known once
+            # the past hours were restored), so storage has the right one.
+            spent_hours = (
+                schedule_day.index_charge if schedule_day.charge_on_grid_used else None,
+                schedule_day.index_discharge if schedule_day.discharge_used else None,
+            )
+            hours_changed = spent_hours != self._last_spent_hours and any(
+                hour is not None for hour in spent_hours
+            )
             self._last_charge_on_grid_used = schedule_day.charge_on_grid_used
             self._last_discharge_used = schedule_day.discharge_used
-            if persist_daily_limit and budget_newly_used:
+            self._last_spent_hours = spent_hours
+            if persist_daily_limit and (budget_newly_used or hours_changed):
                 await self.hass.async_add_executor_job(
                     storage.store_dispatch_daily_state,
                     db_path,
@@ -1535,6 +1704,7 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         decision = self._regulate_grid_charge(
             decision, hour, dispatch_config, control_enabled, hour_start, now
         )
+        await self._record_dispatch(db_path, now, decision, control_enabled)
 
         already_set = (
             not hour_start

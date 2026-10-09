@@ -66,7 +66,7 @@ from ..const import (
     SOLAR_SOURCE_FORECAST_SOLAR,
     SOLAR_SOURCE_SOLCAST,
 )
-from ..data import MAX_FIVE_MINS, Day
+from ..data import MAX_FIVE_MINS, Charge, Day
 from ..orchestrator import get_db_path
 from ..prices import PRICE_SOURCES
 from ..schedule import set_charging_msg
@@ -347,16 +347,47 @@ async def _ws_history(
     options = entry.options
     vat = options.get(CONF_VAT_PERCENTAGE, DEFAULT_VAT_PERCENTAGE)
     return_vat = vat if options.get(CONF_APPLY_VAT_ON_RETURN, DEFAULT_APPLY_VAT_ON_RETURN) else 0.0
+    db_path = get_db_path(hass, entry)
     summary = await hass.async_add_executor_job(
         storage.retrieve_period_summary,
-        get_db_path(hass, entry),
+        db_path,
         msg["start"],
         msg["end"],
         msg["group"],
         vat,
         return_vat,
     )
+    if msg["group"] == "hour":
+        summary.update(await hass.async_add_executor_job(day_details, db_path, msg["start"]))
     connection.send_result(msg["id"], summary)
+
+
+def day_details(db_path: str, day: date) -> dict[str, Any]:
+    """One day's decision log and 5-minute samples, for the history tab.
+
+    The samples are only kept for a few days (storage.FIVE_MIN_KEEP_DAYS);
+    for older days the panel draws the hourly averages instead.
+    """
+    decisions = storage.retrieve_day_decisions(db_path, day.year, day.month, day.day)
+    for decision in decisions:
+        charge = decision.pop("charge")
+        decision["action"] = None if charge is None else set_charging_msg(Charge(charge))
+        decision["written"] = bool(decision["written"])
+        decision["manual"] = bool(decision["manual"])
+        decision["multiple"] = bool(decision["multiple"])
+    five_min = storage.retrieve_day_five_min(db_path, day.year, day.month, day.day)
+    midnight = dt_util.start_of_local_day(day)
+    samples = [
+        {
+            "t": (midnight + timedelta(hours=hour, minutes=5 * slot)).timestamp() * 1000,
+            "pv_roof": sample.real_solar_power_roof,
+            "extra_pv": sample.real_extra_pv_power,
+            "house": sample.real_house_load,
+        }
+        for hour, slots in sorted(five_min.items())
+        for slot, sample in sorted(slots.items())
+    ]
+    return {"decisions": decisions, "samples": samples}
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/today_power"})

@@ -33,6 +33,19 @@ const ACTIONS = {
   "No-discharging": { label: "Niet ontladen", color: "#94a3b8" },
 };
 
+// The inverter's dispatch modes (dispatch.set_dispatch_msg) in Dutch.
+const DISPATCH_LABELS = {
+  Default: "Standaard",
+  "Battery only charges from PV": "Alleen laden met zon",
+  "State of Charge control": "SOC-sturing",
+  "Load Following": "Verbruik volgen",
+  "Maximise Output": "Maximale levering",
+  Normal: "Normaal",
+  "Optimise Consumption": "Verbruik optimaliseren",
+  "Maximise Consumption": "Maximaal verbruik",
+  "No Battery Charge": "Niet laden",
+};
+
 const OVERRIDES = [
   { service: "force_charge_grid", label: "Laden vanaf net", icon: "mdi:transmission-tower-import" },
   { service: "force_charge_pv", label: "Laden met zon", icon: "mdi:solar-power" },
@@ -1308,7 +1321,15 @@ class AlphaEssPanel extends HTMLElement {
     const solarFc = hourly("solar_forecast_w");
     const loadFc = hourly("house_load_w");
     const actual = this._powerSeries(x0, Math.min(now, x1));
+    // HA records a state only when it changes: an SOC that has stayed put
+    // since its last change would otherwise end the line there. Carry the
+    // current value through to now.
     const socPts = this._series("battery_soc");
+    const socNow = this._value("battery_soc");
+    const socEnd = Math.min(now, x1);
+    if (socNow !== null && (!socPts.length || socPts[socPts.length - 1][0] < socEnd)) {
+      socPts.push([socEnd, socNow]);
+    }
 
     const values = [
       ...solarFc.pts.map((p) => p[1]),
@@ -1327,7 +1348,8 @@ class AlphaEssPanel extends HTMLElement {
         x1,
         left: { min: 0, max: top, fmt: (v) => `${fmtNum(v, 1)} kW` },
         right: { min: 0, max: 100, fmt: (v) => `${Math.round(v)}%` },
-        xTicks: Array.from({ length: 13 }, (_, i) => ({ t: day0 + i * 2 * hourMs, label: pad2(i * 2) })),
+        // Every hour, in the middle of it -- lined up with the price bars below.
+        xTicks: Array.from({ length: 24 }, (_, i) => ({ t: day0 + (i + 0.5) * hourMs, label: pad2(i) })),
         bands,
         now,
         series: [
@@ -1700,9 +1722,9 @@ class AlphaEssPanel extends HTMLElement {
         }),
         toggle({
           option: "persist_daily_charge_limit",
-          icon: "mdi:content-save-outline",
-          label: "Daglimiet bewaren na herstart",
-          info: "Bewaart de eenmalige dagelijkse net-laad/ontlaadlimiet over een herstart van Home Assistant heen.",
+          icon: "mdi:numeric-1-circle-outline",
+          label: "Netladen/ontladen maximaal 1x per dag",
+          info: "Aan: hooguit één keer per dag laden vanaf het net en één keer ontladen naar het net, ook na een herstart. Uit: meerdere laadbeurten per dag, elk alleen als die meer dan de minimale dagelijkse winst oplevert; de batterij ontlaadt dan alleen voor eigen verbruik, niet naar het net.",
         }),
         toggle({
           entity: "discharge_enabled",
@@ -1812,12 +1834,19 @@ class AlphaEssPanel extends HTMLElement {
     }
   }
 
+  // Ticks on round local times (counted from local midnight, not from the
+  // epoch -- that put a whole day's 6-hour ticks on 02/08/14/20 h here).
   _timeTicks(x0, x1) {
     const span = x1 - x0;
     const hour = 3600 * 1000;
-    const step = span <= 2 * hour ? 15 * 60 * 1000 : span <= 7 * hour ? hour : span <= 13 * hour ? 2 * hour : 6 * hour;
+    let step = 2 * hour;
+    if (span <= 2 * hour) step = 15 * 60 * 1000;
+    else if (span <= 7 * hour) step = hour;
+    const base = startOfDayOf(x0);
     const ticks = [];
-    for (let t = Math.ceil(x0 / step) * step; t <= x1; t += step) ticks.push({ t, label: fmtTime(t) });
+    for (let t = base + Math.ceil((x0 - base) / step) * step; t <= x1; t += step) {
+      ticks.push({ t, label: step >= hour ? pad2(new Date(t).getHours()) : fmtTime(t) });
+    }
     return ticks;
   }
 
@@ -1859,8 +1888,10 @@ class AlphaEssPanel extends HTMLElement {
     this._renderAll();
     try {
       const data = await this._hass.callWS({ type: `${DOMAIN}/history`, start: iso(start), end: iso(end), group });
+      const soc = group === "hour" ? await this._daySoc(start) : null;
       if (this._histRequest !== request) return; // a newer request superseded this one
       this._histData = data;
+      this._histSoc = soc;
       this._histError = null;
     } catch (err) {
       this._histData = null;
@@ -1868,6 +1899,54 @@ class AlphaEssPanel extends HTMLElement {
     }
     this._histLoading = false;
     this._renderAll();
+  }
+
+  // A day's SOC: the recorder's states, or -- once those are purged (after
+  // ~10 days) -- its hourly mean statistics. Carried on to the day's end,
+  // or to now for today, since a state is only recorded when it changes.
+  async _daySoc(day) {
+    const id = this._entities.battery_soc;
+    if (!id) return [];
+    const from = new Date(day);
+    const to = new Date(day);
+    to.setDate(to.getDate() + 1);
+    const end = Math.min(to.getTime(), Date.now());
+    let points = [];
+    try {
+      const raw = await this._hass.callWS({
+        type: "history/history_during_period",
+        start_time: from.toISOString(),
+        end_time: new Date(end).toISOString(),
+        entity_ids: [id],
+        minimal_response: true,
+        no_attributes: true,
+        significant_changes_only: false,
+      });
+      points = ((raw || {})[id] || [])
+        .map((e) => [Math.max(((e.lu ?? e.lc) || 0) * 1000, from.getTime()), num(e.s)])
+        .filter((p) => p[1] !== null);
+    } catch (err) {
+      points = [];
+    }
+    if (!points.length) {
+      try {
+        const stats = await this._hass.callWS({
+          type: "recorder/statistics_during_period",
+          start_time: from.toISOString(),
+          end_time: new Date(end).toISOString(),
+          statistic_ids: [id],
+          period: "hour",
+          types: ["mean"],
+        });
+        points = ((stats || {})[id] || [])
+          .map((r) => [typeof r.start === "number" ? r.start : Date.parse(r.start), num(r.mean)])
+          .filter((p) => p[1] !== null);
+      } catch (err) {
+        points = [];
+      }
+    }
+    if (points.length && points[points.length - 1][0] < end) points.push([end, points[points.length - 1][1]]);
+    return points;
   }
 
   _historyStep(step) {
@@ -2013,7 +2092,150 @@ class AlphaEssPanel extends HTMLElement {
       </div>
       <div class="unit-note">Energie in kWh · besparing t.o.v. geen zon en geen batterij${drill ? " · klik een regel voor details" : ""}</div>`;
 
+    if (group === "hour") {
+      return `${header}${controls}${tiles}${this._historyDayChart(data)}${this._decisionLog(data)}${chart}${table}`;
+    }
     return `${header}${controls}${tiles}${chart}${table}`;
+  }
+
+  // One past day as it went: the hours coloured by the action each one
+  // actually ran with, and the measured solar, house load and SOC as solid
+  // lines (no forecasts). 5-minute samples for recent days, hourly
+  // averages for older ones.
+  _historyDayChart(data) {
+    const { start } = this._historyRange();
+    const day0 = start.getTime();
+    const hourMs = 3600 * 1000;
+    const x1 = day0 + 24 * hourMs;
+    const decisions = (data.decisions || []).filter((d) => d.action);
+    const bands = decisions.map((d) => ({
+      x0: day0 + d.hour * hourMs,
+      x1: day0 + (d.hour + 1) * hourMs,
+      color: (ACTIONS[d.action] || { color: "transparent" }).color,
+      opacity: d.action === "Charge-grid" || d.action === "Discharge" ? 0.3 : 0.12,
+    }));
+
+    let solar;
+    let house;
+    let step = false;
+    if ((data.samples || []).length) {
+      solar = data.samples.map((s) => [s.t, ((s.pv_roof || 0) + (s.extra_pv || 0)) / 1000]);
+      house = data.samples.map((s) => [s.t, (s.house || 0) / 1000]);
+    } else {
+      // Wh per hour == average W over that hour.
+      const hours = data.rows.filter((r) => r.hours);
+      solar = hours.map((r) => [day0 + Number(r.key) * hourMs, r.solar_wh / 1000]);
+      house = hours.map((r) => [day0 + Number(r.key) * hourMs, r.house_wh / 1000]);
+      step = true;
+    }
+    const lastHour = data.rows.filter((r) => r.hours).map((r) => Number(r.key)).pop();
+    const stepEnd = lastHour === undefined ? x1 : day0 + (lastHour + 1) * hourMs;
+    const soc = this._histSoc || [];
+    const top = niceMax(Math.max(0.5, ...solar.map((p) => p[1]), ...house.map((p) => p[1])));
+
+    const chart = lineChart(
+      {
+        id: "hist-day",
+        w: 1100,
+        h: 250,
+        x0: day0,
+        x1,
+        left: { min: 0, max: top, fmt: (v) => `${fmtNum(v, 1)} kW` },
+        right: { min: 0, max: 100, fmt: (v) => `${Math.round(v)}%` },
+        // Every hour, in the middle of it -- like the hourly bars below.
+        xTicks: Array.from({ length: 24 }, (_, i) => ({ t: day0 + (i + 0.5) * hourMs, label: pad2(i) })),
+        bands,
+        series: [
+          { name: "Zon", color: COLOR.solar, points: solar, width: 2, step, stepEnd },
+          { name: "Verbruik", color: "#64748b", points: house, width: 2, step, stepEnd },
+          { name: "SOC", color: COLOR.soc, points: soc, axis: "right", step: true, width: 2 },
+        ],
+        unit: "kW",
+        units: { SOC: "%" },
+        plan: decisions.map((d) => ({ hour: d.hour, action: d.action, price: d.price })),
+      },
+      this._charts
+    );
+    const legend = this._legend([
+      ...Object.entries(ACTIONS).map(([, a]) => ({ color: a.color, label: a.label })),
+      { color: COLOR.solar, label: "Zon", line: true },
+      { color: "#64748b", label: "Verbruik", line: true },
+      { color: COLOR.soc, label: "SOC", line: true },
+    ]);
+    const note = (data.samples || []).length
+      ? ""
+      : '<div class="unit-note">Uurgemiddelden (5-minutenwaarden worden 3 dagen bewaard)</div>';
+    return `<div class="section-title">Dagelijkse werking</div>${legend}${chart}${note}`;
+  }
+
+  // Per hour: the action, why the planner chose it, and what went to the
+  // inverter (or would have, with battery control off).
+  _decisionLog(data) {
+    const decisions = data.decisions || [];
+    if (!decisions.length) {
+      return `<div class="section-title">Beslissingen per uur</div><div class="empty">Geen beslissingen opgeslagen voor deze dag.</div>`;
+    }
+    const eur = (v) => `€ ${fmtNum(v, 2)}`;
+    const why = (d) => {
+      const extra = d.opt_extra === null || d.opt_extra === undefined ? null : d.opt_extra;
+      const min = d.min_profit === null || d.min_profit === undefined ? null : d.min_profit;
+      const known = extra !== null && min !== null;
+      // Several sessions a day: each new grid charge already paid the
+      // minimum profit, so the optimum only had to beat the baseline.
+      const perSession = d.multiple && known ? ` (na ${eur(min)} per laadbeurt)` : "";
+      switch (d.selection) {
+        case "optimum":
+          if (!known) return "Geoptimaliseerd";
+          return d.multiple ? `Geoptimaliseerd: +${eur(extra)}${perSession}` : `Geoptimaliseerd: +${eur(extra)} ≥ ${eur(min)}`;
+        case "below_minimum":
+          if (!known) return "Basisschema: onder de minimale winst";
+          return d.multiple ? `Basisschema: +${eur(extra)}${perSession}` : `Basisschema: +${eur(extra)} < ${eur(min)}`;
+        case "budget_used":
+          return "Basisschema: laden én ontladen vandaag al gedaan";
+        case "no_option":
+          return "Basisschema: geen actie levert meer op";
+        case "no_baseline":
+          return "Geen geldig schema: laden met zon";
+        case "optimum_failed":
+          return "Basisschema: optimum niet te berekenen";
+        default:
+          return "–";
+      }
+    };
+    const inverter = (d) => {
+      if (!d.mode) return "–";
+      const modes = d.mode
+        .split(" → ")
+        .map((m) => DISPATCH_LABELS[m] || m)
+        .join(" → ");
+      const soc = d.mode.includes("State of Charge control");
+      const power = soc && d.power !== null ? ` · ${fmtNum(d.power / 1000, 1)}${d.power_max !== d.power ? `–${fmtNum(d.power_max / 1000, 1)}` : ""} kW` : "";
+      const flags = [d.manual ? "handmatig" : "", d.written ? "" : "alleen berekend"].filter(Boolean);
+      return `${esc(modes)}${power}${flags.length ? ` <span class="muted">(${flags.join(", ")})</span>` : ""}`;
+    };
+    const rows = decisions
+      .map((d) => {
+        const info = ACTIONS[d.action] || { label: d.action || "–", color: "transparent" };
+        const target = (d.action === "Charge-grid" || d.action === "Discharge") && d.cutoff_soc ? `${fmtNum(d.cutoff_soc / 10, 0)}%` : "–";
+        return `
+          <tr>
+            <td>${pad2(d.hour)}:00</td>
+            <td>${d.price === null || d.price === undefined ? "–" : `€ ${fmtNum(d.price, 3)}`}</td>
+            <td><span class="swatch" style="background:${info.color}"></span>${esc(info.label)}</td>
+            <td>${why(d)}</td>
+            <td>${inverter(d)}</td>
+            <td>${target}</td>
+          </tr>`;
+      })
+      .join("");
+    return `
+      <div class="section-title">Beslissingen per uur</div>
+      <div class="table-scroll">
+        <table class="hist-table decision-table">
+          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
   }
 
   // ------------------------------------------------------------ hover
@@ -2452,6 +2674,9 @@ const STYLE = `
   .hist-table tr.empty-row td { color: var(--muted); opacity: 0.6; }
   .hist-table tr.clickable { cursor: pointer; }
   .hist-table tr.clickable:hover td { background: rgba(20, 184, 166, 0.08); }
+  .decision-table td:nth-child(n+3), .decision-table th:nth-child(n+3) { text-align: left; }
+  .decision-table td:last-child, .decision-table th:last-child { text-align: right; }
+  .decision-table .swatch { margin-right: 6px; vertical-align: middle; }
 
   /* control tab */
   .ctl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px 48px; align-items: start; }

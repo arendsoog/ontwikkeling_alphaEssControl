@@ -19,6 +19,7 @@ from custom_components.alpha_ess_local.frontend import (
     SETTABLE_OPTIONS,
     _is_our_panel,
     _ws_set_option,
+    day_details,
     extra_pv_string_entities,
     source_list,
     today_power_payload,
@@ -103,6 +104,41 @@ def test_today_power_payload_shows_hour_averages_for_hours_without_samples():
     assert (first["pv_roof"], first["extra_pv"], first["house"]) == (600, 100, 450)
     assert first["grid"] is None
     assert first["battery"] is None
+
+
+# --- history day details ------------------------------------------------------
+
+
+def test_day_details_labels_actions_and_stamps_samples(tmp_path):
+    from custom_components.alpha_ess_local import storage
+
+    db_path = str(tmp_path / "test.db")
+    storage.store_hour_action(db_path, 2026, 10, 6, 4, 3, selection="optimum", opt_extra=0.62)
+    storage.store_hour_dispatch(
+        db_path,
+        2026,
+        10,
+        6,
+        4,
+        mode="State of Charge control",
+        power=5077,
+        power_max=5077,
+        written=True,
+        manual=False,
+    )
+    storage.store_five_min_sample(
+        db_path, 2026, 10, 6, 4, 1, FiveMin(real_solar_power_roof=0, real_house_load=1042)
+    )
+
+    details = day_details(db_path, date(2026, 10, 6))
+
+    (decision,) = details["decisions"]
+    assert decision["action"] == "Charge-grid"
+    assert decision["written"] is True
+    assert decision["manual"] is False
+    (sample,) = details["samples"]
+    assert sample["t"] == (_midnight() + timedelta(hours=4, minutes=5)).timestamp() * 1000
+    assert sample["house"] == 1042
 
 
 # --- set_option websocket command --------------------------------------------

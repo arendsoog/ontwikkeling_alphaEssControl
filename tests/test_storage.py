@@ -23,6 +23,8 @@ from custom_components.alpha_ess_local.storage import (
     c_weekday,
     calculate_and_store_mean_data,
     delete_hour_progress,
+    retrieve_day_actions,
+    retrieve_day_decisions,
     retrieve_day_five_min,
     retrieve_day_hours,
     retrieve_day_savings,
@@ -32,7 +34,9 @@ from custom_components.alpha_ess_local.storage import (
     retrieve_period_summary,
     store_dispatch_daily_state,
     store_five_min_sample,
+    store_hour_action,
     store_hour_data,
+    store_hour_dispatch,
     store_hour_progress,
 )
 
@@ -575,6 +579,68 @@ def test_dispatch_daily_state_excludes_other_dates(tmp_path):
     assert retrieve_dispatch_daily_state(db_path, 2024, 1, 16) is None
 
 
+def test_hour_actions_latest_wins_per_hour_and_stay_per_day(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    store_hour_action(db_path, 2026, 10, 9, 4, 0)
+    store_hour_action(db_path, 2026, 10, 9, 4, 3)  # replanned mid-hour
+    store_hour_action(db_path, 2026, 10, 9, 5, 2)
+    store_hour_action(db_path, 2026, 10, 8, 4, 1)
+
+    assert retrieve_day_actions(db_path, 2026, 10, 9) == {4: 3, 5: 2}
+    assert retrieve_day_actions(db_path, 2026, 10, 10) == {}
+
+
+def test_decision_log_combines_planner_and_dispatch(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    store_hour_dispatch(
+        db_path, 2026, 10, 9, 4, mode="Normal", power=0, power_max=0, written=True, manual=False
+    )  # dispatch can come before the planner's record for the hour
+    store_hour_action(
+        db_path,
+        2026,
+        10,
+        9,
+        4,
+        3,
+        selection="optimum",
+        opt_extra=0.62,
+        min_profit=0.4,
+        price=0.074,
+        cutoff_soc=350,
+    )
+    store_hour_dispatch(
+        db_path,
+        2026,
+        10,
+        9,
+        4,
+        mode="Normal → State of Charge control",
+        power=5077,
+        power_max=10484,
+        written=True,
+        manual=False,
+    )
+
+    (row,) = retrieve_day_decisions(db_path, 2026, 10, 9)
+
+    assert row["hour"] == 4
+    assert row["charge"] == 3
+    assert (row["selection"], row["opt_extra"], row["min_profit"]) == ("optimum", 0.62, 0.4)
+    assert (row["price"], row["cutoff_soc"]) == (0.074, 350)
+    assert row["mode"] == "Normal → State of Charge control"
+    assert (row["power"], row["power_max"], row["written"], row["manual"]) == (5077, 10484, 1, 0)
+
+
+def test_dispatch_only_hour_has_no_action(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    store_hour_dispatch(
+        db_path, 2026, 10, 9, 5, mode="Normal", power=0, power_max=0, written=False, manual=False
+    )
+
+    assert retrieve_day_actions(db_path, 2026, 10, 9) == {}
+    assert retrieve_day_decisions(db_path, 2026, 10, 9)[0]["charge"] is None
+
+
 # --- pure helper functions --------------------------------------------------
 
 
@@ -682,6 +748,23 @@ def test_weighted_mean_favors_recent_samples(tmp_path, freezer):
     # Weighted toward the more recent (higher) sample, well above the plain
     # average of 550.
     assert 650 < result[10].house_load < 950
+
+
+def test_learned_house_load_leaves_out_the_ev_charger(tmp_path, freezer):
+    """The EV charger only charges on solar surplus, so it's no load the
+    battery planning has to cover: it's taken out before learning."""
+    freezer.move_to("2024-01-29 12:00:00")
+    db_path = str(tmp_path / "test.db")
+    with_ev = Day(year=2024, mon=1, day=22, valid=True)  # a Monday
+    with_ev.hour[10].valid = True
+    with_ev.hour[10].real_house_load = 4000  # 3200 W of it the EV charger
+    with_ev.hour[10].real_ev_load = 3200
+    store_hour_data(db_path, with_ev, 10, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+
+    assert calculate_and_store_mean_data(db_path, pv_power=5000) is True
+
+    result = retrieve_mean_data(db_path, month=1, wday=1)
+    assert result[10].house_load == pytest.approx(800, abs=1)
 
 
 def test_fallback_fills_missing_weekday_same_day_class(tmp_path, freezer):

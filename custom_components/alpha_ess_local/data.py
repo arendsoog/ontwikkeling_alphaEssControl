@@ -51,6 +51,8 @@ class FiveMin:
     # reproduce it.
     solar_to_battery: float = 0.0
     grid_to_battery: float = 0.0
+    # The EV charger's share of real_house_load (W), if one is configured.
+    ev_power: float = 0.0
 
 
 @dataclass
@@ -88,6 +90,10 @@ class Hour:
     estimated_house_load: int = 0
     estimated_house_load_sigma: float = 0.0  # onzekerheid huislast (voor scenario's)
     real_house_load: int = 0
+    # The EV charger's share of real_house_load (hourly-average W) -- left
+    # out of the learned house load: it only charges on solar surplus, so
+    # it isn't a load the battery planning has to cover.
+    real_ev_load: int = 0
     total_active_power: int = 0
     # Wh (hourly-average W): battery charging power attributed to each
     # source this hour, via energy balance — solar surplus (solar minus
@@ -128,6 +134,11 @@ class Day:
     charge_on_grid_used: bool = False
     discharge_used: bool = False
     hour: list = field(default_factory=lambda: [Hour() for _ in range(MAX_HOURS)])
+    # Which schedule set_schedule chose and why (schedule.SELECTION_*), and
+    # the optimised schedule's extra result over the baseline (EUR, None if
+    # not computed) -- recorded per hour for the panel's decision log.
+    selection: str = ""
+    opt_extra: float | None = None
     # Which source a price/solar Day was read from (prices.PRICE_SOURCES /
     # solar.SOLAR_SOURCES key), "" if none -- shown in the panel.
     source: str = ""

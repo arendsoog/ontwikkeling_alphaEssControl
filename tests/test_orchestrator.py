@@ -19,6 +19,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
 
+from custom_components.alpha_ess_local import storage
 from custom_components.alpha_ess_local.config_flow import SMA_PV_POWER_STRING_KEY
 from custom_components.alpha_ess_local.const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
@@ -45,12 +46,15 @@ from custom_components.alpha_ess_local.orchestrator import (
     AlphaEssLocalScheduleCoordinator,
     _dsmr_net_power,
     _dsmr_tariff_indicator,
+    _effective_max_grid_load_wh,
     _effective_use_fee,
     _entity_power,
     _extra_pv_power,
     _grid_to_battery,
     _house_load_power,
     _house_load_tariff,
+    _keep_past_hours,
+    _mark_finished_grid_charge,
     _number_entity_value,
     _sample_hour,
     _sma_pv_power,
@@ -66,6 +70,110 @@ from custom_components.alpha_ess_local.orchestrator import (
 )
 from custom_components.alpha_ess_local.protocol import DispatchMode, DispatchParam
 from custom_components.alpha_ess_local.storage import HourMean
+
+# --- _keep_past_hours -------------------------------------------------------
+
+
+def test_keep_past_hours_keeps_what_earlier_hours_did():
+    """Regression: the 04:00 grid charge showed as "charge from PV" after the
+    05:00 recompute, since today is rebuilt from prices/solar every run."""
+    previous = Day(valid=True, year=2026, mon=10, day=9)
+    previous.hour[4].charge = Charge.CHARGING_ON_GRID
+    previous.hour[4].cutoff_soc = 350
+    today = Day(valid=True, year=2026, mon=10, day=9)
+    for hour in today.hour:
+        hour.charge = Charge.CHARGING_ON_PV
+
+    _keep_past_hours(today, previous, cur_hour=5, stored_actions={})
+
+    assert today.hour[4].charge == Charge.CHARGING_ON_GRID
+    assert today.hour[4].cutoff_soc == 350
+    assert today.hour[5].charge == Charge.CHARGING_ON_PV  # current hour: new plan
+
+
+def test_keep_past_hours_after_restart_uses_the_recorded_actions():
+    """After a restart there's no previous plan: the actions recorded per
+    hour still show the 04:00 grid charge (and nothing for the current hour)."""
+    today = Day(valid=True, year=2026, mon=10, day=9)
+    for hour in today.hour:
+        hour.charge = Charge.CHARGING_ON_PV
+    stored = {3: int(Charge.NO_DISCHARGING), 4: int(Charge.CHARGING_ON_GRID), 6: 4}
+
+    _keep_past_hours(today, None, cur_hour=6, stored_actions=stored)
+
+    assert today.hour[3].charge == Charge.NO_DISCHARGING
+    assert today.hour[4].charge == Charge.CHARGING_ON_GRID
+    assert today.hour[5].charge == Charge.CHARGING_ON_PV  # nothing recorded
+    assert today.hour[6].charge == Charge.CHARGING_ON_PV  # current hour: new plan
+
+
+def test_keep_past_hours_falls_back_to_the_daily_grid_charge_hour():
+    today = Day(valid=True, year=2026, mon=10, day=9)
+    for hour in today.hour:
+        hour.charge = Charge.CHARGING_ON_PV
+    today.charge_on_grid_used = True
+    today.index_charge = 4
+
+    _keep_past_hours(today, None, cur_hour=6, stored_actions={})
+
+    assert today.hour[4].charge == Charge.CHARGING_ON_GRID
+    assert today.hour[3].charge == Charge.CHARGING_ON_PV
+
+
+def test_keep_past_hours_ignores_yesterdays_plan():
+    previous = Day(valid=True, year=2026, mon=10, day=8)
+    previous.hour[4].charge = Charge.CHARGING_ON_GRID
+    today = Day(valid=True, year=2026, mon=10, day=9)
+    today.hour[4].charge = Charge.CHARGING_ON_PV
+
+    _keep_past_hours(today, previous, cur_hour=6, stored_actions={})
+
+    assert today.hour[4].charge == Charge.CHARGING_ON_PV
+
+
+# --- _mark_finished_grid_charge ---------------------------------------------
+
+GRID = int(Charge.CHARGING_ON_GRID)
+PV = int(Charge.CHARGING_ON_PV)
+
+
+def test_finished_grid_charge_spends_the_daily_budget():
+    """Regression: 04:00 grid-charged, 05:00 didn't continue -- the budget
+    stayed unspent, so a second grid charge could follow later that day."""
+    today = Day(valid=True, year=2026, mon=10, day=9)
+
+    _mark_finished_grid_charge(today, {4: GRID, 5: PV}, cur_hour=6)
+
+    assert today.charge_on_grid_used is True
+    assert today.index_charge == 4
+
+
+def test_grid_charge_in_the_previous_hour_may_still_continue():
+    today = Day(valid=True, year=2026, mon=10, day=9)
+
+    _mark_finished_grid_charge(today, {4: GRID}, cur_hour=5)
+
+    assert today.charge_on_grid_used is False
+
+
+def test_multi_hour_grid_charge_counts_once_it_stops():
+    today = Day(valid=True, year=2026, mon=10, day=9)
+
+    _mark_finished_grid_charge(today, {2: GRID, 3: GRID}, cur_hour=4)
+    assert today.charge_on_grid_used is False  # 03:00 may continue at 04:00
+
+    _mark_finished_grid_charge(today, {2: GRID, 3: GRID, 4: PV}, cur_hour=5)
+    assert today.charge_on_grid_used is True
+    assert today.index_charge == 3
+
+
+def test_no_grid_charge_leaves_the_budget_alone():
+    today = Day(valid=True, year=2026, mon=10, day=9)
+
+    _mark_finished_grid_charge(today, {1: PV, 2: PV}, cur_hour=6)
+
+    assert today.charge_on_grid_used is False
+
 
 # --- merge_day_sources -------------------------------------------------------
 
@@ -207,6 +315,17 @@ def test_sample_hour_accumulates_solar_and_grid_to_battery_averages():
     assert hour.five_min_count == 2
     assert hour.real_solar_to_battery == round((300.0 + 0.0) / 2)
     assert hour.real_grid_to_battery == round((200.0 + 800.0) / 2)
+
+
+def test_sample_hour_keeps_the_ev_chargers_share_apart():
+    hour = Hour()
+    # house = 0 solar + 4000 grid + 0 battery = 4000 W, 3000 W of it the EV
+    _sample_hour(hour, 0.0, 0.0, 4000.0, 0.0, 0.02, 0.01, 21.0, ev_power=3000.0)
+    # an EV reading above the whole house load is capped at it
+    _sample_hour(hour, 0.0, 0.0, 1000.0, 0.0, 0.02, 0.01, 21.0, ev_power=1500.0)
+
+    assert hour.real_house_load == 2500
+    assert hour.real_ev_load == round((3000 + 1000) / 2)
 
 
 def test_sample_hour_return_vat_percentage_overrides_export_side_real_result():
@@ -1406,8 +1525,55 @@ async def test_schedule_coordinator_uses_peak_load_sensor_when_higher_than_slide
         await coordinator._async_update_data()
 
     config = mock_run_scheduler.call_args.args[4]
-    # 8.5 kW sensor > 6.0 kW slider -> the sensor's value (in Wh) wins.
-    assert config.max_grid_load == pytest.approx(8500.0)
+    # 8.5 kW sensor > 6.0 kW slider -> the sensor wins, in whole kW (8 kW).
+    assert config.max_grid_load == pytest.approx(8000.0)
+
+
+@pytest.mark.parametrize(
+    ("once_per_day", "previous_hour_charge", "expected_used"),
+    [
+        (False, Charge.CHARGING_ON_GRID, True),  # an ongoing session may continue
+        (False, Charge.NO_DISCHARGING, False),
+        (True, Charge.NO_DISCHARGING, False),
+    ],
+)
+async def test_schedule_coordinator_follows_the_once_per_day_switch(
+    hass: HomeAssistant, freezer, once_per_day, previous_hour_charge, expected_used
+):
+    freezer.move_to("2024-01-15 14:00:00")
+    entry = MockConfigEntry(domain=DOMAIN, options={CONF_PERSIST_DAILY_CHARGE_LIMIT: once_per_day})
+    entry.add_to_hass(hass)
+    now = dt_util.now()  # local time: the test timezone isn't UTC
+    storage.store_hour_action(
+        get_db_path(hass, entry),
+        now.year,
+        now.month,
+        now.day,
+        now.hour - 1,
+        int(previous_hour_charge),
+    )
+
+    modbus_coordinator = SimpleNamespace(data={"battery_soc": 55.0})
+    prices_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+    solar_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+    coordinator = AlphaEssLocalScheduleCoordinator(
+        hass, entry, modbus_coordinator, prices_coordinator, solar_coordinator
+    )
+
+    with (
+        patch(
+            "custom_components.alpha_ess_local.storage.retrieve_mean_data",
+            MagicMock(return_value=None),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.run_scheduler", MagicMock()
+        ) as mock_run_scheduler,
+    ):
+        await coordinator._async_update_data()
+
+    _soc, _hour, today, _tomorrow, config = mock_run_scheduler.call_args.args
+    assert config.multiple_per_day is (not once_per_day)
+    assert today.charge_on_grid_used is expected_used
 
 
 async def test_schedule_coordinator_ignores_peak_load_sensor_when_lower_than_slider(
@@ -1637,6 +1803,30 @@ async def test_dispatch_coordinator_control_enabled_writes_when_changed(
 
     client.async_set_max_feed_into_grid.assert_awaited_once_with(decision.target_feed_in_percentage)
     client.async_set_dispatch_param.assert_awaited_once_with(decision.param)
+
+
+@pytest.mark.parametrize(
+    ("slider_kw", "peak_kw", "expected_w"),
+    [
+        (6.0, "11.407", 11000),  # the month's peak, rounded down to whole kW
+        (6.0, "4.047", 6000),  # peak under the slider: the slider
+        (6.0, "6.9", 6000),  # 6.9 -> 6 kW, not above the slider
+        (6.0, None, 6000),  # no peak reading: the slider
+    ],
+)
+async def test_effective_max_grid_load_uses_whole_kw_of_the_months_peak(
+    hass: HomeAssistant, slider_kw, peak_kw, expected_w
+):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={CONF_PEAK_LOAD_THIS_MONTH_ENTITY: "sensor.peak_this_month"},
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(_register_soc_number(hass, entry, "max_grid_load"), str(slider_kw))
+    if peak_kw is not None:
+        hass.states.async_set("sensor.peak_this_month", peak_kw, {"unit_of_measurement": "kW"})
+
+    assert _effective_max_grid_load_wh(hass, entry) == expected_w
 
 
 async def test_dispatch_coordinator_throttles_charging_on_grid_by_effective_max_grid_load(

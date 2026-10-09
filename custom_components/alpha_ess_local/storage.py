@@ -123,6 +123,33 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # The planned action (data.Charge) each hour was run with, so the
+    # panel's plan keeps showing what past hours did -- also after a restart.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS hour_action (
+            year INTEGER, mon INTEGER, day INTEGER, hour INTEGER,
+            charge INTEGER,
+            PRIMARY KEY (year, mon, day, hour)
+        )
+        """
+    )
+    # The decision log behind each hour_action row: why the planner chose
+    # that schedule, and what the dispatch then sent to the inverter.
+    for column, sql_type in (
+        ("selection", "TEXT"),
+        ("opt_extra", "REAL"),
+        ("min_profit", "REAL"),
+        ("price", "REAL"),
+        ("cutoff_soc", "INTEGER"),
+        ("mode", "TEXT"),
+        ("power", "INTEGER"),
+        ("power_max", "INTEGER"),
+        ("written", "INTEGER"),
+        ("manual", "INTEGER"),
+        ("multiple", "INTEGER"),
+    ):
+        _add_column_if_missing(conn, "hour_action", column, sql_type)
     # Migrated in after the fact — solar/grid-to-battery attribution
     # (energy-balance estimate, see orchestrator._solar_to_battery).
     _add_column_if_missing(conn, "hour_data", "solar_to_battery", "REAL DEFAULT 0")
@@ -160,6 +187,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # The EV charger's share of house_load: left out of the learned house
+    # load (it only charges on solar surplus, so it's no load to plan for).
+    _add_column_if_missing(conn, "five_min_data", "ev_power", "REAL DEFAULT 0")
+    _add_column_if_missing(conn, "hour_data", "ev_load", "REAL DEFAULT 0")
 
 
 def store_hour_data(
@@ -209,8 +240,8 @@ def store_hour_data(
                 (year, mon, day, hour, house_load, solar_power_roof,
                  estimated_solar_power_raw, extra_pv_power, feed_in, price, use_fee, return_fee,
                  solar_to_battery, grid_to_battery, vat_percentage,
-                 battery_charge_energy, battery_discharge_energy)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 battery_charge_energy, battery_discharge_energy, ev_load)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (year, mon, day, hour) DO UPDATE SET
                 house_load=excluded.house_load,
                 solar_power_roof=excluded.solar_power_roof,
@@ -224,7 +255,8 @@ def store_hour_data(
                 grid_to_battery=excluded.grid_to_battery,
                 vat_percentage=excluded.vat_percentage,
                 battery_charge_energy=excluded.battery_charge_energy,
-                battery_discharge_energy=excluded.battery_discharge_energy
+                battery_discharge_energy=excluded.battery_discharge_energy,
+                ev_load=excluded.ev_load
             """,
             (
                 day.year,
@@ -244,6 +276,7 @@ def store_hour_data(
                 vat_percentage,
                 the_hour.real_battery_charge_energy,
                 the_hour.real_battery_discharge_energy,
+                the_hour.real_ev_load,
             ),
         )
         conn.commit()
@@ -697,8 +730,8 @@ def store_five_min_sample(
             """
             INSERT OR REPLACE INTO five_min_data
                 (year, mon, day, hour, slot, solar_power_roof, extra_pv_power,
-                 total_active_power, battery_power, house_load)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 total_active_power, battery_power, house_load, ev_power)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 year,
@@ -711,6 +744,7 @@ def store_five_min_sample(
                 sample.total_active_power,
                 sample.battery_power,
                 sample.real_house_load,
+                sample.ev_power,
             ),
         )
         conn.execute(
@@ -729,20 +763,21 @@ def retrieve_day_five_min(
         rows = conn.execute(
             """
             SELECT hour, slot, solar_power_roof, extra_pv_power, total_active_power,
-                   battery_power, house_load
+                   battery_power, house_load, ev_power
             FROM five_min_data
             WHERE year = ? AND mon = ? AND day = ?
             """,
             (year, mon, day),
         ).fetchall()
     samples: dict[int, dict[int, FiveMin]] = {}
-    for hour, slot, roof, extra, grid, battery, house in rows:
+    for hour, slot, roof, extra, grid, battery, house, ev in rows:
         samples.setdefault(hour, {})[slot] = FiveMin(
             real_solar_power_roof=roof,
             real_extra_pv_power=extra,
             total_active_power=grid,
             battery_power=battery,
             real_house_load=house,
+            ev_power=ev or 0.0,
         )
     return samples
 
@@ -756,6 +791,128 @@ def delete_hour_progress(db_path: str, year: int, mon: int, day: int, hour: int)
             (year, mon, day, hour),
         )
         conn.commit()
+
+
+def store_hour_action(
+    db_path: str,
+    year: int,
+    mon: int,
+    day: int,
+    hour: int,
+    charge: int,
+    *,
+    selection: str = "",
+    opt_extra: float | None = None,
+    min_profit: float | None = None,
+    price: float | None = None,
+    cutoff_soc: int | None = None,
+    multiple_per_day: bool = False,
+) -> None:
+    """Record the planned action (data.Charge) for an hour and why it was
+    chosen; the latest run wins. Leaves the dispatch columns alone.
+    `multiple_per_day`: several grid-charge sessions allowed, each one
+    already charged `min_profit` inside `opt_extra`."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO hour_action
+                (year, mon, day, hour, charge, selection, opt_extra, min_profit, price,
+                 cutoff_soc, multiple)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (year, mon, day, hour) DO UPDATE SET
+                charge=excluded.charge, selection=excluded.selection,
+                opt_extra=excluded.opt_extra, min_profit=excluded.min_profit,
+                price=excluded.price, cutoff_soc=excluded.cutoff_soc,
+                multiple=excluded.multiple
+            """,
+            (
+                year,
+                mon,
+                day,
+                hour,
+                charge,
+                selection,
+                opt_extra,
+                min_profit,
+                price,
+                cutoff_soc,
+                int(multiple_per_day),
+            ),
+        )
+        conn.commit()
+
+
+def store_hour_dispatch(
+    db_path: str,
+    year: int,
+    mon: int,
+    day: int,
+    hour: int,
+    *,
+    mode: str,
+    power: int,
+    power_max: int,
+    written: bool,
+    manual: bool,
+) -> None:
+    """Record what the dispatch sent (or, control off, would have sent) to
+    the inverter in an hour: its mode(s), first and largest power."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO hour_action (year, mon, day, hour, mode, power, power_max, written, manual)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (year, mon, day, hour) DO UPDATE SET
+                mode=excluded.mode, power=excluded.power, power_max=excluded.power_max,
+                written=excluded.written, manual=excluded.manual
+            """,
+            (year, mon, day, hour, mode, power, power_max, int(written), int(manual)),
+        )
+        conn.commit()
+
+
+def retrieve_day_decisions(db_path: str, year: int, mon: int, day: int) -> list[dict]:
+    """One day's decision log, per hour (hours without a record are left out)."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT hour, charge, selection, opt_extra, min_profit, price, cutoff_soc,
+                   mode, power, power_max, written, manual, multiple
+            FROM hour_action WHERE year = ? AND mon = ? AND day = ? ORDER BY hour
+            """,
+            (year, mon, day),
+        ).fetchall()
+    keys = (
+        "hour",
+        "charge",
+        "selection",
+        "opt_extra",
+        "min_profit",
+        "price",
+        "cutoff_soc",
+        "mode",
+        "power",
+        "power_max",
+        "written",
+        "manual",
+        "multiple",
+    )
+    return [dict(zip(keys, row, strict=True)) for row in rows]
+
+
+def retrieve_day_actions(db_path: str, year: int, mon: int, day: int) -> dict[int, int]:
+    """The recorded action per hour for one day: {hour: data.Charge value}."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            "SELECT hour, charge FROM hour_action"
+            " WHERE year = ? AND mon = ? AND day = ? AND charge IS NOT NULL",
+            (year, mon, day),
+        ).fetchall()
+    return dict(rows)
 
 
 def store_dispatch_daily_state(
@@ -1138,9 +1295,11 @@ def calculate_and_store_mean_data(db_path: str, pv_power: float) -> bool:
     mean/sigma and solar-regression correction from all stored history."""
     with _connection(db_path) as conn:
         _ensure_schema(conn)
+        # The house load without the EV charger: it only charges on solar
+        # surplus, so it's no load the battery planning has to cover.
         rows = conn.execute(
-            "SELECT year, mon, day, hour, house_load, solar_power_roof, estimated_solar_power_raw "
-            "FROM hour_data"
+            "SELECT year, mon, day, hour, MAX(0, house_load - COALESCE(ev_load, 0)),"
+            " solar_power_roof, estimated_solar_power_raw FROM hour_data"
         ).fetchall()
 
     if not rows:
