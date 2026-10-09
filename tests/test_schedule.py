@@ -622,6 +622,35 @@ def test_multiple_per_day_charges_at_most_one_battery_a_day():
     assert _charged_wh(today, config) <= 10000 + 10000 / BUDGET_STEPS
 
 
+def test_multiple_per_day_keeps_the_budget_for_the_days_sun():
+    """Solar goes before the grid: the night charge leaves the budget the
+    midday surplus (~3.9 kWh) needs, and that surplus still goes in."""
+    today = _flat_day(price=0.60, solar=0, house_load=500)
+    today.hour[2].price = 0.05
+    for h in (11, 12):
+        today.hour[h].estimated_solar_power = 2500
+        today.hour[h].price = 0.02  # a cheap sunny midday: storing beats feeding in
+    config = _config(multiple_per_day=True, discharge_enabled=False)
+    _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
+
+    assert today.hour[2].charge == Charge.CHARGING_ON_GRID
+    grid_wh = (today.hour[3].estimated_start_soc - today.hour[2].estimated_start_soc) * 100
+    assert grid_wh <= 10000 - 4000
+    assert today.hour[13].estimated_start_soc > today.hour[11].estimated_start_soc
+
+
+def test_multiple_per_day_never_refuses_solar_for_the_budget():
+    today = _flat_day(price=0.60, solar=0, house_load=500)
+    for h in (11, 12):
+        today.hour[h].estimated_solar_power = 2500
+        today.hour[h].price = 0.02  # a cheap sunny midday: storing beats feeding in
+    today.charged_today_wh = 10000  # the day's battery already went in
+    config = _config(multiple_per_day=True, discharge_enabled=False)
+    _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
+
+    assert today.hour[13].estimated_start_soc > today.hour[11].estimated_start_soc
+
+
 def test_multiple_per_day_counts_what_was_charged_earlier_today():
     today = _two_valley_day()
     today.charged_today_wh = 10000  # a full battery went in already

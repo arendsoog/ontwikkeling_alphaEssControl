@@ -1732,7 +1732,7 @@ class AlphaEssPanel extends HTMLElement {
           option: "persist_daily_charge_limit",
           icon: "mdi:numeric-1-circle-outline",
           label: "Netladen/ontladen maximaal 1x per dag",
-          info: "Aan: hooguit één keer per dag laden vanaf het net en één keer ontladen naar het net, ook na een herstart. Uit: laden vanaf het net in de goedkoopste uren, ook verspreid over de dag, zolang er per dag samen (zon en net) hooguit één volle batterij in gaat en het plan meer dan de minimale dagelijkse winst oplevert; de batterij ontlaadt dan alleen voor eigen verbruik, niet naar het net. In beide standen laadt hij alleen zoveel als het oplevert, bijvoorbeeld tot de volgende goedkope uren.",
+          info: "Aan: hooguit één keer per dag laden vanaf het net en één keer ontladen naar het net, ook na een herstart. Uit: laden vanaf het net in de goedkoopste uren, ook verspreid over de dag, zolang er per dag samen (zon en net) hooguit één volle batterij in gaat (de zon gaat voor: netladen laat ruimte voor het verwachte zonne-overschot van die dag) en het plan meer dan de minimale dagelijkse winst oplevert; de batterij ontlaadt dan alleen voor eigen verbruik, niet naar het net. In beide standen laadt hij alleen zoveel als het oplevert, bijvoorbeeld tot de volgende goedkope uren.",
         }),
         toggle({
           entity: "discharge_enabled",

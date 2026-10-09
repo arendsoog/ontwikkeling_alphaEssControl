@@ -375,6 +375,8 @@ GRID_LEVELS = 10
 # With several charges a day (multiple_per_day): what goes into the battery
 # in a day, solar and grid together, is at most one full battery -- one
 # cycle a day for the battery's life. Counted in 1/BUDGET_STEPS units.
+# Solar goes first: it is never refused for the budget, and a grid charge
+# must leave the solar surplus still expected later that day.
 BUDGET_STEPS = 20
 _SOC_PER_BUDGET_STEP = SOC_STEPS // BUDGET_STEPS
 
@@ -470,8 +472,18 @@ class _Plan:
         # anyway). Built backwards: room(h) = max(0, net(h+1) + room(h+1)),
         # 0 for the last hour of a day.
         room = 0.0
+        # Solar goes before the grid: in the daily budget (multiple_per_day)
+        # a grid charge must leave the solar surplus still expected later
+        # that day, in budget units -- solar charging itself is never
+        # refused for the budget.
+        budget_step_wh = config.usable_battery_capacity / BUDGET_STEPS
+        solar_after = 0.0
+        self.solar_units_after: dict[int, int] = {}
         for hour in range(self.end_hour - 1, start_hour - 1, -1):
             the_hour = self.hour_at(hour)
+            self.solar_units_after[hour] = (
+                math.ceil(solar_after / budget_step_wh - 1e-9) if budget_step_wh else 0
+            )
             grid_allowed = not (grid_blocked_today and hour < MAX_HOURS)
             table = _hour_options(the_hour, config, room, step_wh, grid_allowed)
             self.options[hour] = table
@@ -481,6 +493,10 @@ class _Plan:
                 later = self._solve_hour(hour, table, later)
             # The hour before a day's first is another day's last: no room.
             room = 0.0 if hour % 24 == 0 else max(0.0, _net_solar_wh(the_hour, config) + room)
+            if hour % 24 == 0:
+                solar_after = 0.0
+            else:
+                solar_after += max(0.0, _net_solar_wh(the_hour, config))
 
     def hour_at(self, hour: int) -> Hour:
         if hour >= MAX_HOURS:
@@ -492,8 +508,11 @@ class _Plan:
         unless `reset` is False), or None when the state rules it out."""
         if self.multiple:
             nxt = state + option.budget_units
-            if nxt > BUDGET_STEPS:
-                return None
+            if option.action == Charge.CHARGING_ON_GRID:
+                if nxt + self.solar_units_after[hour] > BUDGET_STEPS:
+                    return None
+            else:
+                nxt = min(nxt, BUDGET_STEPS)  # solar is never refused
         else:
             charge_spent, discharge_spent = state >> 1, state & 1
             if option.action == Charge.CHARGING_ON_GRID:
