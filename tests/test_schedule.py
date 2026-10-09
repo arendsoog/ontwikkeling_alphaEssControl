@@ -639,6 +639,36 @@ def test_multiple_per_day_keeps_the_budget_for_the_days_sun():
     assert today.hour[13].estimated_start_soc > today.hour[11].estimated_start_soc
 
 
+def test_multiple_per_day_no_grid_charge_on_a_day_the_sun_fills_the_battery():
+    """Dear hours before a sunny midday that alone fills the 10 kWh
+    battery: buying from the grid for them beats an empty battery, but the
+    sun goes first -- no grid charge that day."""
+    today = _flat_day(price=0.60, solar=0, house_load=500)
+    today.hour[2].price = 0.05
+    for h in range(10, 16):
+        today.hour[h].estimated_solar_power = 3000
+        today.hour[h].price = 0.02
+    config = _config(multiple_per_day=True, discharge_enabled=False)
+    _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
+
+    assert all(hour.charge != Charge.CHARGING_ON_GRID for hour in today.hour)
+
+
+@pytest.mark.parametrize(("discharge_enabled", "stores"), [(False, True), (True, False)])
+def test_solar_is_fed_in_only_when_discharging_to_the_grid_is_allowed(discharge_enabled, stores):
+    """At a flat 0.60 feeding in beats storing (round-trip losses), but
+    with discharging to the grid off the surplus must go into the battery."""
+    today = _flat_day(price=0.60, solar=0, house_load=500)
+    for h in (11, 12):
+        today.hour[h].estimated_solar_power = 2500
+    config = _config(discharge_enabled=discharge_enabled)
+    _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
+
+    assert today.hour[11].charge != Charge.NO_CHARGING or discharge_enabled
+    rose = today.hour[13].estimated_start_soc > today.hour[11].estimated_start_soc
+    assert rose is stores
+
+
 def test_multiple_per_day_never_refuses_solar_for_the_budget():
     today = _flat_day(price=0.60, solar=0, house_load=500)
     for h in (11, 12):

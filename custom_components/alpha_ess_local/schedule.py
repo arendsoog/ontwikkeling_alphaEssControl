@@ -284,7 +284,15 @@ def _evaluate_hour_action(
         if earning == Earning.EARNING_ON_USE:
             profit = house_load * -price_use
         elif feed_in > 0.0:
-            profit = feed_in * price_return
+            # Feeding solar in while the battery could take it is only for
+            # when discharging to the grid is allowed; otherwise the
+            # surplus goes into the battery first (CHARGING_ON_PV).
+            if (
+                config.discharge_enabled
+                or min(feed_in, CHARGE_LIMIT) < MIN_CHARGE_POWER
+                or max_soc_eou - soc_wh < battery_capacity / SOC_STEPS
+            ):
+                profit = feed_in * price_return
         else:
             available_soc = soc_wh - min_soc
             discharge_ac = min(-feed_in, DISCHARGE_LIMIT)

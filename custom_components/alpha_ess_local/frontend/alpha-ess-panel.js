@@ -1738,7 +1738,7 @@ class AlphaEssPanel extends HTMLElement {
           entity: "discharge_enabled",
           icon: "mdi:battery-arrow-down-outline",
           label: "Ontladen naar het net via schema toestaan",
-          info: "Mag de planning één keer per dag op een duur uur extra ontladen (ook naar het net), als het schema de minimale dagelijkse winst haalt. Huisverbruik uit de batterij gaat altijd door.",
+          info: "Mag de planning één keer per dag op een duur uur extra ontladen (ook naar het net), als het schema de minimale dagelijkse winst haalt. Ook zon terugleveren terwijl de batterij nog ruimte heeft mag alleen als dit aan staat; anders gaat het zonne-overschot eerst de batterij in. Huisverbruik uit de batterij gaat altijd door.",
         }),
       ].join("") || '<div class="empty">Status laden…</div>'
     );
