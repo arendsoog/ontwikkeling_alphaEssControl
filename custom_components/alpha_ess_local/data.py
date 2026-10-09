@@ -128,6 +128,11 @@ class Day:
     charge_on_grid_used: bool = False
     discharge_used: bool = False
     hour: list = field(default_factory=lambda: [Hour() for _ in range(MAX_HOURS)])
+    # Which schedule set_schedule chose and why (schedule.SELECTION_*), and
+    # the optimised schedule's extra result over the baseline (EUR, None if
+    # not computed) -- recorded per hour for the panel's decision log.
+    selection: str = ""
+    opt_extra: float | None = None
     # Which source a price/solar Day was read from (prices.PRICE_SOURCES /
     # solar.SOLAR_SOURCES key), "" if none -- shown in the panel.
     source: str = ""

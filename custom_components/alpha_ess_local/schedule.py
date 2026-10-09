@@ -590,6 +590,15 @@ def _finalise_schedule(today: Day, tomorrow: Day, config: ScheduleConfig) -> Non
             hour.cutoff_soc = round(target_index / SOC_STEPS * SOC_MAX_BATTERY)
 
 
+# Why set_schedule ended up with the schedule it chose (Day.selection).
+SELECTION_NO_BASELINE = "no_baseline"  # no valid schedule at all: charge from PV
+SELECTION_BUDGET_USED = "budget_used"  # grid charge and discharge both done today
+SELECTION_NO_OPTION = "no_option"  # no action beat the baseline in any scenario
+SELECTION_BELOW_MINIMUM = "below_minimum"  # optimum's extra < daily minimum profit
+SELECTION_OPTIMUM = "optimum"
+SELECTION_OPTIMUM_FAILED = "optimum_failed"  # optimum couldn't be computed
+
+
 def _assign_day(dest: Day, src: Day) -> None:
     """Port of C's struct assignment (`*today = todayOpt;`): copies all of
     src's fields into dest in place, preserving dest's identity."""
@@ -647,6 +656,7 @@ def set_schedule(
         for hour in today.hour[cur_hour:]:
             hour.charge = Charge.CHARGING_ON_PV
             hour.estimated_result = 0.0
+        today.selection, today.opt_extra = SELECTION_NO_BASELINE, None
         _finalise_schedule(today, tomorrow, config)
         return
 
@@ -655,6 +665,7 @@ def set_schedule(
         _select_baseline(
             today, tomorrow, today_bl, tomorrow_bl, real_charge_on_grid_used, real_discharge_used
         )
+        today.selection, today.opt_extra = SELECTION_BUDGET_USED, None
         _finalise_schedule(today, tomorrow, config)
         return
 
@@ -703,6 +714,7 @@ def set_schedule(
         _select_baseline(
             today, tomorrow, today_bl, tomorrow_bl, real_charge_on_grid_used, real_discharge_used
         )
+        today.selection, today.opt_extra = SELECTION_NO_OPTION, None
         _finalise_schedule(today, tomorrow, config)
         return
 
@@ -742,6 +754,7 @@ def set_schedule(
                 real_charge_on_grid_used,
                 real_discharge_used,
             )
+            today.selection = SELECTION_BELOW_MINIMUM
         else:
             LOGGER.debug(
                 "set_schedule: optimum extra %.2f >= minimum %.2f, selecting optimum (%s)",
@@ -751,10 +764,13 @@ def set_schedule(
             )
             _assign_day(today, today_opt)
             _assign_day(tomorrow, tomorrow_opt)
+            today.selection = SELECTION_OPTIMUM
+        today.opt_extra = opt_extra
     else:
         LOGGER.debug("set_schedule: final schedule failed, selecting baseline")
         _select_baseline(
             today, tomorrow, today_bl, tomorrow_bl, real_charge_on_grid_used, real_discharge_used
         )
+        today.selection, today.opt_extra = SELECTION_OPTIMUM_FAILED, None
 
     _finalise_schedule(today, tomorrow, config)

@@ -23,6 +23,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
+from functools import partial
 from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntry
@@ -1235,14 +1236,22 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             run_scheduler, cur_soc, now.hour, today, tomorrow, config
         )
         if today.valid:
+            cur = today.hour[now.hour]
             await self.hass.async_add_executor_job(
-                storage.store_hour_action,
-                db_path,
-                today_date.year,
-                today_date.month,
-                today_date.day,
-                now.hour,
-                int(today.hour[now.hour].charge),
+                partial(
+                    storage.store_hour_action,
+                    db_path,
+                    today_date.year,
+                    today_date.month,
+                    today_date.day,
+                    now.hour,
+                    int(cur.charge),
+                    selection=today.selection,
+                    opt_extra=today.opt_extra,
+                    min_profit=config.daily_min_profit,
+                    price=cur.price if cur.valid else None,
+                    cutoff_soc=cur.cutoff_soc,
+                )
             )
 
         return {"today": today, "tomorrow": tomorrow}
@@ -1366,6 +1375,8 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         self._last_charge_on_grid_used = False
         self._last_discharge_used = False
         self._last_spent_hours: tuple[int | None, int | None] = (None, None)
+        # This hour's dispatch as last stored for the decision log.
+        self._dispatch_record: dict | None = None
         # Grid-charge regulation state: the charge power currently being
         # regulated (None when not charging from the grid) and when it was
         # last written, so a correction only uses a grid reading taken after
@@ -1460,6 +1471,49 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
                 self._grid_charge_power = new
 
         return replace(decision, param=replace(decision.param, power=self._grid_charge_power))
+
+    async def _record_dispatch(
+        self,
+        db_path: str,
+        now: datetime,
+        decision: dispatch.DispatchDecision,
+        control_enabled: bool,
+    ) -> None:
+        """Keep this hour's dispatch for the decision log: the mode(s) in
+        order, the first power and the largest one. Stored only when that
+        changes, not every cycle."""
+        key = (now.date(), now.hour)
+        mode = dispatch.set_dispatch_msg(decision.param.mode)
+        power = decision.param.power
+        record = self._dispatch_record
+        if record is None or record["key"] != key:
+            record = {"key": key, "modes": [mode], "power": power, "power_max": power}
+        else:
+            record = dict(record, modes=list(record["modes"]))
+            if record["modes"][-1] != mode:
+                record["modes"].append(mode)
+            if abs(power) > abs(record["power_max"]):
+                record["power_max"] = power
+        record["written"] = control_enabled
+        record["manual"] = self._manual_override is not None
+        if record == self._dispatch_record:
+            return
+        self._dispatch_record = record
+        await self.hass.async_add_executor_job(
+            partial(
+                storage.store_hour_dispatch,
+                db_path,
+                now.year,
+                now.month,
+                now.day,
+                now.hour,
+                mode=" → ".join(record["modes"]),
+                power=record["power"],
+                power_max=record["power_max"],
+                written=record["written"],
+                manual=record["manual"],
+            )
+        )
 
     def set_manual_override(self, charge: Charge | None, cutoff_soc: int | None = None) -> None:
         """Force the next decision to use `charge` (and optionally its
@@ -1628,6 +1682,7 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         decision = self._regulate_grid_charge(
             decision, hour, dispatch_config, control_enabled, hour_start, now
         )
+        await self._record_dispatch(db_path, now, decision, control_enabled)
 
         already_set = (
             not hour_start

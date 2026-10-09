@@ -24,6 +24,7 @@ from custom_components.alpha_ess_local.storage import (
     calculate_and_store_mean_data,
     delete_hour_progress,
     retrieve_day_actions,
+    retrieve_day_decisions,
     retrieve_day_five_min,
     retrieve_day_hours,
     retrieve_day_savings,
@@ -35,6 +36,7 @@ from custom_components.alpha_ess_local.storage import (
     store_five_min_sample,
     store_hour_action,
     store_hour_data,
+    store_hour_dispatch,
     store_hour_progress,
 )
 
@@ -586,6 +588,57 @@ def test_hour_actions_latest_wins_per_hour_and_stay_per_day(tmp_path):
 
     assert retrieve_day_actions(db_path, 2026, 10, 9) == {4: 3, 5: 2}
     assert retrieve_day_actions(db_path, 2026, 10, 10) == {}
+
+
+def test_decision_log_combines_planner_and_dispatch(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    store_hour_dispatch(
+        db_path, 2026, 10, 9, 4, mode="Normal", power=0, power_max=0, written=True, manual=False
+    )  # dispatch can come before the planner's record for the hour
+    store_hour_action(
+        db_path,
+        2026,
+        10,
+        9,
+        4,
+        3,
+        selection="optimum",
+        opt_extra=0.62,
+        min_profit=0.4,
+        price=0.074,
+        cutoff_soc=350,
+    )
+    store_hour_dispatch(
+        db_path,
+        2026,
+        10,
+        9,
+        4,
+        mode="Normal → State of Charge control",
+        power=5077,
+        power_max=10484,
+        written=True,
+        manual=False,
+    )
+
+    (row,) = retrieve_day_decisions(db_path, 2026, 10, 9)
+
+    assert row["hour"] == 4
+    assert row["charge"] == 3
+    assert (row["selection"], row["opt_extra"], row["min_profit"]) == ("optimum", 0.62, 0.4)
+    assert (row["price"], row["cutoff_soc"]) == (0.074, 350)
+    assert row["mode"] == "Normal → State of Charge control"
+    assert (row["power"], row["power_max"], row["written"], row["manual"]) == (5077, 10484, 1, 0)
+
+
+def test_dispatch_only_hour_has_no_action(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    store_hour_dispatch(
+        db_path, 2026, 10, 9, 5, mode="Normal", power=0, power_max=0, written=False, manual=False
+    )
+
+    assert retrieve_day_actions(db_path, 2026, 10, 9) == {}
+    assert retrieve_day_decisions(db_path, 2026, 10, 9)[0]["charge"] is None
 
 
 # --- pure helper functions --------------------------------------------------

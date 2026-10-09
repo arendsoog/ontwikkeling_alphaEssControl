@@ -134,6 +134,21 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # The decision log behind each hour_action row: why the planner chose
+    # that schedule, and what the dispatch then sent to the inverter.
+    for column, sql_type in (
+        ("selection", "TEXT"),
+        ("opt_extra", "REAL"),
+        ("min_profit", "REAL"),
+        ("price", "REAL"),
+        ("cutoff_soc", "INTEGER"),
+        ("mode", "TEXT"),
+        ("power", "INTEGER"),
+        ("power_max", "INTEGER"),
+        ("written", "INTEGER"),
+        ("manual", "INTEGER"),
+    ):
+        _add_column_if_missing(conn, "hour_action", column, sql_type)
     # Migrated in after the fact — solar/grid-to-battery attribution
     # (energy-balance estimate, see orchestrator._solar_to_battery).
     _add_column_if_missing(conn, "hour_data", "solar_to_battery", "REAL DEFAULT 0")
@@ -769,18 +784,96 @@ def delete_hour_progress(db_path: str, year: int, mon: int, day: int, hour: int)
         conn.commit()
 
 
-def store_hour_action(db_path: str, year: int, mon: int, day: int, hour: int, charge: int) -> None:
-    """Record the planned action (data.Charge) for an hour; the latest wins."""
+def store_hour_action(
+    db_path: str,
+    year: int,
+    mon: int,
+    day: int,
+    hour: int,
+    charge: int,
+    *,
+    selection: str = "",
+    opt_extra: float | None = None,
+    min_profit: float | None = None,
+    price: float | None = None,
+    cutoff_soc: int | None = None,
+) -> None:
+    """Record the planned action (data.Charge) for an hour and why it was
+    chosen; the latest run wins. Leaves the dispatch columns alone."""
     with _connection(db_path) as conn:
         _ensure_schema(conn)
         conn.execute(
             """
-            INSERT INTO hour_action (year, mon, day, hour, charge) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (year, mon, day, hour) DO UPDATE SET charge=excluded.charge
+            INSERT INTO hour_action
+                (year, mon, day, hour, charge, selection, opt_extra, min_profit, price, cutoff_soc)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (year, mon, day, hour) DO UPDATE SET
+                charge=excluded.charge, selection=excluded.selection,
+                opt_extra=excluded.opt_extra, min_profit=excluded.min_profit,
+                price=excluded.price, cutoff_soc=excluded.cutoff_soc
             """,
-            (year, mon, day, hour, charge),
+            (year, mon, day, hour, charge, selection, opt_extra, min_profit, price, cutoff_soc),
         )
         conn.commit()
+
+
+def store_hour_dispatch(
+    db_path: str,
+    year: int,
+    mon: int,
+    day: int,
+    hour: int,
+    *,
+    mode: str,
+    power: int,
+    power_max: int,
+    written: bool,
+    manual: bool,
+) -> None:
+    """Record what the dispatch sent (or, control off, would have sent) to
+    the inverter in an hour: its mode(s), first and largest power."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO hour_action (year, mon, day, hour, mode, power, power_max, written, manual)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (year, mon, day, hour) DO UPDATE SET
+                mode=excluded.mode, power=excluded.power, power_max=excluded.power_max,
+                written=excluded.written, manual=excluded.manual
+            """,
+            (year, mon, day, hour, mode, power, power_max, int(written), int(manual)),
+        )
+        conn.commit()
+
+
+def retrieve_day_decisions(db_path: str, year: int, mon: int, day: int) -> list[dict]:
+    """One day's decision log, per hour (hours without a record are left out)."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT hour, charge, selection, opt_extra, min_profit, price, cutoff_soc,
+                   mode, power, power_max, written, manual
+            FROM hour_action WHERE year = ? AND mon = ? AND day = ? ORDER BY hour
+            """,
+            (year, mon, day),
+        ).fetchall()
+    keys = (
+        "hour",
+        "charge",
+        "selection",
+        "opt_extra",
+        "min_profit",
+        "price",
+        "cutoff_soc",
+        "mode",
+        "power",
+        "power_max",
+        "written",
+        "manual",
+    )
+    return [dict(zip(keys, row, strict=True)) for row in rows]
 
 
 def retrieve_day_actions(db_path: str, year: int, mon: int, day: int) -> dict[int, int]:
@@ -788,7 +881,8 @@ def retrieve_day_actions(db_path: str, year: int, mon: int, day: int) -> dict[in
     with _connection(db_path) as conn:
         _ensure_schema(conn)
         rows = conn.execute(
-            "SELECT hour, charge FROM hour_action WHERE year = ? AND mon = ? AND day = ?",
+            "SELECT hour, charge FROM hour_action"
+            " WHERE year = ? AND mon = ? AND day = ? AND charge IS NOT NULL",
             (year, mon, day),
         ).fetchall()
     return dict(rows)

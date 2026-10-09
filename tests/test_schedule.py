@@ -12,6 +12,8 @@ import pytest
 
 from custom_components.alpha_ess_local.data import Charge, Day, Earning
 from custom_components.alpha_ess_local.schedule import (
+    SELECTION_BELOW_MINIMUM,
+    SELECTION_BUDGET_USED,
     SOC_STEPS,
     ScheduleConfig,
     _apply_scenario_to_day,
@@ -734,6 +736,8 @@ def test_set_schedule_falls_back_to_baseline_when_charge_and_discharge_already_u
     # charging remain possible for the rest of the day.
     for hour in today.hour[22:]:
         assert hour.charge in (Charge.CHARGING_ON_PV, Charge.NO_CHARGING, Charge.NO_DISCHARGING)
+    assert today.selection == SELECTION_BUDGET_USED
+    assert today.opt_extra is None
 
 
 def test_set_schedule_selecting_baseline_does_not_mark_budget_as_used():
@@ -763,6 +767,10 @@ def test_set_schedule_selecting_baseline_does_not_mark_budget_as_used():
 
     assert today.charge_on_grid_used is False
     assert today.discharge_used is False
+    # recorded for the decision log: below the minimum, with its extra
+    assert today.selection == SELECTION_BELOW_MINIMUM
+    assert today.opt_extra is not None
+    assert today.opt_extra < 1000.0
 
 
 def test_set_schedule_falls_back_to_charge_pv_when_baseline_is_unreachable():
