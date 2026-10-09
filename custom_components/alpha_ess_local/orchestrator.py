@@ -16,6 +16,7 @@ phase (see the plan doc).
 
 from __future__ import annotations
 
+import copy
 import glob
 import math
 import os
@@ -221,6 +222,28 @@ def merge_day_sources(
     day.index_highest = price_day.index_highest
     day.earning_on_return_all_day = price_day.earning_on_return_all_day
     return day
+
+
+def _planning_tomorrow(today: Day, tomorrow: Day, price_tomorrow: Day) -> Day:
+    """Tomorrow as the planner sees it.
+
+    Before tomorrow's prices are out (early afternoon) its hours carry only
+    solar and the calculated house load, at price 0 -- so what the battery
+    still holds at midnight for the calculated use after it looked worth
+    next to nothing, and nothing was charged for it. Until the real prices
+    come, each such hour is priced like the same hour today. Returns a copy
+    then (the estimated prices aren't shown as tomorrow's)."""
+    if not today.valid or all(hour.valid for hour in price_tomorrow.hour):
+        return tomorrow
+    planned = copy.deepcopy(tomorrow)
+    for hour, price_hour, ref in zip(planned.hour, price_tomorrow.hour, today.hour, strict=True):
+        if price_hour.valid or not ref.valid:
+            continue
+        hour.valid = True
+        hour.price = ref.price
+        hour.earning = ref.earning
+    planned.valid = True
+    return planned
 
 
 def _solar_to_battery(sample: FiveMin) -> float:
@@ -1271,7 +1294,12 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         cur_soc = round(modbus_data.get("battery_soc", 0) * SOC_MAX_BATTERY / 100)
 
         await self.hass.async_add_executor_job(
-            run_scheduler, cur_soc, now.hour, today, tomorrow, config
+            run_scheduler,
+            cur_soc,
+            now.hour,
+            today,
+            _planning_tomorrow(today, tomorrow, self._prices_coordinator.data["tomorrow"]),
+            config,
         )
         if today.valid:
             cur = today.hour[now.hour]

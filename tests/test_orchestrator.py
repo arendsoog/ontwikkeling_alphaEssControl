@@ -57,6 +57,7 @@ from custom_components.alpha_ess_local.orchestrator import (
     _keep_past_hours,
     _mark_finished_grid_charge,
     _number_entity_value,
+    _planning_tomorrow,
     _sample_hour,
     _sma_pv_power,
     _solar_to_battery,
@@ -260,6 +261,40 @@ def test_merge_day_sources_defaults_house_load_when_no_history():
 
     for hour in merged.hour:
         assert hour.estimated_house_load == MIN_SIGMA_WH
+
+
+def _priced_day(price):
+    day = Day(valid=True)
+    for hour in day.hour:
+        hour.valid = True
+        hour.price = price
+    return day
+
+
+def test_planning_tomorrow_prices_unknown_hours_like_today():
+    """Before tomorrow's prices are out, its hours (solar and calculated
+    load only) are priced like the same hour today -- on a copy."""
+    today = _priced_day(0.30)
+    today.hour[2].price = 0.12
+    solar_only = Day(valid=True)
+    solar_only.hour[2].valid = True
+    solar_only.hour[2].estimated_house_load = 800
+    tomorrow = merge_day_sources(_date(), Day(), solar_only, None)
+    tomorrow.hour[2].estimated_house_load = 800
+
+    planned = _planning_tomorrow(today, tomorrow, Day())
+
+    assert planned is not tomorrow
+    assert planned.valid and all(hour.valid for hour in planned.hour)
+    assert planned.hour[2].price == 0.12
+    assert planned.hour[2].estimated_house_load == 800
+    assert planned.hour[5].price == 0.30
+    assert tomorrow.hour[5].price == 0.0  # what the panel shows stays untouched
+
+
+def test_planning_tomorrow_keeps_real_prices():
+    tomorrow = _priced_day(0.05)
+    assert _planning_tomorrow(_priced_day(0.30), tomorrow, _priced_day(0.05)) is tomorrow
 
 
 def test_merge_day_sources_sets_year_mon_day_from_target_date():
@@ -1402,7 +1437,12 @@ async def test_schedule_coordinator_calls_scheduler_with_current_soc_and_hour(
     assert args[0] == 550  # 55.0% -> native 0-1000 scale
     assert args[1] == current_hour
     assert args[2] is data["today"]
-    assert args[3] is data["tomorrow"]
+    # No prices for tomorrow yet: the planner gets a copy priced like today.
+    assert (args[3].year, args[3].mon, args[3].day) == (
+        data["tomorrow"].year,
+        data["tomorrow"].mon,
+        data["tomorrow"].day,
+    )
 
 
 async def test_schedule_coordinator_converts_soc_bound_options_to_native_scale(
