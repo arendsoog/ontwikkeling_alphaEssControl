@@ -103,7 +103,7 @@
                 "description": "Gedrag van de planner en de hoofdschakelaar voor batterijsturing.",
                 "data": {
                     "allow_provider_control_hours": "Uren waarin de leverancier het schema mag overschrijven",
-                    "persist_daily_charge_limit": "Netladen/ontladen maximaal 1x per dag (uit: meerdere laadbeurten, samen hooguit één volle batterij per dag, alleen ontladen voor eigen verbruik)",
+                    "persist_daily_charge_limit": "Netladen/ontladen maximaal 1x per dag (uit: meerdere laadbeurten in goedkope uren, alleen ontladen voor eigen verbruik)",
                     "control_enabled": "Batterijsturing inschakelen (schrijft echte commando's naar de omvormer)"
                 }
             }

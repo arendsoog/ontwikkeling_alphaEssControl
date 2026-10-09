@@ -133,10 +133,6 @@ class Day:
     index_discharge: int = -1
     charge_on_grid_used: bool = False
     discharge_used: bool = False
-    # What already went into the battery today before the planning run (Wh,
-    # solar and grid) -- counts against the daily limit of one full battery
-    # when several charges a day are allowed (schedule.BUDGET_STEPS).
-    charged_today_wh: float = 0.0
     hour: list = field(default_factory=lambda: [Hour() for _ in range(MAX_HOURS)])
     # Which schedule set_schedule chose and why (schedule.SELECTION_*), and
     # the optimised schedule's extra result over the baseline (EUR, None if

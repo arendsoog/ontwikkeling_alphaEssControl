@@ -117,12 +117,11 @@ class ScheduleConfig:
     # vat_percentage to both sides", same as prior behavior.
     return_vat_percentage: float | None = None
     # False: one grid charge and one grid discharge per day at most (the
-    # original's limit). True: grid charging in any hours of the day, as
-    # long as all that goes into the battery that day (solar included, see
-    # Day.charged_today_wh) stays within one full battery (BUDGET_STEPS),
-    # and no discharging to the grid -- the battery only supplies the house.
-    # Either way the plan must beat the no-grid-charge baseline by
-    # daily_min_profit.
+    # original's limit), and no grid charge on a day the sun fills the
+    # battery (CYCLE_STEPS). True: grid charging in any (separate) hours of
+    # the day, leaving room for that day's sun, and no discharging to the
+    # grid -- the battery only supplies the house. Either way the plan must
+    # beat the no-grid-charge baseline by daily_min_profit.
     multiple_per_day: bool = False
     # Learned solar uncertainty: per lead-time group (storage.LEAD_BUCKETS),
     # the factor real/forecast solar at each scenario's percentile
@@ -380,26 +379,26 @@ def _evaluate_hour_action(
 # solar room and the grid-load cap), so it charges what is worth it -- e.g.
 # until the next cheap hours, today or tomorrow -- rather than always full.
 GRID_LEVELS = 10
-# With several charges a day (multiple_per_day): what goes into the battery
-# in a day, solar and grid together, is at most one full battery -- one
-# cycle a day for the battery's life. Counted in 1/BUDGET_STEPS units.
-# Solar goes first: it is never refused for the budget, and a grid charge
-# must leave the solar surplus still expected later that day.
-BUDGET_STEPS = 20
-_SOC_PER_BUDGET_STEP = SOC_STEPS // BUDGET_STEPS
+# Once per day (not multiple_per_day): one battery cycle a day, and solar
+# goes first -- a grid charge plus the solar surplus still expected later
+# that day must fit in one full battery, so on a day the sun fills it there
+# is no grid charge (the 48-hour plan charges the evening before instead).
+# Counted in 1/CYCLE_STEPS units of the battery.
+CYCLE_STEPS = 20
+_SOC_PER_CYCLE_STEP = SOC_STEPS // CYCLE_STEPS
 
 
 @dataclass(frozen=True)
 class _Option:
     """One way to spend an hour from a given SOC: the action, the SOC index
     it ends at, its profit, whether a grid-charge session is finished
-    (once-per-day mode) and the daily-budget units it charges."""
+    (once-per-day mode) and the CYCLE_STEPS units it charges."""
 
     action: Charge
     next_soc_index: int
     profit: float
     charge_done: bool
-    budget_units: int
+    cycle_units: int
 
 
 def _hour_options(
@@ -432,7 +431,7 @@ def _hour_options(
                     continue  # a higher level the caps cut back to the same SOC
                 seen.add(ns)
                 charged = max(0, ns - si)
-                units = round(charged / _SOC_PER_BUDGET_STEP)
+                units = round(charged / _SOC_PER_CYCLE_STEP)
                 options.append(_Option(action, ns, profit, done, units))
         table.append(options)
     return table
@@ -443,8 +442,8 @@ class _Plan:
     to the end of the known days.
 
     The state is the once-per-day bookkeeping -- (grid charge spent,
-    discharge spent) -- or, with multiple_per_day, the daily budget units
-    already charged. Both reset at midnight. The hours after start_hour are
+    discharge spent), reset at midnight; with multiple_per_day there is
+    none. The hours after start_hour are
     solved once; the start hour itself is kept open so every forced action
     (see set_schedule) is evaluated against the same table.
     """
@@ -461,7 +460,7 @@ class _Plan:
         self.today = today
         self.tomorrow = tomorrow
         self.multiple = config.multiple_per_day
-        self.n_states = BUDGET_STEPS + 1 if self.multiple else 4
+        self.n_states = 1 if self.multiple else 4
         self.end_hour = 0
         if today.valid:
             self.end_hour = MAX_HOURS
@@ -480,17 +479,18 @@ class _Plan:
         # anyway). Built backwards: room(h) = max(0, net(h+1) + room(h+1)),
         # 0 for the last hour of a day.
         room = 0.0
-        # Solar goes before the grid: in the daily budget (multiple_per_day)
-        # a grid charge must leave the solar surplus still expected later
-        # that day, in budget units -- solar charging itself is never
-        # refused for the budget.
-        budget_step_wh = config.usable_battery_capacity / BUDGET_STEPS
+        solar_span_wh = (
+            (config.max_soc_negative_price - SOC_MIN) / SOC_MAX_BATTERY
+        ) * config.usable_battery_capacity
+        # The solar surplus still expected later that same day, in
+        # CYCLE_STEPS units -- see CYCLE_STEPS.
+        cycle_step_wh = config.usable_battery_capacity / CYCLE_STEPS
         solar_after = 0.0
         self.solar_units_after: dict[int, int] = {}
         for hour in range(self.end_hour - 1, start_hour - 1, -1):
             the_hour = self.hour_at(hour)
             self.solar_units_after[hour] = (
-                math.ceil(solar_after / budget_step_wh - 1e-9) if budget_step_wh else 0
+                math.ceil(solar_after / cycle_step_wh - 1e-9) if cycle_step_wh else 0
             )
             grid_allowed = not (grid_blocked_today and hour < MAX_HOURS)
             table = _hour_options(the_hour, config, room, step_wh, grid_allowed)
@@ -500,7 +500,14 @@ class _Plan:
             else:
                 later = self._solve_hour(hour, table, later)
             # The hour before a day's first is another day's last: no room.
-            room = 0.0 if hour % 24 == 0 else max(0.0, _net_solar_wh(the_hour, config) + room)
+            # Never more than the battery's span: a surplus beyond that
+            # can't be stored anyway, so it mustn't block charging for the
+            # hours the house drains the battery before the sun.
+            room = (
+                0.0
+                if hour % 24 == 0
+                else min(solar_span_wh, max(0.0, _net_solar_wh(the_hour, config) + room))
+            )
             if hour % 24 == 0:
                 solar_after = 0.0
             else:
@@ -515,21 +522,13 @@ class _Plan:
         """The state after `option` (fresh again after a day's last hour,
         unless `reset` is False), or None when the state rules it out."""
         if self.multiple:
-            nxt = state + option.budget_units
-            if option.action == Charge.CHARGING_ON_GRID:
-                if nxt + self.solar_units_after[hour] > BUDGET_STEPS:
-                    return None
-            else:
-                nxt = min(nxt, BUDGET_STEPS)  # solar is never refused
+            nxt = 0
         else:
             charge_spent, discharge_spent = state >> 1, state & 1
             if option.action == Charge.CHARGING_ON_GRID:
                 # Solar goes first here too: no grid charge the sun can do
                 # (the morning before it is then charged for the day before).
-                if (
-                    charge_spent
-                    or option.budget_units + self.solar_units_after[hour] > BUDGET_STEPS
-                ):
+                if charge_spent or option.cycle_units + self.solar_units_after[hour] > CYCLE_STEPS:
                     return None
                 nxt = (int(option.charge_done) << 1) | discharge_spent
             elif option.action == Charge.CHARGING_DISCHARGE:
@@ -614,12 +613,10 @@ class _Plan:
 
 
 def _start_state(
-    config: ScheduleConfig, today: Day, charge_used_before: bool, discharge_used_before: bool
+    config: ScheduleConfig, charge_used_before: bool, discharge_used_before: bool
 ) -> int:
     if config.multiple_per_day:
-        step_wh = config.usable_battery_capacity / BUDGET_STEPS
-        units = round(today.charged_today_wh / step_wh) if step_wh else 0
-        return int(_clamp(units, 0, BUDGET_STEPS))
+        return 0
     return (int(charge_used_before) << 1) | int(discharge_used_before)
 
 
@@ -643,7 +640,7 @@ def _calculate_best_schedule(
     charging at all for the rest of today (the multiple_per_day baseline).
     """
     plan = _Plan(start_hour, today, tomorrow, config, grid_blocked_today)
-    state = _start_state(config, today, charge_used_before, discharge_used_before)
+    state = _start_state(config, charge_used_before, discharge_used_before)
     dp_result = plan.result(cur_soc_index, state, forced_action)
     if dp_result == float("-inf"):
         return False, dp_result
@@ -893,7 +890,7 @@ def set_schedule(
 
         # One DP per scenario; each forced first action is weighed against it.
         plan = _Plan(cur_hour, today_sc, tomorrow_sc, config)
-        state = _start_state(config, today, today.charge_on_grid_used, today.discharge_used)
+        state = _start_state(config, today.charge_on_grid_used, today.discharge_used)
         for action in Charge:
             result = plan.result(cur_soc_index, state, action)
             if result > -100000:

@@ -28,7 +28,6 @@ from custom_components.alpha_ess_local.storage import (
     lead_bucket,
     learn_forecast_spread,
     retrieve_day_actions,
-    retrieve_day_battery_charge_wh,
     retrieve_day_decisions,
     retrieve_day_five_min,
     retrieve_day_forecast,
@@ -52,28 +51,6 @@ from custom_components.alpha_ess_local.storage import (
 def _valid_day(year=2024, mon=1, day=15) -> Day:
     day_obj = Day(year=year, mon=mon, day=day, valid=True)
     return day_obj
-
-
-# --- retrieve_day_battery_charge_wh -----------------------------------------
-
-
-def test_day_battery_charge_sums_past_hours_and_this_hour_so_far(tmp_path):
-    db_path = str(tmp_path / "test.db")
-    day = _valid_day()
-    for h, charged in ((3, 4000), (4, 2500), (9, 999)):
-        day.hour[h].valid = True
-        day.hour[h].real_house_load = 500
-        day.hour[h].real_battery_charge_energy = charged
-        store_hour_data(db_path, day, h, use_fee=0.02, return_fee=0.01, vat_percentage=21)
-    store_hour_progress(
-        db_path, 2024, 1, 15, 9, 500, 0, 0, 0, 3, 0, 0, battery_charge_energy_at_hour_start=100.0
-    )
-
-    # Hours 3 and 4 before 9; hour 9 itself so far: 100.8 - 100.0 kWh.
-    assert retrieve_day_battery_charge_wh(db_path, 2024, 1, 15, 9, 100.8) == pytest.approx(7300)
-    # Without the live register reading, only the finished hours.
-    assert retrieve_day_battery_charge_wh(db_path, 2024, 1, 15, 9, None) == 6500
-    assert retrieve_day_battery_charge_wh(db_path, 2024, 1, 16, 9, 100.8) == 0
 
 
 # --- store_hour_data -------------------------------------------------------
@@ -659,27 +636,14 @@ def test_decision_log_combines_planner_and_dispatch(tmp_path):
     assert (row["price"], row["cutoff_soc"]) == (0.074, 350)
     assert row["mode"] == "Normal → State of Charge control"
     assert (row["power"], row["power_max"], row["written"], row["manual"]) == (5077, 10484, 1, 0)
-    assert (row["charged_today"], row["day_budget"]) == (None, None)
 
 
-def test_decision_log_keeps_the_days_charge_budget(tmp_path):
+def test_decision_log_notes_estimated_tomorrow_prices(tmp_path):
     db_path = str(tmp_path / "test.db")
-    store_hour_action(
-        db_path,
-        2026,
-        10,
-        9,
-        15,
-        3,
-        multiple_per_day=True,
-        charged_today=4600.0,
-        day_budget=22000.0,
-        tomorrow_estimated=True,
-    )
+    store_hour_action(db_path, 2026, 10, 9, 15, 3, multiple_per_day=True, tomorrow_estimated=True)
 
     (row,) = retrieve_day_decisions(db_path, 2026, 10, 9)
-    assert (row["multiple"], row["charged_today"], row["day_budget"]) == (1, 4600.0, 22000.0)
-    assert row["tomorrow_estimated"] == 1
+    assert (row["multiple"], row["tomorrow_estimated"]) == (1, 1)
 
 
 def test_dispatch_only_hour_has_no_action(tmp_path):

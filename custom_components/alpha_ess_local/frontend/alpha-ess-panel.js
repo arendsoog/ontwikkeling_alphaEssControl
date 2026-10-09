@@ -1732,7 +1732,7 @@ class AlphaEssPanel extends HTMLElement {
           option: "persist_daily_charge_limit",
           icon: "mdi:numeric-1-circle-outline",
           label: "Netladen/ontladen maximaal 1x per dag",
-          info: "Aan: hooguit één keer per dag laden vanaf het net en één keer ontladen naar het net, ook na een herstart. Uit: laden vanaf het net in de goedkoopste uren, ook verspreid over de dag, zolang er per dag samen (zon en net) hooguit één volle batterij in gaat (de zon gaat voor: netladen laat ruimte voor het verwachte zonne-overschot van die dag) en het plan meer dan de minimale dagelijkse winst oplevert; de batterij ontlaadt dan alleen voor eigen verbruik, niet naar het net. In beide standen laadt hij alleen zoveel als het oplevert, bijvoorbeeld tot de volgende goedkope uren.",
+          info: "Aan: hooguit één keer per dag laden vanaf het net en één keer ontladen naar het net, ook na een herstart; vult de zon de batterij die dag, dan niet laden vanaf het net (dan laadt hij de avond ervoor bij). Uit: laden vanaf het net in de goedkoopste uren, ook verspreid over de dag, met ruimte voor het verwachte zonne-overschot van die dag, zolang het plan meer dan de minimale dagelijkse winst oplevert; de batterij ontlaadt dan alleen voor eigen verbruik, niet naar het net. In beide standen laadt hij alleen zoveel als het oplevert, bijvoorbeeld tot de volgende goedkope uren.",
         }),
         toggle({
           entity: "discharge_enabled",
@@ -2238,11 +2238,6 @@ class AlphaEssPanel extends HTMLElement {
       .map((d) => {
         const info = ACTIONS[d.action] || { label: d.action || "–", color: "transparent" };
         const target = (d.action === "Charge-grid" || d.action === "Discharge") && d.cutoff_soc ? `${fmtNum(d.cutoff_soc / 10, 0)}%` : "–";
-        // Several charges a day: how much of the day's one battery had gone in.
-        const charged =
-          d.day_budget && d.charged_today !== null && d.charged_today !== undefined
-            ? `${fmtNum(d.charged_today / 1000, 1)} / ${fmtNum(d.day_budget / 1000, 0)} kWh`
-            : "–";
         return `
           <tr>
             <td>${pad2(d.hour)}:00</td>
@@ -2251,7 +2246,6 @@ class AlphaEssPanel extends HTMLElement {
             <td>${why(d)}${d.tomorrow_estimated ? ' <span class="muted">(prijzen morgen geschat als vandaag)</span>' : ""}</td>
             <td>${inverter(d)}</td>
             <td>${target}</td>
-            <td>${charged}</td>
           </tr>`;
       })
       .join("");
@@ -2259,7 +2253,7 @@ class AlphaEssPanel extends HTMLElement {
       <div class="section-title">Beslissingen per uur</div>
       <div class="table-scroll">
         <table class="hist-table decision-table">
-          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th><th>Vandaag geladen</th></tr></thead>
+          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;

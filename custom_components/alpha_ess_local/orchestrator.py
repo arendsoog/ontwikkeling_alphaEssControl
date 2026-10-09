@@ -1202,20 +1202,10 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         if once_per_day:
             _mark_finished_grid_charge(today, stored_actions, now.hour)
         else:
-            # Several charges a day, together at most one full battery:
-            # what went in today so far counts against that; no grid
-            # discharge.
+            # Several charges a day, in any hours: no once-per-day flags,
+            # no grid discharge.
             today.charge_on_grid_used = False
             today.discharge_used = False
-            today.charged_today_wh = await self.hass.async_add_executor_job(
-                storage.retrieve_day_battery_charge_wh,
-                db_path,
-                today_date.year,
-                today_date.month,
-                today_date.day,
-                now.hour,
-                (self._modbus_coordinator.data or {}).get("battery_total_energy_charge"),
-            )
         # Before the planner, so its own bookkeeping (index_charge, the
         # once-per-day result comparison) sees what the past hours did.
         _keep_past_hours(today, (self.data or {}).get("today"), now.hour, stored_actions)
@@ -1314,8 +1304,6 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                     opt_extra=today.opt_extra,
                     min_profit=config.daily_min_profit,
                     multiple_per_day=config.multiple_per_day,
-                    charged_today=today.charged_today_wh if config.multiple_per_day else None,
-                    day_budget=config.usable_battery_capacity if config.multiple_per_day else None,
                     tomorrow_estimated=planning_tomorrow is not tomorrow,
                     price=cur.price if cur.valid else None,
                     cutoff_soc=cur.cutoff_soc,

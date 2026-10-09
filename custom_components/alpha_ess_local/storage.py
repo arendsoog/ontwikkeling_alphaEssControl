@@ -148,10 +148,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ("written", "INTEGER"),
         ("manual", "INTEGER"),
         ("multiple", "INTEGER"),
-        # Several charges a day: what had gone into the battery that day
-        # when the hour was planned, and the day's limit (Wh).
-        ("charged_today", "REAL"),
-        ("day_budget", "REAL"),
         # 1: tomorrow's prices weren't out yet, planned as priced like today.
         ("tomorrow_estimated", "INTEGER"),
     ):
@@ -740,34 +736,6 @@ def retrieve_hour_progress(
     )
 
 
-def retrieve_day_battery_charge_wh(
-    db_path: str, year: int, mon: int, day: int, hour: int, charge_total_kwh: float | None
-) -> float:
-    """What went into the battery today before now, in Wh: the stored hours
-    before `hour`, plus this hour so far (the inverter's cumulative charge
-    register `charge_total_kwh` against its value at the hour's start)."""
-    with _connection(db_path) as conn:
-        _ensure_schema(conn)
-        (done,) = conn.execute(
-            """
-            SELECT COALESCE(SUM(battery_charge_energy), 0) FROM hour_data
-            WHERE year = ? AND mon = ? AND day = ? AND hour < ?
-            """,
-            (year, mon, day, hour),
-        ).fetchone()
-        row = conn.execute(
-            """
-            SELECT battery_charge_energy_at_hour_start FROM hour_progress
-            WHERE year = ? AND mon = ? AND day = ? AND hour = ?
-            """,
-            (year, mon, day, hour),
-        ).fetchone()
-    this_hour = 0.0
-    if row is not None and row[0] is not None and charge_total_kwh is not None:
-        this_hour = max(0.0, (charge_total_kwh - row[0]) * 1000)
-    return float(done) + this_hour
-
-
 FIVE_MIN_KEEP_DAYS = 3
 
 
@@ -1032,14 +1000,11 @@ def store_hour_action(
     price: float | None = None,
     cutoff_soc: int | None = None,
     multiple_per_day: bool = False,
-    charged_today: float | None = None,
-    day_budget: float | None = None,
     tomorrow_estimated: bool = False,
 ) -> None:
     """Record the planned action (data.Charge) for an hour and why it was
     chosen; the latest run wins. Leaves the dispatch columns alone.
-    `multiple_per_day`: several charges a day allowed, together within
-    `day_budget` Wh, of which `charged_today` Wh had gone in already.
+    `multiple_per_day`: several grid charges a day allowed.
     `tomorrow_estimated`: tomorrow's prices weren't out, so the plan took
     them as today's."""
     with _connection(db_path) as conn:
@@ -1048,14 +1013,13 @@ def store_hour_action(
             """
             INSERT INTO hour_action
                 (year, mon, day, hour, charge, selection, opt_extra, min_profit, price,
-                 cutoff_soc, multiple, charged_today, day_budget, tomorrow_estimated)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 cutoff_soc, multiple, tomorrow_estimated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (year, mon, day, hour) DO UPDATE SET
                 charge=excluded.charge, selection=excluded.selection,
                 opt_extra=excluded.opt_extra, min_profit=excluded.min_profit,
                 price=excluded.price, cutoff_soc=excluded.cutoff_soc,
-                multiple=excluded.multiple, charged_today=excluded.charged_today,
-                day_budget=excluded.day_budget,
+                multiple=excluded.multiple,
                 tomorrow_estimated=excluded.tomorrow_estimated
             """,
             (
@@ -1070,8 +1034,6 @@ def store_hour_action(
                 price,
                 cutoff_soc,
                 int(multiple_per_day),
-                charged_today,
-                day_budget,
                 int(tomorrow_estimated),
             ),
         )
@@ -1116,7 +1078,7 @@ def retrieve_day_decisions(db_path: str, year: int, mon: int, day: int) -> list[
             """
             SELECT hour, charge, selection, opt_extra, min_profit, price, cutoff_soc,
                    mode, power, power_max, written, manual, multiple,
-                   charged_today, day_budget, tomorrow_estimated
+                   tomorrow_estimated
             FROM hour_action WHERE year = ? AND mon = ? AND day = ? ORDER BY hour
             """,
             (year, mon, day),
@@ -1135,8 +1097,6 @@ def retrieve_day_decisions(db_path: str, year: int, mon: int, day: int) -> list[
         "written",
         "manual",
         "multiple",
-        "charged_today",
-        "day_budget",
         "tomorrow_estimated",
     )
     return [dict(zip(keys, row, strict=True)) for row in rows]
