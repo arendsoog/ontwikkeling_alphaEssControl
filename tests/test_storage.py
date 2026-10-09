@@ -28,6 +28,7 @@ from custom_components.alpha_ess_local.storage import (
     lead_bucket,
     learn_forecast_spread,
     retrieve_day_actions,
+    retrieve_day_battery_charge_wh,
     retrieve_day_decisions,
     retrieve_day_five_min,
     retrieve_day_forecast,
@@ -51,6 +52,28 @@ from custom_components.alpha_ess_local.storage import (
 def _valid_day(year=2024, mon=1, day=15) -> Day:
     day_obj = Day(year=year, mon=mon, day=day, valid=True)
     return day_obj
+
+
+# --- retrieve_day_battery_charge_wh -----------------------------------------
+
+
+def test_day_battery_charge_sums_past_hours_and_this_hour_so_far(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    day = _valid_day()
+    for h, charged in ((3, 4000), (4, 2500), (9, 999)):
+        day.hour[h].valid = True
+        day.hour[h].real_house_load = 500
+        day.hour[h].real_battery_charge_energy = charged
+        store_hour_data(db_path, day, h, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+    store_hour_progress(
+        db_path, 2024, 1, 15, 9, 500, 0, 0, 0, 3, 0, 0, battery_charge_energy_at_hour_start=100.0
+    )
+
+    # Hours 3 and 4 before 9; hour 9 itself so far: 100.8 - 100.0 kWh.
+    assert retrieve_day_battery_charge_wh(db_path, 2024, 1, 15, 9, 100.8) == pytest.approx(7300)
+    # Without the live register reading, only the finished hours.
+    assert retrieve_day_battery_charge_wh(db_path, 2024, 1, 15, 9, None) == 6500
+    assert retrieve_day_battery_charge_wh(db_path, 2024, 1, 16, 9, 100.8) == 0
 
 
 # --- store_hour_data -------------------------------------------------------

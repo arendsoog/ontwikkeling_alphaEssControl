@@ -1732,7 +1732,7 @@ class AlphaEssPanel extends HTMLElement {
           option: "persist_daily_charge_limit",
           icon: "mdi:numeric-1-circle-outline",
           label: "Netladen/ontladen maximaal 1x per dag",
-          info: "Aan: hooguit één keer per dag laden vanaf het net en één keer ontladen naar het net, ook na een herstart. Uit: meerdere laadbeurten per dag, elk alleen als die meer dan de minimale dagelijkse winst oplevert; de batterij ontlaadt dan alleen voor eigen verbruik, niet naar het net.",
+          info: "Aan: hooguit één keer per dag laden vanaf het net en één keer ontladen naar het net, ook na een herstart. Uit: laden vanaf het net in de goedkoopste uren, ook verspreid over de dag, zolang er per dag samen (zon en net) hooguit één volle batterij in gaat en het plan meer dan de minimale dagelijkse winst oplevert; de batterij ontlaadt dan alleen voor eigen verbruik, niet naar het net. In beide standen laadt hij alleen zoveel als het oplevert, bijvoorbeeld tot de volgende goedkope uren.",
         }),
         toggle({
           entity: "discharge_enabled",
@@ -2204,16 +2204,13 @@ class AlphaEssPanel extends HTMLElement {
       const extra = d.opt_extra === null || d.opt_extra === undefined ? null : d.opt_extra;
       const min = d.min_profit === null || d.min_profit === undefined ? null : d.min_profit;
       const known = extra !== null && min !== null;
-      // Several sessions a day: each new grid charge already paid the
-      // minimum profit, so the optimum only had to beat the baseline.
-      const perSession = d.multiple && known ? ` (na ${eur(min)} per laadbeurt)` : "";
       switch (d.selection) {
         case "optimum":
           if (!known) return "Geoptimaliseerd";
-          return d.multiple ? `Geoptimaliseerd: +${eur(extra)}${perSession}` : `Geoptimaliseerd: +${eur(extra)} ≥ ${eur(min)}`;
+          return `Geoptimaliseerd: +${eur(extra)} ≥ ${eur(min)}`;
         case "below_minimum":
           if (!known) return "Basisschema: onder de minimale winst";
-          return d.multiple ? `Basisschema: +${eur(extra)}${perSession}` : `Basisschema: +${eur(extra)} < ${eur(min)}`;
+          return `Basisschema: +${eur(extra)} < ${eur(min)}`;
         case "budget_used":
           return "Basisschema: laden én ontladen vandaag al gedaan";
         case "no_option":

@@ -734,6 +734,34 @@ def retrieve_hour_progress(
     )
 
 
+def retrieve_day_battery_charge_wh(
+    db_path: str, year: int, mon: int, day: int, hour: int, charge_total_kwh: float | None
+) -> float:
+    """What went into the battery today before now, in Wh: the stored hours
+    before `hour`, plus this hour so far (the inverter's cumulative charge
+    register `charge_total_kwh` against its value at the hour's start)."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        (done,) = conn.execute(
+            """
+            SELECT COALESCE(SUM(battery_charge_energy), 0) FROM hour_data
+            WHERE year = ? AND mon = ? AND day = ? AND hour < ?
+            """,
+            (year, mon, day, hour),
+        ).fetchone()
+        row = conn.execute(
+            """
+            SELECT battery_charge_energy_at_hour_start FROM hour_progress
+            WHERE year = ? AND mon = ? AND day = ? AND hour = ?
+            """,
+            (year, mon, day, hour),
+        ).fetchone()
+    this_hour = 0.0
+    if row is not None and row[0] is not None and charge_total_kwh is not None:
+        this_hour = max(0.0, (charge_total_kwh - row[0]) * 1000)
+    return float(done) + this_hour
+
+
 FIVE_MIN_KEEP_DAYS = 3
 
 

@@ -103,7 +103,7 @@
                 "description": "Scheduler behaviour and the master switch for battery control.",
                 "data": {
                     "allow_provider_control_hours": "Hours where the provider may override the schedule",
-                    "persist_daily_charge_limit": "Grid charge/discharge at most once a day (off: several charges, each above the minimum profit; discharge for own use only)",
+                    "persist_daily_charge_limit": "Grid charge/discharge at most once a day (off: several charges, together at most one full battery a day; discharge for own use only)",
                     "control_enabled": "Enable battery control (writes real commands to the inverter)"
                 }
             }

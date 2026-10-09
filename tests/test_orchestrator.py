@@ -1565,7 +1565,8 @@ async def test_schedule_coordinator_uses_peak_load_sensor_when_higher_than_slide
 @pytest.mark.parametrize(
     ("once_per_day", "previous_hour_charge", "expected_used"),
     [
-        (False, Charge.CHARGING_ON_GRID, True),  # an ongoing session may continue
+        # Several charges a day: no once-per-day flag, the daily budget rules.
+        (False, Charge.CHARGING_ON_GRID, False),
         (False, Charge.NO_DISCHARGING, False),
         (True, Charge.NO_DISCHARGING, False),
     ],

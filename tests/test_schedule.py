@@ -12,6 +12,7 @@ import pytest
 
 from custom_components.alpha_ess_local.data import Charge, Day, Earning
 from custom_components.alpha_ess_local.schedule import (
+    BUDGET_STEPS,
     SCENARIOS,
     SELECTION_BELOW_MINIMUM,
     SELECTION_BUDGET_USED,
@@ -592,14 +593,76 @@ def test_multiple_per_day_charges_in_each_cheap_valley():
     assert any(today.hour[h].charge == Charge.CHARGING_ON_GRID for h in range(10, 14))
 
 
-def test_multiple_per_day_skips_a_session_worth_less_than_the_minimum():
+def test_multiple_per_day_skips_charging_worth_less_than_the_minimum():
     today = _two_valley_day(cheap=0.05, dear=0.60)
-    # Each session's gain is a few euros at most -- a 1000 EUR minimum
-    # per session makes none of them worth it.
+    # The day's gain is a few euros at most -- a 1000 EUR minimum makes
+    # grid charging not worth it.
     config = _config(multiple_per_day=True, daily_min_profit=1000.0)
+    set_schedule(100, 0, today, Day(valid=False), config)
+
+    assert _sessions(today) == 0
+    assert today.selection == SELECTION_BELOW_MINIMUM
+
+
+def _charged_wh(day, config):
+    """What the plan puts into the battery over the day, in Wh."""
+    step = config.usable_battery_capacity / SOC_STEPS
+    socs = [hour.estimated_start_soc for hour in day.hour]
+    return sum(max(0, b - a) for a, b in zip(socs, socs[1:], strict=False)) * step
+
+
+def test_multiple_per_day_charges_at_most_one_battery_a_day():
+    # Both valleys want a full battery (16 kWh of dear hours to cover),
+    # but a day may only take one battery (10 kWh) in, solar included.
+    today = _two_valley_day()
+    config = _config(multiple_per_day=True)
+    _calculate_best_schedule(0, 0, today, Day(valid=False), False, False, None, config)
+
+    assert _sessions(today) == 2
+    assert _charged_wh(today, config) <= 10000 + 10000 / BUDGET_STEPS
+
+
+def test_multiple_per_day_counts_what_was_charged_earlier_today():
+    today = _two_valley_day()
+    today.charged_today_wh = 10000  # a full battery went in already
+    config = _config(multiple_per_day=True)
     _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
 
     assert _sessions(today) == 0
+
+
+def test_multiple_per_day_charges_in_separate_cheap_hours():
+    """The cheapest hours needn't be next to each other: with a low grid
+    cap the charge spreads over 01 and 03, skipping the dearer 02."""
+    today = _flat_day(price=0.60, solar=0, house_load=250)
+    today.hour[1].price = 0.05
+    today.hour[2].price = 0.30
+    today.hour[3].price = 0.05
+    config = _config(multiple_per_day=True, max_grid_load=4000)
+    _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
+
+    assert today.hour[1].charge == Charge.CHARGING_ON_GRID
+    assert today.hour[3].charge == Charge.CHARGING_ON_GRID
+    assert today.hour[2].charge != Charge.CHARGING_ON_GRID
+
+
+@pytest.mark.parametrize("multiple", [False, True])
+def test_grid_charge_takes_only_what_lasts_until_the_next_cheap_hours(multiple):
+    """Cheap at 02, dear 03-08 (6 x 1 kWh), as cheap again from 09:
+    charging more than the dear hours need only carries energy into hours
+    just as cheap, losing the round trip on it."""
+    today = _flat_day(price=0.05, solar=0, house_load=1000)
+    for h in range(3, 9):
+        today.hour[h].price = 0.60
+    config = _config(multiple_per_day=multiple, discharge_enabled=False)
+    _calculate_best_schedule(10, 2, today, Day(valid=False), False, False, None, config)
+
+    assert today.hour[2].charge == Charge.CHARGING_ON_GRID
+    charged = (today.hour[3].estimated_start_soc - today.hour[2].estimated_start_soc) * 100
+    # 6 kWh from the battery is ~6.6 kWh of charge: the 7 kWh level, not
+    # the 8 kWh up to the 90% ceiling.
+    assert 6000 <= charged <= 7000
+    assert today.hour[9].estimated_start_soc <= 15
 
 
 def test_multiple_per_day_never_discharges_to_the_grid():
