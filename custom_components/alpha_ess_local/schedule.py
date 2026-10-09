@@ -40,6 +40,7 @@ from .data import (
     Hour,
 )
 from .prices import mk_return_price, mk_use_price
+from .storage import lead_bucket
 
 SOC_STEPS = 100
 CHARGE_LIMIT = 10000.0  # Wh
@@ -122,6 +123,10 @@ class ScheduleConfig:
     # supplies the house. In this mode charge_used means "the previous hour
     # was a grid charge" (an ongoing session, which doesn't pay again).
     multiple_per_day: bool = False
+    # Learned solar uncertainty: per lead-time group (storage.LEAD_BUCKETS),
+    # the factor real/forecast solar at each scenario's percentile
+    # (scenario_percentiles). None, or a missing group: the fixed factors.
+    solar_spread: dict[int, tuple[float, ...]] | None = None
 
 
 @dataclass(frozen=True)
@@ -513,10 +518,34 @@ def _calculate_best_schedule(
     return True, dp_result
 
 
+def scenario_percentiles() -> list[float]:
+    """Each scenario's place in the solar distribution, in SCENARIOS order:
+    the middle of its probability mass with the scenarios sorted from least
+    to most sun (e.g. the pessimistic one, 28% likely, sits at 0.14)."""
+    order = sorted(range(len(SCENARIOS)), key=lambda i: SCENARIOS[i].solar_factor)
+    total = sum(s.probability for s in SCENARIOS)
+    percentiles = [0.0] * len(SCENARIOS)
+    cumulative = 0.0
+    for i in order:
+        share = SCENARIOS[i].probability / total
+        percentiles[i] = cumulative + share / 2
+        cumulative += share
+    return percentiles
+
+
 def _apply_scenario_to_day(
-    today: Day, tomorrow: Day, scenario: _Scenario, start_hour: int
+    today: Day,
+    tomorrow: Day,
+    scenario: _Scenario,
+    start_hour: int,
+    solar_spread: dict[int, tuple[float, ...]] | None = None,
+    scenario_index: int | None = None,
 ) -> tuple[Day, Day]:
-    """Port of ApplyScenarioToDay: returns scaled *copies*, originals untouched."""
+    """Port of ApplyScenarioToDay: returns scaled *copies*, originals untouched.
+
+    `solar_spread`: learned solar factors per lead-time group, one per
+    scenario (see ScheduleConfig.solar_spread); used for the hours whose
+    group has them, in place of the fixed scenario.solar_factor."""
     today_sc = copy.deepcopy(today)
     tomorrow_sc = copy.deepcopy(tomorrow)
 
@@ -532,6 +561,11 @@ def _apply_scenario_to_day(
         decay = math.exp(-dh / SCENARIO_TAU_HOURS)
         solar_factor = 1.0 + decay * (scenario.solar_factor - 1.0)
         load_factor = 1.0 + decay * (scenario.load_factor - 1.0)
+        # Learned from how far off the forecast really was this many hours
+        # ahead (storage.learn_forecast_spread), once there's enough data.
+        learned = solar_spread.get(lead_bucket(dh)) if solar_spread else None
+        if learned is not None and scenario_index is not None:
+            solar_factor = learned[scenario_index]
 
         solar = the_hour.estimated_solar_power
         solar_weight = solar / (solar + SOLAR_SCENARIO_MIN_WH)
@@ -708,8 +742,10 @@ def set_schedule(
     expected_profit: dict[Charge, float] = dict.fromkeys(Charge, 0.0)
     profits: dict[Charge, list[tuple[float, float] | None]] = {action: [] for action in Charge}
 
-    for scenario in SCENARIOS:
-        today_sc, tomorrow_sc = _apply_scenario_to_day(today, tomorrow, scenario, cur_hour)
+    for index, scenario in enumerate(SCENARIOS):
+        today_sc, tomorrow_sc = _apply_scenario_to_day(
+            today, tomorrow, scenario, cur_hour, config.solar_spread, index
+        )
 
         for action in Charge:
             today_opt = copy.deepcopy(today_sc)

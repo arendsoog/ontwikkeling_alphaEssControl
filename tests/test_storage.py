@@ -8,7 +8,7 @@ the weighting math is deterministic.
 
 import sqlite3
 from contextlib import closing
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -16,6 +16,7 @@ from custom_components.alpha_ess_local.data import Day, Earning, FiveMin
 from custom_components.alpha_ess_local.storage import (
     LOAD_TAU_DAYS,
     MIN_SAMPLES,
+    MIN_SPREAD_SAMPLES,
     ForecastRow,
     _day_class,
     _ensure_schema,
@@ -24,6 +25,8 @@ from custom_components.alpha_ess_local.storage import (
     c_weekday,
     calculate_and_store_mean_data,
     delete_hour_progress,
+    lead_bucket,
+    learn_forecast_spread,
     retrieve_day_actions,
     retrieve_day_decisions,
     retrieve_day_five_min,
@@ -31,6 +34,7 @@ from custom_components.alpha_ess_local.storage import (
     retrieve_day_hours,
     retrieve_day_savings,
     retrieve_dispatch_daily_state,
+    retrieve_forecast_spread,
     retrieve_hour_progress,
     retrieve_mean_data,
     retrieve_period_summary,
@@ -899,6 +903,61 @@ def test_store_forecasts_prunes_old_rows(tmp_path):
 
     assert retrieve_day_forecast(db_path, 2026, 1, 1) == {}
     assert retrieve_day_forecast(db_path, 2026, 10, 9) != {}
+
+
+def _spread_history(db_path, ratios, lead=8, forecast=2000.0, price=0.10):
+    """One noon hour per day: forecast `forecast` Wh made `lead` hours ahead,
+    real solar forecast * ratio (half roof, half extra PV)."""
+    for i, ratio in enumerate(ratios):
+        day = date(2026, 9, 1) + timedelta(days=i)
+        the_day = Day(year=day.year, mon=day.month, day=day.day, valid=True)
+        hour = the_day.hour[12]
+        hour.valid = True
+        hour.price = price
+        hour.real_house_load = 500
+        hour.real_solar_power_roof = forecast * ratio / 2
+        hour.real_extra_pv_power = forecast * ratio / 2
+        store_hour_data(db_path, the_day, 12, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+        store_forecasts(
+            db_path,
+            [ForecastRow(day.year, day.month, day.day, 12, lead, forecast, forecast, 500)],
+        )
+
+
+def test_learn_forecast_spread_per_lead_time(tmp_path, freezer):
+    freezer.move_to("2026-10-01 12:00:00")
+    db_path = str(tmp_path / "test.db")
+    # 0.50 .. 1.50 around a median of 1.0, in pairs on consecutive days so
+    # the recency weighting doesn't tilt them (recent days weigh more)
+    ratios = [1.0] + [r for k in range(1, 11) for r in (1.0 - 0.05 * k, 1.0 + 0.05 * k)]
+    _spread_history(db_path, ratios, lead=8)
+
+    assert learn_forecast_spread(db_path, pv_power=10000, percentiles=[0.1, 0.5, 0.9]) is True
+
+    spread = retrieve_forecast_spread(db_path)
+    low, mid, high = spread[lead_bucket(8)]
+    assert low < 0.75
+    assert mid == pytest.approx(1.0, abs=0.08)
+    assert high > 1.25
+    assert lead_bucket(0) not in spread  # nothing logged that close
+
+
+def test_learn_forecast_spread_needs_enough_hours(tmp_path, freezer):
+    freezer.move_to("2026-10-01 12:00:00")
+    db_path = str(tmp_path / "test.db")
+    _spread_history(db_path, [1.0] * (MIN_SPREAD_SAMPLES - 1))
+
+    assert learn_forecast_spread(db_path, pv_power=10000, percentiles=[0.5]) is False
+    assert retrieve_forecast_spread(db_path) == {}
+
+
+def test_learn_forecast_spread_skips_negative_price_hours(tmp_path, freezer):
+    """Panels may be switched off at a negative price: real 0 isn't a miss."""
+    freezer.move_to("2026-10-01 12:00:00")
+    db_path = str(tmp_path / "test.db")
+    _spread_history(db_path, [0.0] * 20, price=-0.05)
+
+    assert learn_forecast_spread(db_path, pv_power=10000, percentiles=[0.5]) is False
 
 
 def c_weekday_for(year, mon, day) -> int:

@@ -200,6 +200,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # What learn_forecast_spread learned: per lead-time group, the factor
+    # (real / forecast solar) at each scenario's percentile.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS forecast_spread (
+            bucket INTEGER, idx INTEGER, p REAL, factor REAL, samples INTEGER,
+            PRIMARY KEY (bucket, idx)
+        )
+        """
+    )
     # The EV charger's share of house_load: left out of the learned house
     # load (it only charges on solar surplus, so it's no load to plan for).
     _add_column_if_missing(conn, "five_min_data", "ev_power", "REAL DEFAULT 0")
@@ -870,6 +880,108 @@ def retrieve_day_forecast(db_path: str, year: int, mon: int, day: int) -> dict[i
             hour, {"solar": solar, "solar_raw": solar_raw, "house_load": house_load, "lead": lead}
         )
     return result
+
+
+# Lead-time groups (hours ahead, inclusive) the forecast error is learned
+# per -- a forecast for the next hour is far closer than one for tomorrow.
+LEAD_BUCKETS: tuple[tuple[int, int], ...] = ((0, 1), (2, 5), (6, 11), (12, 23), (24, 47))
+# Fewer usable hours than this in a group: keep the fixed scenario factors.
+MIN_SPREAD_SAMPLES = 15
+
+
+def lead_bucket(lead: int) -> int:
+    """The LEAD_BUCKETS index for a lead time (the last one for anything further)."""
+    for index, (low, high) in enumerate(LEAD_BUCKETS):
+        if low <= lead <= high:
+            return index
+    return len(LEAD_BUCKETS) - 1
+
+
+def _weighted_quantile(pairs: list[tuple[float, float]], p: float) -> float:
+    """The p-quantile of (value, weight) pairs, linearly between midpoints."""
+    pairs = sorted(pairs)
+    total = sum(w for _, w in pairs)
+    cumulative = 0.0
+    previous_mid, previous_value = None, pairs[0][0]
+    for value, weight in pairs:
+        mid = (cumulative + weight / 2) / total
+        if mid >= p:
+            if previous_mid is None:
+                return value
+            frac = (p - previous_mid) / (mid - previous_mid)
+            return previous_value + frac * (value - previous_value)
+        previous_mid, previous_value = mid, value
+        cumulative += weight
+    return pairs[-1][0]
+
+
+def learn_forecast_spread(db_path: str, pv_power: float, percentiles: list[float]) -> bool:
+    """Learn, per lead-time group, how the real solar compares with the
+    forecast made that many hours ahead -- the factors (real / forecast) at
+    the given percentiles, stored for the planner's scenarios.
+
+    Uses the corrected forecast (what was planned with), so a remaining bias
+    at longer leads shows up in the factors too. Recent days and sunnier
+    hours weigh more; hours with a negative price are left out (the panels
+    may have been switched off then), and so are hours with too little
+    forecast solar to say anything. Returns whether anything was stored.
+    """
+    min_forecast = max(MIN_EXPECTED_SOLAR_POWER, 0.05 * pv_power)
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT f.year, f.mon, f.day, f.hour, f.lead, f.solar,
+                   h.solar_power_roof + COALESCE(h.extra_pv_power, 0)
+            FROM forecast_log f JOIN hour_data h
+              ON h.year = f.year AND h.mon = f.mon AND h.day = f.day AND h.hour = f.hour
+            WHERE f.solar >= ? AND h.price >= 0
+            """,
+            (min_forecast,),
+        ).fetchall()
+    now = datetime.now()
+    groups: dict[int, list[tuple[float, float]]] = {}
+    for year, mon, day, hour, lead, forecast, real in rows:
+        try:
+            when = datetime(year, mon, day, hour)
+        except ValueError:
+            continue
+        weight = _recency_weight(now, when, SOLAR_TAU_DAYS) * forecast
+        ratio = min(max(real / forecast, 0.0), 3.0)
+        groups.setdefault(lead_bucket(lead), []).append((ratio, weight))
+
+    learned = [
+        (bucket, index, p, _weighted_quantile(pairs, p), len(pairs))
+        for bucket, pairs in groups.items()
+        if len(pairs) >= MIN_SPREAD_SAMPLES
+        for index, p in enumerate(percentiles)
+    ]
+    with _connection(db_path) as conn:
+        conn.execute("DELETE FROM forecast_spread")
+        conn.executemany(
+            "INSERT INTO forecast_spread (bucket, idx, p, factor, samples) VALUES (?, ?, ?, ?, ?)",
+            learned,
+        )
+        conn.commit()
+    LOGGER.info(
+        "learn_forecast_spread: %s",
+        {bucket: len(pairs) for bucket, pairs in sorted(groups.items())},
+    )
+    return bool(learned)
+
+
+def retrieve_forecast_spread(db_path: str) -> dict[int, tuple[float, ...]]:
+    """{lead-time group: the learned factors, one per percentile} -- groups
+    with too little data are absent."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            "SELECT bucket, idx, factor FROM forecast_spread ORDER BY bucket, idx"
+        ).fetchall()
+    spread: dict[int, list[float]] = {}
+    for bucket, _index, factor in rows:
+        spread.setdefault(bucket, []).append(factor)
+    return {bucket: tuple(factors) for bucket, factors in spread.items()}
 
 
 def store_hour_action(

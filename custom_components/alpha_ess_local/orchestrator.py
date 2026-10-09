@@ -94,7 +94,7 @@ from .data import (
 )
 from .prices import mk_return_price, mk_use_price
 from .protocol import DispatchMode, DispatchParam
-from .schedule import ScheduleConfig
+from .schedule import ScheduleConfig, scenario_percentiles
 from .schedule import set_schedule as run_scheduler
 from .storage import HourMean
 
@@ -1252,6 +1252,10 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             ),
             max_grid_load=max_grid_load_wh,
             multiple_per_day=not once_per_day,
+            solar_spread=await self.hass.async_add_executor_job(
+                storage.retrieve_forecast_spread, db_path
+            )
+            or None,
         )
 
         modbus_data = self._modbus_coordinator.data or {}
@@ -1881,5 +1885,8 @@ async def async_handle_daily_rollover(
     pv_power = options.get(CONF_PV_POWER, 0) + options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0)
     db_path = get_db_path(hass, entry)
     await hass.async_add_executor_job(storage.calculate_and_store_mean_data, db_path, pv_power)
+    await hass.async_add_executor_job(
+        storage.learn_forecast_spread, db_path, pv_power, scenario_percentiles()
+    )
     await solar_coordinator.async_request_refresh()
     await schedule_coordinator.async_request_refresh()
