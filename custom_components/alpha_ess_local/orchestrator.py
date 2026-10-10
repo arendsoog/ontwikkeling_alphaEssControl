@@ -31,6 +31,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import restore_state
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -415,19 +416,16 @@ def _number_entity_value(
     so falling back silently (rather than failing the whole schedule run)
     is the right behavior, unlike `_entity_power`'s None-propagation.
     """
-    entity_id = er.async_get(hass).async_get_entity_id("number", DOMAIN, f"{entry.entry_id}_{key}")
-    if entity_id is None:
-        return default
-    state = hass.states.get(entity_id)
-    if state is None or state.state in ("unknown", "unavailable"):
+    state = _own_entity_state(hass, entry, "number", key)
+    if state is None:
         return default
     try:
-        return float(state.state)
+        return float(state)
     except ValueError:
         LOGGER.warning(
-            "orchestrator: entity %s has a non-numeric state %r, using default %s",
-            entity_id,
-            state.state,
+            "orchestrator: number %s has a non-numeric state %r, using default %s",
+            key,
+            state,
             default,
         )
         return default
@@ -441,13 +439,34 @@ def _switch_entity_value(hass: HomeAssistant, entry: ConfigEntry, key: str, defa
     for the same reason (the entity belongs to this config entry, no
     per-installation linking needed).
     """
-    entity_id = er.async_get(hass).async_get_entity_id("switch", DOMAIN, f"{entry.entry_id}_{key}")
+    state = _own_entity_state(hass, entry, "switch", key)
+    if state is None:
+        return default
+    return state == "on"
+
+
+def _own_entity_state(
+    hass: HomeAssistant, entry: ConfigEntry, platform: str, key: str
+) -> str | None:
+    """The state of one of this entry's own number/switch entities, or None.
+
+    While the entry (re)loads, the planner's first run comes before these
+    platforms are set up: the entity is then unavailable or missing, and
+    its value only exists in Home Assistant's restore-state store (what
+    RestoreNumber/RestoreEntity restore it from a moment later). Read it
+    from there, so a reload -- e.g. after changing an option -- doesn't
+    plan with the defaults instead of the user's settings.
+    """
+    entity_id = er.async_get(hass).async_get_entity_id(platform, DOMAIN, f"{entry.entry_id}_{key}")
     if entity_id is None:
-        return default
+        return None
     state = hass.states.get(entity_id)
-    if state is None or state.state in ("unknown", "unavailable"):
-        return default
-    return state.state == "on"
+    if state is not None and state.state not in ("unknown", "unavailable"):
+        return state.state
+    stored = restore_state.async_get(hass).last_states.get(entity_id)
+    if stored is not None and stored.state.state not in ("unknown", "unavailable"):
+        return stored.state.state
+    return None
 
 
 def _effective_max_grid_load_wh(hass: HomeAssistant, entry: ConfigEntry) -> float:
