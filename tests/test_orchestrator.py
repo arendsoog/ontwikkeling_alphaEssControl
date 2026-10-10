@@ -14,10 +14,14 @@ from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_mock_service,
+    mock_restore_cache,
+)
 
 from custom_components.alpha_ess_local import storage
 from custom_components.alpha_ess_local.config_flow import SMA_PV_POWER_STRING_KEY
@@ -2718,6 +2722,22 @@ def test_number_entity_value_falls_back_when_unavailable(hass: HomeAssistant):
     hass.states.async_set(entity_id, "unavailable")
 
     assert _number_entity_value(hass, entry, "max_soc_positive_price", 90.0) == 90.0
+
+
+async def test_own_entities_read_their_restored_value_while_reloading(hass: HomeAssistant):
+    """Regression: after an options change the entry reloads and the
+    planner's first run comes before the number/switch platforms -- it
+    planned with the defaults (e.g. 40 ct minimum profit instead of the
+    25 ct set). The value they are about to restore is used instead."""
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+    number_id = _register_soc_number(hass, entry, "daily_min_profit")
+    switch_id = _register_switch(hass, entry, "discharge_enabled")
+    hass.states.async_set(number_id, "unavailable")
+    mock_restore_cache(hass, [State(number_id, "25.0"), State(switch_id, "off")])
+
+    assert _number_entity_value(hass, entry, "daily_min_profit", 40.0) == 25.0
+    assert _switch_entity_value(hass, entry, "discharge_enabled", True) is False
 
 
 def test_number_entity_value_falls_back_on_non_numeric_state(hass: HomeAssistant):
