@@ -2100,10 +2100,13 @@ class AlphaEssPanel extends HTMLElement {
       </div>
       <div class="unit-note">Energie in kWh · besparing t.o.v. geen zon en geen batterij${drill ? " · klik een regel voor details" : ""}</div>`;
 
+    const per = group === "hour" ? "per uur" : group === "day" ? "per dag" : "per maand";
+    const chartPart = `<div class="section-title">Zon en huisverbruik ${per}</div>${chart}`;
+    const tablePart = `<div class="section-title">Energie en besparing ${per}</div>${table}`;
     if (group === "hour") {
-      return `${header}${controls}${tiles}${this._historyDayChart(data)}${this._decisionLog(data)}${chart}${table}`;
+      return `${header}${controls}${tiles}${this._historyDayChart(data)}${this._decisionLog(data)}${chartPart}${tablePart}`;
     }
-    return `${header}${controls}${tiles}${chart}${table}`;
+    return `${header}${controls}${tiles}${chartPart}${tablePart}`;
   }
 
   // One past day as it went: the hours coloured by the action each one
