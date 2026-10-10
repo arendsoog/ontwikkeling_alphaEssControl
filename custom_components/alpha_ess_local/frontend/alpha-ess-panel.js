@@ -421,11 +421,25 @@ class AlphaEssPanel extends HTMLElement {
     this._timers.push(setInterval(() => this._loadStatus(), STATUS_REFRESH_MS));
     // Keep the "now" markers and past-hour shading moving.
     this._timers.push(setInterval(() => this._renderAll(), 60 * 1000));
+    // Back on the panel (or the browser tab woke up -- timers sleep in a
+    // background tab): fetch right away instead of waiting for the timers.
+    this._onVisible = () => {
+      if (document.visibilityState === "visible") this._refreshNow();
+    };
+    document.addEventListener("visibilitychange", this._onVisible);
+    this._refreshNow();
   }
 
   disconnectedCallback() {
     this._timers.forEach(clearInterval);
     this._timers = [];
+    document.removeEventListener("visibilitychange", this._onVisible);
+  }
+
+  _refreshNow() {
+    if (!this._hass) return;
+    this._loadHistory();
+    this._loadStatus();
   }
 
   set hass(hass) {
@@ -484,6 +498,12 @@ class AlphaEssPanel extends HTMLElement {
   // when one of *our* entities' state objects actually changed.
   _update() {
     this._entities = this._entityMap();
+    // Right after Home Assistant opens, its entity list can still be empty
+    // on the first `hass`: the history fetched then had no sensors to ask
+    // for. Fetch again once our entities (or their set) show up.
+    const ids = Object.values(this._entities).sort().join(",");
+    if (this._entityIds !== undefined && ids !== this._entityIds) this._loadHistory();
+    this._entityIds = ids;
     const states = Object.values(this._entities).map((id) => this._hass.states[id]);
     if (
       this._lastStates &&
