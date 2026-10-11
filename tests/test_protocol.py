@@ -200,3 +200,9 @@ def test_encode_time_period_control_charging():
     assert registers[8] == 5
     assert registers[15] == 0
     assert registers[16] == 30
+
+
+def test_decode_ascii_drops_the_nul_padding():
+    assert protocol.decode_ascii([0x4142, 0x4300, 0x0000]) == "ABC"
+    assert protocol.decode_ascii([0x4142, 0x4344]) == "ABCD"
+    assert protocol.decode_ascii([0, 0]) == ""

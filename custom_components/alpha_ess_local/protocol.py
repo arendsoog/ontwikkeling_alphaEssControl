@@ -65,6 +65,10 @@ REG_BATTERY_INFO = 0x0100
 REG_BATTERY_INFO_COUNT = 0x1C
 # 0.1 degC on this model; AlphaESS documents 0.01 for SMILE-B3/-B3-PLUS.
 REG_INVERTER_TEMPERATURE = 0x0435
+# System serial number, 8 registers of ASCII (2 characters each, high byte
+# first, NUL-padded) -- e.g. "ALD071024100371" on this installation.
+REG_SERIAL_NUMBER = 0x0706
+REG_SERIAL_NUMBER_COUNT = 8
 REG_TIME_PERIOD_CONTROL = 0x084F
 REG_TIME_PERIOD_CONTROL_COUNT = 17
 
@@ -126,6 +130,12 @@ def to_signed_short(word: int) -> int:
     """Interpret a single 16-bit register as a signed 16-bit int."""
     word &= 0xFFFF
     return word - 0x10000 if word >= 0x8000 else word
+
+
+def decode_ascii(registers: list[int]) -> str:
+    """Registers holding ASCII text (high byte first), without NUL padding."""
+    raw = b"".join((word & 0xFFFF).to_bytes(2, "big") for word in registers)
+    return raw.split(b"\x00", 1)[0].decode("ascii", errors="replace").strip()
 
 
 def decode_battery_info(registers: list[int]) -> dict[str, float | int]:

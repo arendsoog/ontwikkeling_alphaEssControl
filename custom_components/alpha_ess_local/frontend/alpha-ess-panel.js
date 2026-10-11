@@ -488,6 +488,7 @@ class AlphaEssPanel extends HTMLElement {
         model: device.model,
         swVersion: device.sw_version,
         hwVersion: device.hw_version,
+        serialNumber: device.serial_number,
         url: device.configuration_url,
       };
     });
@@ -1521,14 +1522,22 @@ class AlphaEssPanel extends HTMLElement {
       })
       .join("");
 
+    const modules = this._valueOf(e, "battery_module_count");
+    const nominalKwh = this._valueOf(e, "battery_capacity");
     const info = [
       ["Fabrikant", device.manufacturer],
       ["Model", device.model],
+      ["Serienummer", device.serialNumber],
       ["Firmware", device.swVersion],
       ["Hardware", device.hwVersion],
+      ["Aantal batterijmodules", modules === null ? null : String(modules), "battery_module_count"],
+      ["Nominale capaciteit", nominalKwh === null ? null : `${fmtNum(nominalKwh, 2)} kWh`, "battery_capacity"],
     ]
       .filter(([, v]) => v)
-      .map(([k, v]) => `<div class="kv"><span>${k}</span><span>${esc(v)}</span></div>`)
+      .map(
+        ([k, v, key]) =>
+          `<div class="kv" ${key && e[key] ? `data-entity="${esc(e[key])}"` : ""}><span>${k}</span><span>${esc(v)}</span></div>`
+      )
       .join("");
 
     return `
@@ -1621,8 +1630,6 @@ class AlphaEssPanel extends HTMLElement {
     // Near full the spread is naturally larger while the BMS top-balances
     // (~70 mV at 99.6% here); only flag it well beyond that.
     const deltaClass = delta !== null && delta > 100 ? "warn" : "";
-    const modules = v("battery_module_count");
-    const capacity = v("battery_capacity");
     const item = (label, value, key, cls = "") =>
       `<div class="kv" ${key && e[key] ? `data-entity="${esc(e[key])}"` : ""}><span>${label}</span><span class="${cls}">${esc(value)}</span></div>`;
 
@@ -1638,11 +1645,6 @@ class AlphaEssPanel extends HTMLElement {
         ${item("Δ cel", delta === null ? "–" : `${Math.round(delta)} mV`, "battery_cell_voltage_delta", deltaClass)}
         ${item("Gezondheid (SOH)", fmt("battery_soh", 1, "%"), "battery_soh", "accent")}
         ${item("Cycli (geschat)", fmt("battery_cycles", 1, ""), "battery_cycles")}
-        ${item(
-          "Modules · capaciteit",
-          `${modules === null ? "–" : modules} · ${capacity === null ? "–" : `${fmtNum(capacity, 1)} kWh`}`,
-          "battery_capacity"
-        )}
       </div>`;
   }
 

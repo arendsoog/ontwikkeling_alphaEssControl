@@ -200,6 +200,13 @@ class AlphaEssLocalApiClient:
         )
         return protocol.decode_battery_info(registers)
 
+    async def async_get_serial_number(self) -> str:
+        """The system's serial number (e.g. "ALD071024100371")."""
+        registers = await self._read_registers(
+            protocol.REG_SERIAL_NUMBER, protocol.REG_SERIAL_NUMBER_COUNT
+        )
+        return protocol.decode_ascii(registers)
+
     async def async_get_inverter_temperature(self) -> float:
         """Inverter temperature, in degC (0.1 degC units on this model)."""
         registers = await self._read_registers(protocol.REG_INVERTER_TEMPERATURE, 1)
