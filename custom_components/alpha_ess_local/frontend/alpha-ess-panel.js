@@ -837,7 +837,7 @@ class AlphaEssPanel extends HTMLElement {
     this._card("power", this._renderPower());
     this._card("soc", this._renderSoc());
     this._card("daily", this._renderDaily());
-    this._card("devices", this._renderDevices());
+    if (!this._dragging) this._card("devices", this._renderDevices());
     this._card("history", this._renderHistory());
     // Don't rebuild the controls while a slider is being dragged.
     if (!this._dragging) this._card("controls", this._renderControls());
@@ -1569,6 +1569,8 @@ class AlphaEssPanel extends HTMLElement {
 
         ${this._healthSection(e)}
 
+        ${this._limitsSection(e)}
+
         <div class="section-title">Ingangen &amp; net</div>
         <div class="kv-grid">
           <div class="kv" data-entity="${esc(e.pv_power || "")}"><span>Zon (PV-ingang)</span><span>${fmtW(pv)}</span></div>
@@ -1713,23 +1715,7 @@ class AlphaEssPanel extends HTMLElement {
           <button class="switch ${on ? "on" : ""}" role="switch" aria-checked="${on}" ${attr} data-on="${on}" data-confirm="${esc(spec.confirm || "")}"><span></span></button>
         </div>`;
     };
-    const slider = (spec) => {
-      const id = this._entities[spec.entity];
-      const s = id && this._hass.states[id];
-      if (!s) return "";
-      const value = num(s.state);
-      const { min = 0, max = 100, step = 1, unit_of_measurement: unit = "" } = s.attributes;
-      const shown = value === null ? "–" : `${fmtNum(value, step < 1 ? 1 : 0)} ${unit}`;
-      const pct = value === null ? 0 : ((value - min) / (max - min || 1)) * 100;
-      return `
-        <div class="ctl">
-          ${this._ctlLabel(spec)}
-          <div class="slider-row">
-            <input type="range" min="${min}" max="${max}" step="${step}" value="${value ?? min}" data-number="${esc(id)}" data-unit="${esc(unit)}" data-digits="${step < 1 ? 1 : 0}" style="--pct:${pct}%">
-            <span class="slider-value">${esc(shown)}</span>
-          </div>
-        </div>`;
-    };
+    const slider = (spec) => this._slider(spec, this._entities);
     const column = (icon, title, body) =>
       `<section class="ctl-col">${this._header(icon, title)}${body}</section>`;
 
@@ -1763,31 +1749,6 @@ class AlphaEssPanel extends HTMLElement {
           info: "Mag de planning één keer per dag op een duur uur extra ontladen (ook naar het net), als het schema de minimale dagelijkse winst haalt. Ook zon terugleveren terwijl de batterij nog ruimte heeft mag alleen als dit aan staat; anders gaat het zonne-overschot eerst de batterij in. Huisverbruik uit de batterij gaat altijd door.",
         }),
       ].join("") || '<div class="empty">Status laden…</div>'
-    );
-
-    const limits = column(
-      "mdi:battery-charging-80",
-      "Batterijlimieten",
-      [
-        slider({
-          entity: "max_soc_positive_price",
-          icon: "mdi:battery-arrow-up-outline",
-          label: "Max SOC bij positieve prijzen",
-          info: "Tot hoeveel procent de batterij laadt op uren met een positieve prijs.",
-        }),
-        slider({
-          entity: "max_soc_negative_price",
-          icon: "mdi:battery-plus-outline",
-          label: "Max SOC bij negatieve prijzen",
-          info: "Tot hoeveel procent de batterij laadt bij negatieve prijzen.",
-        }),
-        slider({
-          entity: "min_soc_discharge",
-          icon: "mdi:battery-low",
-          label: "Min SOC bij ontladen",
-          info: "Onder deze SOC wordt de batterij niet verder ontladen.",
-        }),
-      ].join("")
     );
 
     const planning = column(
@@ -1825,7 +1786,54 @@ class AlphaEssPanel extends HTMLElement {
       </button>`
     );
 
-    return `<div class="ctl-grid">${control}${limits}${planning}${overrides}</div>`;
+    return `<div class="ctl-grid">${control}${planning}${overrides}</div>`;
+  }
+
+  // A slider for one of the integration's number entities (`spec.entity`,
+  // plus `spec.also`: more entities set to the same value with it).
+  _slider(spec, entities) {
+    const id = entities[spec.entity];
+    const s = id && this._hass.states[id];
+    if (!s) return "";
+    const ids = [id, ...(spec.also || []).map((key) => entities[key]).filter(Boolean)];
+    const value = num(s.state);
+    const { min = 0, max = 100, step = 1, unit_of_measurement: unit = "" } = s.attributes;
+    const shown = value === null ? "–" : `${fmtNum(value, step < 1 ? 1 : 0)} ${unit}`;
+    const pct = value === null ? 0 : ((value - min) / (max - min || 1)) * 100;
+    return `
+      <div class="ctl">
+        ${this._ctlLabel(spec)}
+        <div class="slider-row">
+          <input type="range" min="${min}" max="${max}" step="${step}" value="${value ?? min}" data-number="${esc(ids.join(","))}" data-unit="${esc(unit)}" data-digits="${step < 1 ? 1 : 0}" style="--pct:${pct}%">
+          <span class="slider-value">${esc(shown)}</span>
+        </div>
+      </div>`;
+  }
+
+  // The battery's SOC limits, in its card on the inverters tab.
+  _limitsSection(e) {
+    const rows = [
+      this._slider(
+        {
+          entity: "max_soc_positive_price",
+          also: ["max_soc_negative_price"],
+          icon: "mdi:battery-arrow-up-outline",
+          label: "Max SOC",
+          info: "Tot hoeveel procent de batterij laadt, uit het net en met zon.",
+        },
+        e
+      ),
+      this._slider(
+        {
+          entity: "min_soc_discharge",
+          icon: "mdi:battery-low",
+          label: "Min SOC",
+          info: "Tot hoeveel procent de batterij mag ontladen naar het net (ontladen via schema). Voor het huis ontlaadt ze tot de vaste ondergrens van de omvormer.",
+        },
+        e
+      ),
+    ].join("");
+    return rows ? `<div class="section-title">Limieten</div><div class="limits">${rows}</div>` : "";
   }
 
   _ctlLabel(spec) {
@@ -1858,7 +1866,10 @@ class AlphaEssPanel extends HTMLElement {
   async _setNumber(el) {
     this._dragging = false;
     try {
-      await this._hass.callService("number", "set_value", { entity_id: el.dataset.number, value: Number(el.value) });
+      const value = Number(el.value);
+      for (const id of el.dataset.number.split(",")) {
+        await this._hass.callService("number", "set_value", { entity_id: id, value });
+      }
     } catch (err) {
       window.alert(`Mislukt: ${err.message || err}`);
     }
@@ -2752,6 +2763,8 @@ const STYLE = `
   /* control tab */
   .ctl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px 48px; align-items: start; }
   .ctl { padding: 10px 0 14px; }
+  .limits { display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px; }
+  @media (max-width: 700px) { .limits { grid-template-columns: 1fr; } }
   .ctl-label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 15px; font-weight: 300; }
   .ctl-label ha-icon { --mdc-icon-size: 18px; opacity: 0.7; }
   .ctl-label .info { margin-left: auto; cursor: help; opacity: 0.6; font-size: 14px; }
