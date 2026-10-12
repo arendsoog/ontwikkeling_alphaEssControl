@@ -398,17 +398,43 @@ def day_details(db_path: str, day: date) -> dict[str, Any]:
     return {"decisions": decisions, "samples": samples, "forecast": forecast}
 
 
+def stored_day_samples(db_path: str, day: date) -> list[dict[str, float]]:
+    """A finished day's stored 5-minute samples, in today_power's format."""
+    midnight = dt_util.start_of_local_day(day)
+    five_min = storage.retrieve_day_five_min(db_path, day.year, day.month, day.day)
+    return [
+        {
+            "t": (midnight + timedelta(hours=hour, minutes=5 * slot)).timestamp() * 1000,
+            "pv_roof": sample.real_solar_power_roof,
+            "extra_pv": sample.real_extra_pv_power,
+            "grid": sample.total_active_power,
+            "battery": sample.battery_power,
+            "house": sample.real_house_load,
+        }
+        for hour, slots in sorted(five_min.items())
+        for slot, sample in sorted(slots.items())
+    ]
+
+
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/today_power"})
-@callback
-def _ws_today_power(
+@websocket_api.async_response
+async def _ws_today_power(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Today's power samples from the first loaded entry's real-data coordinator."""
+    """Today's power samples from the first loaded entry's real-data
+    coordinator, preceded by yesterday's stored ones -- so the panel's
+    12-hour and 24-hour power chart runs on past midnight."""
     entries = hass.config_entries.async_loaded_entries(DOMAIN)
     data = entries[0].runtime_data.real_data_coordinator.data if entries else None
-    connection.send_result(
-        msg["id"], None if data is None else today_power_payload(data.day, dt_util.now())
-    )
+    now = dt_util.now()
+    payload = None if data is None else today_power_payload(data.day, now)
+    if payload is not None:
+        yesterday = now.date() - timedelta(days=1)
+        earlier = await hass.async_add_executor_job(
+            stored_day_samples, get_db_path(hass, entries[0]), yesterday
+        )
+        payload["samples"] = earlier + payload["samples"]
+    connection.send_result(msg["id"], payload)
 
 
 async def async_register_panel(hass: HomeAssistant) -> None:

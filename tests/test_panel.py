@@ -22,6 +22,7 @@ from custom_components.alpha_ess_local.frontend import (
     day_details,
     extra_pv_string_entities,
     source_list,
+    stored_day_samples,
     today_power_payload,
 )
 
@@ -32,6 +33,34 @@ def _day() -> Day:
 
 def _midnight():
     return dt_util.start_of_local_day(date(2026, 10, 6))
+
+
+def test_stored_day_samples_gives_yesterdays_curve(tmp_path):
+    """Yesterday's stored samples, so the 12-hour chart runs on past midnight."""
+    from custom_components.alpha_ess_local import storage
+
+    db_path = str(tmp_path / "test.db")
+    sample = FiveMin(
+        real_solar_power_roof=0,
+        total_active_power=650,
+        battery_power=0,
+        real_house_load=640,
+    )
+    storage.store_five_min_sample(db_path, 2026, 10, 6, 22, 3, sample)
+
+    samples = stored_day_samples(db_path, date(2026, 10, 6))
+
+    assert samples == [
+        {
+            "t": (_midnight() + timedelta(hours=22, minutes=15)).timestamp() * 1000,
+            "pv_roof": 0,
+            "extra_pv": 0.0,
+            "grid": 650,
+            "battery": 0,
+            "house": 640,
+        }
+    ]
+    assert stored_day_samples(db_path, date(2026, 10, 5)) == []
 
 
 def test_today_power_payload_none_for_invalid_day():

@@ -9,9 +9,10 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.event import async_track_time_change
 
-from .api import AlphaEssLocalApiClient
+from .api import AlphaEssLocalApiClient, AlphaEssLocalApiClientError
 from .const import (
     CONF_CONTROL_ENABLED,
     CONF_EXTRA_PV_CONTROL_ENABLED,
@@ -103,6 +104,25 @@ def _async_register_dispatch_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, SERVICE_CLEAR_MANUAL_OVERRIDE, _handle_clear)
 
 
+async def _async_register_device(
+    hass: HomeAssistant, entry: AlphaEssLocalConfigEntry, client: AlphaEssLocalApiClient
+) -> None:
+    """Create the device up front with its serial number, read once from the
+    inverter -- it doesn't change, so it isn't polled. A failed read only
+    leaves the serial number out."""
+    try:
+        serial_number = await client.async_get_serial_number() or None
+    except AlphaEssLocalApiClientError:
+        serial_number = None
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, entry.entry_id)},
+        name="AlphaESS",
+        manufacturer="AlphaESS",
+        serial_number=serial_number,
+    )
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry) -> bool:
     """Set up AlphaESSControl from a config entry."""
     await hass.async_add_executor_job(migrate_legacy_db_if_needed, hass, entry)
@@ -114,6 +134,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry
 
     modbus_coordinator = AlphaEssLocalDataUpdateCoordinator(hass, entry, client)
     await modbus_coordinator.async_config_entry_first_refresh()
+    await _async_register_device(hass, entry, client)
 
     prices_coordinator = AlphaEssLocalPricesCoordinator(hass, entry)
     await prices_coordinator.async_config_entry_first_refresh()

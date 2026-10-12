@@ -165,6 +165,17 @@ async def test_async_get_inverter_temperature_uses_point_one_scale(client, mock_
     assert await client.async_get_inverter_temperature() == pytest.approx(48.0)
 
 
+async def test_async_get_serial_number_reads_the_ascii_block(client, mock_modbus_client):
+    # The registers read live from this installation's inverter.
+    registers = [16716, 17456, 14129, 12338, 13361, 12336, 13111, 12544]
+    mock_modbus_client.read_holding_registers.return_value = _ok_result(registers)
+
+    assert await client.async_get_serial_number() == "ALD071024100371"
+    address = mock_modbus_client.read_holding_registers.call_args.args[0]
+    assert address == 0x0706
+    assert mock_modbus_client.read_holding_registers.call_args.kwargs["count"] == 8
+
+
 async def test_read_registers_retries_once_after_reconnect(client, mock_modbus_client):
     mock_modbus_client.read_holding_registers.side_effect = [
         _error_result(),
