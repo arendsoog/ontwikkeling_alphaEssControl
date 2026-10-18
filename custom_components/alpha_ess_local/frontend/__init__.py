@@ -160,10 +160,11 @@ def _ws_panel_status(
 
 
 def _today_source(coordinator: Any) -> str:
-    """Which source today's prices/forecast were read from ("" if none)."""
+    """Which source today's prices/forecast were read from ("" if none --
+    also when the sources gave nothing and the last known data is kept)."""
     data = coordinator.data or {}
     today = data.get("today")
-    return today.source if today is not None else ""
+    return today.source if today is not None and not today.kept else ""
 
 
 def source_list(

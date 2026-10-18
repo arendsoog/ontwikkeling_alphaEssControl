@@ -1133,3 +1133,25 @@ def test_period_summary_rejects_unknown_group(tmp_path):
         retrieve_period_summary(
             str(tmp_path / "t.db"), date(2026, 1, 1), date(2026, 1, 1), "week", 6.0
         )
+
+
+def test_mean_learning_leaves_out_hours_with_estimated_readings(tmp_path):
+    """An hour whose extra PV was estimated or whose EV charger was unknown
+    is kept, but not learned from."""
+    db_path = str(tmp_path / "test.db")
+    day = _valid_day()
+    for hour in (10, 11):
+        day.hour[hour].valid = True
+        day.hour[hour].real_house_load = 800
+        store_hour_data(db_path, day, hour, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+    day.hour[12].valid = True
+    day.hour[12].real_house_load = 5000
+    day.hour[12].estimated = True
+    store_hour_data(db_path, day, 12, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert conn.execute("SELECT estimated FROM hour_data WHERE hour = 12").fetchone() == (1,)
+        rows = conn.execute(
+            "SELECT hour FROM hour_data WHERE COALESCE(estimated, 0) = 0 ORDER BY hour"
+        ).fetchall()
+    assert rows == [(10,), (11,)]

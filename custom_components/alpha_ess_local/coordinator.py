@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -90,6 +90,24 @@ class _StartupRaceRetryHelper:
             await self._coordinator.async_request_refresh()
 
         self._unsub = async_call_later(self._coordinator.hass, delay, _retry)
+
+
+def keep_last_known(new: Day, previous: Day | None, target: date) -> Day:
+    """`new`, or -- when it has no data -- the last known Day for the same
+    date (marked `kept`), so a source dropping out doesn't wipe a day's
+    prices/forecast the planner was using."""
+    if new.valid or previous is None or not previous.valid:
+        return new
+    if (previous.year, previous.mon, previous.day) != (target.year, target.month, target.day):
+        return new
+    if not previous.kept:
+        LOGGER.warning(
+            "No data from any source for %s -- keeping the last known (%s)",
+            target,
+            previous.source or "?",
+        )
+    previous.kept = True
+    return previous
 
 
 class AlphaEssLocalDataUpdateCoordinator(DataUpdateCoordinator):
@@ -192,7 +210,11 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             found_data=today_day.valid,
         )
 
-        return {"today": today_day, "tomorrow": tomorrow_day}
+        previous = self.data or {}
+        return {
+            "today": keep_last_known(today_day, previous.get("today"), today),
+            "tomorrow": keep_last_known(tomorrow_day, previous.get("tomorrow"), tomorrow),
+        }
 
 
 class AlphaEssLocalSolarCoordinator(DataUpdateCoordinator[dict[str, Day]]):
@@ -251,4 +273,8 @@ class AlphaEssLocalSolarCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             found_data=today_day.valid,
         )
 
-        return {"today": today_day, "tomorrow": tomorrow_day}
+        previous = self.data or {}
+        return {
+            "today": keep_last_known(today_day, previous.get("today"), today),
+            "tomorrow": keep_last_known(tomorrow_day, previous.get("tomorrow"), tomorrow),
+        }

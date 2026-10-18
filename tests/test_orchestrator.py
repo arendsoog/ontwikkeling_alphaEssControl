@@ -15,6 +15,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant, State
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
@@ -1405,6 +1406,106 @@ async def test_real_data_coordinator_extra_pv_power_reports_configured_reading(
     assert data.extra_pv_power == 321.0
 
 
+async def test_real_data_coordinator_estimates_an_unreachable_extra_pv_from_the_roof(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 10:03:00")
+    hass.states.async_set("sensor.sma_pv_power", "unavailable")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            "extra_pv_power_entity": "sensor.sma_pv_power",
+            "pv_power": 4000,  # roof 4 kWp
+            "extra_pv_power_capacity": 6000,  # extra 6 kWp
+        },
+    )
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 1000, "battery_power": 0, "grid_power": 50}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    data = await coordinator._async_update_data()
+
+    hour = data.day.hour[dt_util.now().hour]
+    assert data.extra_pv_power == 1500.0  # 1 kW roof x 6/4
+    assert hour.five_min[0].real_extra_pv_power == 1500.0
+    assert hour.estimated is True  # left out of the learning
+
+
+async def test_real_data_coordinator_flags_an_hour_with_an_unknown_ev_charger(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 10:03:00")
+    hass.states.async_set("sensor.ev_power", "unavailable")
+    entry = MockConfigEntry(domain=DOMAIN, options={"ev_charger_power_entity": "sensor.ev_power"})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 0, "battery_power": 0, "grid_power": 900}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    data = await coordinator._async_update_data()
+
+    hour = data.day.hour[dt_util.now().hour]
+    assert hour.five_min_count == 1
+    assert hour.estimated is True
+
+
+async def test_real_data_coordinator_takes_no_sample_while_the_inverter_is_down(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 10:03:00")
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    # The last good poll's data, frozen: the latest poll failed.
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 800, "battery_power": 0, "grid_power": 50},
+        last_update_success=False,
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    data = await coordinator._async_update_data()
+
+    assert data.day.hour[dt_util.now().hour].five_min_count == 0
+
+
+async def test_schedule_coordinator_keeps_the_last_plan_while_the_inverter_is_down(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 14:00:00")
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(data={"battery_soc": 55.0}, last_update_success=False)
+    prices_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+    solar_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+    coordinator = AlphaEssLocalScheduleCoordinator(
+        hass, entry, modbus_coordinator, prices_coordinator, solar_coordinator
+    )
+    last_plan = {"today": Day(valid=True), "tomorrow": Day()}
+    coordinator.data = last_plan
+
+    with (
+        patch(
+            "custom_components.alpha_ess_local.storage.retrieve_mean_data",
+            MagicMock(return_value=None),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.run_scheduler", MagicMock()
+        ) as mock_run_scheduler,
+    ):
+        result = await coordinator._async_update_data()
+
+    assert result is last_plan
+    mock_run_scheduler.assert_not_called()
+
+
 # --- AlphaEssLocalScheduleCoordinator ----------------------------------------
 
 
@@ -2437,6 +2538,54 @@ async def test_extra_pv_control_enabled_writes_off_on_negative_price_when_batter
 
     assert len(calls) == 1
     assert calls[0].data == {"hub": "sma_tripower", "slave": 3, "address": 40016, "value": 0}
+
+
+async def test_unreachable_extra_pv_does_not_stop_the_battery_dispatch(
+    hass: HomeAssistant, freezer
+):
+    """Regression: a failing write to the extra PV aborted the whole cycle,
+    so the battery wasn't controlled either while the SMA was unreachable."""
+    freezer.move_to("2024-01-15 14:00:00")
+    current_hour = dt_util.now().hour
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            CONF_USABLE_BATTERY_CAPACITY: 10000,
+            CONF_CONTROL_ENABLED: True,
+            **_EXTRA_PV_OPTIONS,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    async def _fail(_call):
+        raise HomeAssistantError("SMA not reachable")
+
+    hass.services.async_register("modbus", "write_register", _fail)
+    day = _schedule_day_with_hour(current_hour, earning=Earning.EARNING_ON_USE, cutoff_soc=900)
+    client = _fake_client(
+        DispatchParam(
+            mode=DispatchMode.DEFAULT,
+            started=False,
+            power=0,
+            cutoff_soc=0,
+            duration=0,
+            para7=255,
+            pv_on=True,
+        )
+    )
+    coordinator = AlphaEssLocalDispatchCoordinator(
+        hass,
+        entry,
+        _fake_modbus_coordinator(client, battery_soc=95.0),
+        SimpleNamespace(data={"today": day}),
+    )
+
+    decision = await coordinator._async_update_data()
+
+    assert decision is not None
+    client.async_set_dispatch_param.assert_awaited()  # the battery still got its command
+    assert coordinator._extra_pv_unreachable is True
+    assert coordinator._last_extra_pv_state is None  # retried next cycle
 
 
 async def test_extra_pv_stays_on_on_negative_price_when_battery_not_full(

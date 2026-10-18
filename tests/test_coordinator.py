@@ -274,3 +274,25 @@ async def test_solar_coordinator_schedules_retry_on_startup_race(hass: HomeAssis
             await hass.async_block_till_done()
 
     mock_refresh.assert_awaited_once()
+
+
+def test_keep_last_known_keeps_the_same_dates_data_when_the_sources_give_nothing():
+    from datetime import date
+
+    from custom_components.alpha_ess_local.coordinator import keep_last_known
+    from custom_components.alpha_ess_local.data import Day
+
+    target = date(2026, 10, 18)
+    known = Day(valid=True, year=2026, mon=10, day=18, source="frank_energie")
+    empty = Day(valid=False, year=2026, mon=10, day=18)
+
+    kept = keep_last_known(empty, known, target)
+    assert kept is known
+    assert kept.kept is True
+
+    # New data wins; yesterday's data is never carried into today.
+    fresh = Day(valid=True, year=2026, mon=10, day=18)
+    assert keep_last_known(fresh, known, target) is fresh
+    yesterday = Day(valid=True, year=2026, mon=10, day=17)
+    assert keep_last_known(empty, yesterday, target) is empty
+    assert keep_last_known(empty, None, target) is empty

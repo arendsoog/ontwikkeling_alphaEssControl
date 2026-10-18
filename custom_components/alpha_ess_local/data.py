@@ -94,6 +94,10 @@ class Hour:
     # out of the learned house load: it only charges on solar surplus, so
     # it isn't a load the battery planning has to cover.
     real_ev_load: int = 0
+    # A sample in this hour had to estimate a missing reading (extra PV
+    # from the roof, or an unknown EV-charger power): kept for the savings
+    # and charts, but left out when learning load and solar from history.
+    estimated: bool = False
     total_active_power: int = 0
     # Wh (hourly-average W): battery charging power attributed to each
     # source this hour, via energy balance — solar surplus (solar minus
@@ -142,3 +146,7 @@ class Day:
     # Which source a price/solar Day was read from (prices.PRICE_SOURCES /
     # solar.SOLAR_SOURCES key), "" if none -- shown in the panel.
     source: str = ""
+    # True when the sources gave nothing on the last refresh and this is the
+    # last known data for the same date, kept (prices don't change once
+    # published; a forecast is still the best guess there is).
+    kept: bool = False
