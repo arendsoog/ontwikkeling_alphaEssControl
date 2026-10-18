@@ -1171,13 +1171,13 @@ class AlphaEssPanel extends HTMLElement {
       row("Volgend uur", actionLabel(next), "", "schedule_next_hour_action"),
       row("Dispatch-modus", this._text("dispatch_current_mode") ?? "–", "", "dispatch_current_mode"),
       row("Handmatige override", st ? (st.manual_override ? actionLabel(st.manual_override) : "Geen") : "–", st && st.manual_override ? "warn" : ""),
+      row("Prijs nu (all-in)", this._formatted("price_current_hour"), "", "price_current_hour"),
+      row("Winststatus", this._formatted("price_earning_status"), "", "price_earning_status"),
     ];
     const right = [
       row("Ontladen naar net via schema", this._formatted("discharge_enabled"), "", "discharge_enabled"),
-      row("Prijs nu (all-in)", this._formatted("price_current_hour"), "", "price_current_hour"),
-      row("Winststatus", this._formatted("price_earning_status"), "", "price_earning_status"),
-      sourcesRow("Prijsbron", st && st.price_sources),
       sourcesRow("Zonnevoorspelling", st && st.solar_sources),
+      sourcesRow("Prijsbron", st && st.price_sources),
       sourcesRow("Netmeting", meter && meter.meters, "huisverbruik, dag/nachttarief, regelen van netladen"),
       sourcesRow("Grens netladen", meter && meter.caps, "de hoogste geldt (maandpiek in hele kW)"),
       row("Extra PV-sturing negatieve prijzen", st ? (st.extra_pv_control_enabled ? "Actief" : "Uit") : "–", st ? tone(st.extra_pv_control_enabled) : ""),
