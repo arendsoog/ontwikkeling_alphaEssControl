@@ -1160,7 +1160,7 @@ class AlphaEssPanel extends HTMLElement {
       const list = sources
         .map((s, i) => `<span class="source ${s.active ? "in-use" : ""}" title="${s.active ? "In gebruik" : "Niet in gebruik"}">${i + 1}. ${esc(s.name)}</span>`)
         .join("");
-      const head = note ? `<span>${label}<small class="status-note">${esc(note)}</small></span>` : `<span>${label}</span>`;
+      const head = note ? `<span>${label} <small class="status-note">· ${esc(note)}</small></span>` : `<span>${label}</span>`;
       return `<div class="status-row">${head}<span class="sources">${list}</span></div>`;
     };
     const meter = st && st.grid_meter;
@@ -2550,7 +2550,7 @@ const STYLE = `
   .g-main { grid-template-columns: minmax(420px, 1.35fr) minmax(280px, 1fr) minmax(300px, 1fr); column-gap: 48px; }
   .g-main .flow-card { grid-row: span 2; }
   .g2 { grid-template-columns: 1fr 1fr; }
-  .g-status { grid-template-columns: minmax(240px, 0.32fr) 1fr; column-gap: 48px; }
+  .g-status { grid-template-columns: minmax(300px, 0.45fr) 1fr; column-gap: 48px; }
   @media (max-width: 1300px) {
     .g-main { grid-template-columns: 1fr 1fr; }
     .g-main .flow-card { grid-column: 1 / -1; grid-row: auto; }
@@ -2726,7 +2726,7 @@ const STYLE = `
   .io-note { font-size: 11px; color: var(--muted); text-align: center; margin-top: 6px; }
 
   /* status rows */
-  .status-note { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .status-note { font-size: 11px; color: var(--muted); }
   .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 56px; }
   @media (max-width: 700px) { .status-grid { grid-template-columns: 1fr; } }
   .status-row {
