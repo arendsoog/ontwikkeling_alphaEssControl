@@ -1149,8 +1149,13 @@ class AlphaEssPanel extends HTMLElement {
     const next = this._text("schedule_next_hour_action");
     const actionLabel = (value) => (ACTIONS[value] ? ACTIONS[value].label : value ?? "–");
     const tone = (ok) => (ok ? "accent" : "muted");
+    // A sensor that is unknown/unavailable shows in red.
+    const broken = (entity) => {
+      const s = entity && this._state(entity);
+      return Boolean(s && (s.state === "unavailable" || s.state === "unknown"));
+    };
     const row = (label, value, cls = "", entity = "") =>
-      `<div class="status-row" ${entity ? `data-entity="${esc(this._entities[entity] || "")}"` : ""}><span>${label}</span><span class="${cls}">${esc(value)}</span></div>`;
+      `<div class="status-row" ${entity ? `data-entity="${esc(this._entities[entity] || "")}"` : ""}><span>${label}</span><span class="${broken(entity) ? "error" : cls}">${esc(value)}</span></div>`;
     // Sources in the order they're tried ("1. … 2. …"); the one today's
     // data actually came from in green.
     // `note`: what it is used for, under the label.
@@ -1158,7 +1163,11 @@ class AlphaEssPanel extends HTMLElement {
       if (!sources) return row(label, "–");
       if (!sources.length) return row(label, "Niet ingesteld", "muted");
       const list = sources
-        .map((s, i) => `<span class="source ${s.active ? "in-use" : ""}" title="${s.active ? "In gebruik" : "Niet in gebruik"}">${i + 1}. ${esc(s.name)}</span>`)
+        .map((s, i) => {
+          const cls = s.error ? "error" : s.active ? "in-use" : "";
+          const title = s.error ? "Niet bereikbaar / geen gegevens" : s.active ? "In gebruik" : "Niet in gebruik";
+          return `<span class="source ${cls}" title="${title}">${i + 1}. ${esc(s.name)}</span>`;
+        })
         .join("");
       const head = note ? `<span>${label} <small class="status-note">· ${esc(note)}</small></span>` : `<span>${label}</span>`;
       return `<div class="status-row">${head}<span class="sources">${list}</span></div>`;
@@ -2742,6 +2751,7 @@ const STYLE = `
 
   /* status rows */
   .status-note { font-size: 11px; color: var(--muted); }
+  .status-row .error, .source.error { color: var(--error-color, #ef4444); }
   .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 56px; }
   .status-grid > div { order: var(--o-wide); display: flex; flex-direction: column; }
   .status-grid > div > .status-row { flex: 1; }

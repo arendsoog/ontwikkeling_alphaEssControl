@@ -173,7 +173,8 @@ def source_list(
 
     `configured` maps each source to its setting: an entity_id, or a list
     of location names, shown after the name when there's more than one
-    (those locations' forecasts are summed).
+    (those locations' forecasts are summed). `error`: a source tried before
+    the one in use -- or every source, when none gave data -- gave nothing.
     """
     result = []
     for source in sorted(names, key=lambda s: s != primary):
@@ -183,7 +184,10 @@ def source_list(
         name = names[source]
         if isinstance(setting, list) and len(setting) > 1:
             name = f"{name} ({' + '.join(setting)})"
-        result.append({"name": name, "active": source == active})
+        result.append({"name": name, "active": source == active, "error": False})
+    in_use = next((i for i, s in enumerate(result) if s["active"]), len(result))
+    for item in result[:in_use]:
+        item["error"] = True
     return result
 
 

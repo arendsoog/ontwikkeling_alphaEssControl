@@ -3168,13 +3168,14 @@ async def test_grid_meter_status_p1_in_use_and_month_peak_in_force(hass: HomeAss
 
     status = grid_meter_status(hass, entry, dt_util.now())
 
+    # No runtime data in this test: the inverter gives no grid reading.
     assert status["meters"] == [
-        {"name": "P1-meter (P1 net)", "active": True},
-        {"name": "Omvormer (eigen netmeting)", "active": False},
+        {"name": "P1-meter (P1 net)", "active": True, "error": False},
+        {"name": "Omvormer (eigen netmeting)", "active": False, "error": True},
     ]
     assert status["caps"] == [
-        {"name": "Schuifregelaar 6 kW", "active": False},
-        {"name": "Maandpiek 11 kW", "active": True},
+        {"name": "Schuifregelaar 6 kW", "active": False, "error": False},
+        {"name": "Maandpiek 11 kW", "active": True, "error": False},
     ]
 
 
@@ -3192,19 +3193,25 @@ async def test_grid_meter_status_falls_back_when_the_p1_meter_is_offline(hass: H
     status = grid_meter_status(hass, entry, dt_util.now())
 
     assert [m["active"] for m in status["meters"]] == [False, True]
+    assert status["meters"][0]["error"] is True
     assert status["caps"] == [
-        {"name": "Schuifregelaar 6 kW", "active": True},
-        {"name": "Maandpiek niet beschikbaar", "active": False},
+        {"name": "Schuifregelaar 6 kW", "active": True, "error": False},
+        {"name": "Maandpiek niet beschikbaar", "active": False, "error": True},
     ]
 
 
 async def test_grid_meter_status_without_p1_or_peak_sensor(hass: HomeAssistant):
     entry = _meter_entry(hass)
+    entry.runtime_data = SimpleNamespace(
+        modbus_coordinator=SimpleNamespace(data={"grid_power": 450})
+    )
 
     status = grid_meter_status(hass, entry, dt_util.now())
 
-    assert status["meters"] == [{"name": "Omvormer (eigen netmeting)", "active": True}]
-    assert status["caps"] == [{"name": "Schuifregelaar 6 kW", "active": True}]
+    assert status["meters"] == [
+        {"name": "Omvormer (eigen netmeting)", "active": True, "error": False}
+    ]
+    assert status["caps"] == [{"name": "Schuifregelaar 6 kW", "active": True, "error": False}]
 
 
 # --- 5-minute samples across a restart ---------------------------------------

@@ -1476,21 +1476,33 @@ def grid_meter_status(hass: HomeAssistant, entry: ConfigEntry, now: datetime) ->
             state = hass.states.get(source)
             name = f"P1-meter ({state.name if state else source})"
         p1_ok = fresh_p1_power(hass, source, now)[0] is not None
-        meters.append({"name": name, "active": p1_ok})
-    meters.append({"name": "Omvormer (eigen netmeting)", "active": not p1_ok})
+        meters.append({"name": name, "active": p1_ok, "error": not p1_ok})
+    runtime = getattr(entry, "runtime_data", None)
+    modbus_data = (runtime.modbus_coordinator.data if runtime else None) or {}
+    inverter_ok = modbus_data.get("grid_power") is not None
+    meters.append(
+        {"name": "Omvormer (eigen netmeting)", "active": not p1_ok, "error": not inverter_ok}
+    )
 
     slider_w = _number_entity_value(hass, entry, "max_grid_load", DEFAULT_MAX_GRID_LOAD) * 1000
     peak_entity = options.get(CONF_PEAK_LOAD_THIS_MONTH_ENTITY)
     peak_w = _entity_power(hass, peak_entity)
     peak_floor_w = math.floor(peak_w / 1000) * 1000 if peak_w is not None else None
     peak_in_force = peak_floor_w is not None and peak_floor_w > slider_w
-    caps = [{"name": f"Schuifregelaar {slider_w / 1000:g} kW", "active": not peak_in_force}]
+    caps = [
+        {
+            "name": f"Schuifregelaar {slider_w / 1000:g} kW",
+            "active": not peak_in_force,
+            "error": False,
+        }
+    ]
     if peak_entity:
         caps.append(
             {
                 "name": "Maandpiek "
                 + ("niet beschikbaar" if peak_w is None else f"{peak_floor_w / 1000:g} kW"),
                 "active": peak_in_force,
+                "error": peak_w is None,
             }
         )
     return {"meters": meters, "caps": caps}
