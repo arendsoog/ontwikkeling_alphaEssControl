@@ -1435,6 +1435,33 @@ async def test_real_data_coordinator_estimates_an_unreachable_extra_pv_from_the_
     assert hour.estimated is True  # left out of the learning
 
 
+async def test_fallbacks_are_logged_once_as_an_error(hass: HomeAssistant, freezer, caplog):
+    freezer.move_to("2024-01-15 10:03:00")
+    hass.states.async_set("sensor.sma_pv_power", "unavailable")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            "extra_pv_power_entity": "sensor.sma_pv_power",
+            "pv_power": 4000,
+            "extra_pv_power_capacity": 6000,
+        },
+    )
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 1000, "battery_power": 0, "grid_power": 50}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    await coordinator._async_update_data()
+    freezer.tick(timedelta(minutes=5))
+    await coordinator._async_update_data()
+
+    errors = [r for r in caplog.records if r.levelname == "ERROR" and "extra PV" in r.message]
+    assert len(errors) == 1  # once when it starts, not every sample
+
+
 async def test_real_data_coordinator_flags_an_hour_with_an_unknown_ev_charger(
     hass: HomeAssistant, freezer
 ):

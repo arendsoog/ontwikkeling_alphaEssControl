@@ -96,12 +96,16 @@ def keep_last_known(new: Day, previous: Day | None, target: date) -> Day:
     """`new`, or -- when it has no data -- the last known Day for the same
     date (marked `kept`), so a source dropping out doesn't wipe a day's
     prices/forecast the planner was using."""
-    if new.valid or previous is None or not previous.valid:
+    if new.valid:
+        if previous is not None and previous.kept:
+            LOGGER.info("Data for %s available again (%s)", target, new.source or "?")
+        return new
+    if previous is None or not previous.valid:
         return new
     if (previous.year, previous.mon, previous.day) != (target.year, target.month, target.day):
         return new
     if not previous.kept:
-        LOGGER.warning(
+        LOGGER.error(
             "No data from any source for %s -- keeping the last known (%s)",
             target,
             previous.source or "?",

@@ -712,8 +712,12 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         # REG_BATTERY_TOTAL_ENERGY_CHARGE comment). Also in-memory only.
         self._battery_charge_energy_at_hour_start: float | None = None
         self._battery_discharge_energy_at_hour_start: float | None = None
-        # True while the inverter doesn't answer (no samples taken meanwhile).
+        # True while the inverter doesn't answer (no samples taken meanwhile),
+        # the extra PV is being estimated, or the EV charger gives no reading
+        # -- each logged once when it starts and when it ends.
         self._modbus_down = False
+        self._extra_pv_estimating = False
+        self._ev_missing = False
 
     async def _async_update_data(self) -> RealPowerData:
         """Sample current power values and roll the hour/day over as needed."""
@@ -988,7 +992,7 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
             modbus_data
         )
         if not modbus_ok and not self._modbus_down:
-            LOGGER.warning("orchestrator: inverter not answering -- no 5-minute samples meanwhile")
+            LOGGER.error("orchestrator: inverter not answering -- no 5-minute samples meanwhile")
         elif modbus_ok and self._modbus_down:
             LOGGER.info("orchestrator: inverter answering again -- sampling resumed")
         self._modbus_down = not modbus_ok
@@ -1002,6 +1006,14 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
             # scale the roof's production by the two installations' peaks.
             extra_pv_power = _estimated_extra_pv(pv_roof, self.config_entry.options)
             estimated = extra_pv_power is not None and extra_pv_power > 0
+        # Logged only while the sun is up (an SMA asleep at night is normal).
+        if estimated and not self._extra_pv_estimating:
+            LOGGER.error(
+                "orchestrator: no extra PV reading -- estimating it from the roof's production"
+            )
+        elif extra_pv_power is not None and not estimated and self._extra_pv_estimating:
+            LOGGER.info("orchestrator: extra PV reading back")
+        self._extra_pv_estimating = estimated
 
         house_load_power = _house_load_power(self.hass, self._house_load_entity_id())
         total_active_power = (
@@ -1014,8 +1026,16 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
 
         ev_entity = self.config_entry.options.get(CONF_EV_CHARGER_POWER_ENTITY)
         ev_power = _entity_power(self.hass, ev_entity)
-        if ev_entity and ev_power is None:
+        ev_missing = bool(ev_entity) and ev_power is None
+        if ev_missing:
             estimated = True  # an EV charge would be counted as house load
+        if ev_missing and not self._ev_missing:
+            LOGGER.error(
+                "orchestrator: no EV charger reading -- its hours are left out of the learning"
+            )
+        elif not ev_missing and self._ev_missing:
+            LOGGER.info("orchestrator: EV charger reading back")
+        self._ev_missing = ev_missing
 
         samples_before = hour.five_min_count
         if modbus_ok:
@@ -1342,7 +1362,7 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         if not getattr(self._modbus_coordinator, "last_update_success", True) and self.data:
             # The inverter isn't answering: its SOC is a frozen old value and
             # nothing can be sent to it anyway -- keep the last plan.
-            LOGGER.warning("orchestrator: inverter not answering -- keeping the last plan")
+            LOGGER.error("orchestrator: inverter not answering -- keeping the last plan")
             return self.data
         cur_soc = round(modbus_data.get("battery_soc", 0) * SOC_MAX_BATTERY / 100)
 
@@ -1628,7 +1648,7 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
                     self._p1_fallback = False
                 return power, measured_at
             if not self._p1_fallback:
-                LOGGER.warning(
+                LOGGER.error(
                     "dispatch: no valid P1 meter reading -- regulating grid charge on the "
                     "inverter's own grid reading until it returns"
                 )
@@ -1677,7 +1697,7 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
             # Neither the P1 meter nor the inverter gives a grid reading:
             # the cap can't be guarded, so don't charge from the grid.
             if self._grid_charge_power != 0:
-                LOGGER.warning(
+                LOGGER.error(
                     "dispatch: no grid reading at all -- stopping grid charge until one returns"
                 )
             self._grid_charge_power = 0
@@ -1857,7 +1877,7 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
                         # next cycle, but never let it stop the battery's own
                         # dispatch below.
                         if not self._extra_pv_unreachable:
-                            LOGGER.warning(
+                            LOGGER.error(
                                 "dispatch: extra PV unreachable (%s) -- retrying every cycle",
                                 err,
                             )
