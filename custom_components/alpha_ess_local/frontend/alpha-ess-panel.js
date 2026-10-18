@@ -2715,8 +2715,14 @@ const STYLE = `
   .range.active { color: var(--accent); background: rgba(20, 184, 166, 0.1); }
 
   /* system status */
+  /* System and integration status side by side, equally tall: the ring
+     centred in the system card's free space, charge/discharge at its foot,
+     level with the status card's last rows. */
+  .g-status > .card { display: flex; flex-direction: column; }
+  .g-status > .card > .card-body { flex: 1; }
   .system { display: flex; flex-direction: column; align-items: stretch; }
-  .ring { position: relative; width: 190px; margin: 0 auto; }
+  .ring { position: relative; width: 190px; margin: auto; }
+  .system .io { margin-top: 24px; }
   .ring svg { display: block; width: 100%; }
   .ring-bg, .ring-fg { fill: none; stroke-width: 14; stroke-linecap: round; }
   .ring-bg { stroke: var(--line); }
