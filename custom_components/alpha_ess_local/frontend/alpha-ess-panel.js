@@ -1153,14 +1153,17 @@ class AlphaEssPanel extends HTMLElement {
       `<div class="status-row" ${entity ? `data-entity="${esc(this._entities[entity] || "")}"` : ""}><span>${label}</span><span class="${cls}">${esc(value)}</span></div>`;
     // Sources in the order they're tried ("1. … 2. …"); the one today's
     // data actually came from in green.
-    const sourcesRow = (label, sources) => {
+    // `note`: what it is used for, under the label.
+    const sourcesRow = (label, sources, note = "") => {
       if (!sources) return row(label, "–");
       if (!sources.length) return row(label, "Niet ingesteld", "muted");
       const list = sources
         .map((s, i) => `<span class="source ${s.active ? "in-use" : ""}" title="${s.active ? "In gebruik" : "Niet in gebruik"}">${i + 1}. ${esc(s.name)}</span>`)
         .join("");
-      return `<div class="status-row"><span>${label}</span><span class="sources">${list}</span></div>`;
+      const head = note ? `<span>${label}<small class="status-note">${esc(note)}</small></span>` : `<span>${label}</span>`;
+      return `<div class="status-row">${head}<span class="sources">${list}</span></div>`;
     };
+    const meter = st && st.grid_meter;
 
     const left = [
       row("Batterijsturing", st ? (st.control_enabled ? "Actief" : "Uit (alleen loggen)") : "–", st ? tone(st.control_enabled) : ""),
@@ -1175,6 +1178,8 @@ class AlphaEssPanel extends HTMLElement {
       row("Winststatus", this._formatted("price_earning_status"), "", "price_earning_status"),
       sourcesRow("Prijsbron", st && st.price_sources),
       sourcesRow("Zonnevoorspelling", st && st.solar_sources),
+      sourcesRow("Netmeting", meter && meter.meters, "huisverbruik, dag/nachttarief, regelen van netladen"),
+      sourcesRow("Grens netladen", meter && meter.caps, "de hoogste geldt (maandpiek in hele kW)"),
       row("Extra PV-sturing negatieve prijzen", st ? (st.extra_pv_control_enabled ? "Actief" : "Uit") : "–", st ? tone(st.extra_pv_control_enabled) : ""),
     ];
     return `${this._header("mdi:shield-check-outline", "Integratiestatus")}<div class="card-body status-grid"><div>${left.join("")}</div><div>${right.join("")}</div></div>`;
@@ -2721,6 +2726,7 @@ const STYLE = `
   .io-note { font-size: 11px; color: var(--muted); text-align: center; margin-top: 6px; }
 
   /* status rows */
+  .status-note { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
   .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 56px; }
   @media (max-width: 700px) { .status-grid { grid-template-columns: 1fr; } }
   .status-row {

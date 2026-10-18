@@ -67,7 +67,7 @@ from ..const import (
     SOLAR_SOURCE_SOLCAST,
 )
 from ..data import MAX_FIVE_MINS, Charge, Day
-from ..orchestrator import get_db_path
+from ..orchestrator import get_db_path, grid_meter_status
 from ..prices import PRICE_SOURCES
 from ..schedule import set_charging_msg
 from ..solar import SOLAR_SOURCES
@@ -154,6 +154,7 @@ def _ws_panel_status(
             "manual_override": None if override is None else set_charging_msg(override),
             "price_sources": price_sources,
             "solar_sources": solar_sources,
+            "grid_meter": grid_meter_status(hass, entry, dt_util.now()),
         },
     )
 

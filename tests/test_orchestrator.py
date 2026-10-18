@@ -69,6 +69,7 @@ from custom_components.alpha_ess_local.orchestrator import (
     async_handle_daily_rollover,
     async_handle_hourly_rollover,
     get_db_path,
+    grid_meter_status,
     hour_correction_from_mean,
     merge_day_sources,
     migrate_legacy_db_if_needed,
@@ -2968,7 +2969,7 @@ def _remembering_client(initial_param):
     return client
 
 
-def _grid_charge_setup(hass, *, control_enabled=True, p1_power="1900"):
+def _grid_charge_setup(hass, *, control_enabled=True, p1_power="1900", inverter_grid=None):
     if p1_power is not None:
         hass.states.async_set("sensor.p1_net_power", p1_power, {"unit_of_measurement": "W"})
     entry = MockConfigEntry(
@@ -2999,8 +3000,11 @@ def _grid_charge_setup(hass, *, control_enabled=True, p1_power="1900"):
             pv_on=True,
         )
     )
+    modbus = _fake_modbus_coordinator(client)
+    if inverter_grid is not None:
+        modbus.data["grid_power"] = inverter_grid
     coordinator = AlphaEssLocalDispatchCoordinator(
-        hass, entry, _fake_modbus_coordinator(client), SimpleNamespace(data={"today": day})
+        hass, entry, modbus, SimpleNamespace(data={"today": day})
     )
     return coordinator, client
 
@@ -3066,7 +3070,7 @@ async def test_grid_charge_not_regulated_when_control_disabled(hass: HomeAssista
     assert coordinator.update_interval == DISPATCH_INTERVAL
 
 
-async def test_grid_charge_does_not_start_without_a_p1_reading(hass: HomeAssistant, freezer):
+async def test_grid_charge_does_not_start_without_any_grid_reading(hass: HomeAssistant, freezer):
     freezer.move_to("2024-01-15 14:00:00")
     coordinator, client = _grid_charge_setup(hass, p1_power=None)
 
@@ -3076,7 +3080,7 @@ async def test_grid_charge_does_not_start_without_a_p1_reading(hass: HomeAssista
     assert client.async_set_dispatch_param.await_args.args[0].power == 0
 
 
-async def test_grid_charge_stops_when_the_p1_meter_goes_unavailable(hass: HomeAssistant, freezer):
+async def test_grid_charge_stops_when_no_grid_reading_is_left(hass: HomeAssistant, freezer):
     freezer.move_to("2024-01-15 14:00:00")
     coordinator, client = _grid_charge_setup(hass)
     assert (await coordinator._async_update_data()).param.power == 1700
@@ -3089,7 +3093,9 @@ async def test_grid_charge_stops_when_the_p1_meter_goes_unavailable(hass: HomeAs
     assert client.async_set_dispatch_param.await_args.args[0].power == 0
 
 
-async def test_grid_charge_stops_on_a_stale_p1_reading(hass: HomeAssistant, freezer):
+async def test_grid_charge_stops_on_a_stale_p1_reading_without_inverter_reading(
+    hass: HomeAssistant, freezer
+):
     freezer.move_to("2024-01-15 14:00:00")
     coordinator, _client = _grid_charge_setup(hass)
     await coordinator._async_update_data()
@@ -3099,6 +3105,29 @@ async def test_grid_charge_stops_on_a_stale_p1_reading(hass: HomeAssistant, free
     decision = await coordinator._async_update_data()
 
     assert decision.param.power == 0
+
+
+async def test_grid_charge_falls_back_to_the_inverter_reading_when_p1_drops_out(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 14:00:00")
+    coordinator, client = _grid_charge_setup(hass, inverter_grid=2600)
+    assert (await coordinator._async_update_data()).param.power == 1700
+
+    # P1 meter offline: regulate on the inverter's own grid reading (2.6 kW
+    # import vs the 2.0 kW cap), once a full Modbus poll has passed.
+    hass.states.async_set("sensor.p1_net_power", "unavailable")
+    freezer.tick(timedelta(seconds=40))
+    decision = await coordinator._async_update_data()
+
+    assert decision.param.power == 1100
+    assert coordinator._p1_fallback is True
+
+    # Meter back: regulating on it again.
+    freezer.tick(timedelta(seconds=10))
+    hass.states.async_set("sensor.p1_net_power", "2000", {"unit_of_measurement": "W"})
+    await coordinator._async_update_data()
+    assert coordinator._p1_fallback is False
 
 
 async def test_grid_charge_resumes_when_the_p1_meter_returns(hass: HomeAssistant, freezer):
@@ -3112,6 +3141,70 @@ async def test_grid_charge_resumes_when_the_p1_meter_returns(hass: HomeAssistant
     decision = await coordinator._async_update_data()
 
     assert decision.param.power == 850
+
+
+# --- grid meter / cap shown in the panel --------------------------------------
+
+
+def _meter_entry(hass, **options):
+    entry = MockConfigEntry(domain=DOMAIN, options=options)
+    entry.add_to_hass(hass)
+    hass.states.async_set(_register_soc_number(hass, entry, "max_grid_load"), "6.0")
+    return entry
+
+
+async def test_grid_meter_status_p1_in_use_and_month_peak_in_force(hass: HomeAssistant):
+    hass.states.async_set(
+        "sensor.p1_net_power", "900", {"unit_of_measurement": "W", "friendly_name": "P1 net"}
+    )
+    hass.states.async_set("sensor.peak", "11.4", {"unit_of_measurement": "kW"})
+    entry = _meter_entry(
+        hass,
+        **{
+            CONF_HOUSE_LOAD_POWER_ENTITY: "sensor.p1_net_power",
+            CONF_PEAK_LOAD_THIS_MONTH_ENTITY: "sensor.peak",
+        },
+    )
+
+    status = grid_meter_status(hass, entry, dt_util.now())
+
+    assert status["meters"] == [
+        {"name": "P1-meter (P1 net)", "active": True},
+        {"name": "Omvormer (eigen netmeting)", "active": False},
+    ]
+    assert status["caps"] == [
+        {"name": "Schuifregelaar 6 kW", "active": False},
+        {"name": "Maandpiek 11 kW", "active": True},
+    ]
+
+
+async def test_grid_meter_status_falls_back_when_the_p1_meter_is_offline(hass: HomeAssistant):
+    hass.states.async_set("sensor.p1_net_power", "unavailable")
+    hass.states.async_set("sensor.peak", "unavailable")
+    entry = _meter_entry(
+        hass,
+        **{
+            CONF_HOUSE_LOAD_POWER_ENTITY: "sensor.p1_net_power",
+            CONF_PEAK_LOAD_THIS_MONTH_ENTITY: "sensor.peak",
+        },
+    )
+
+    status = grid_meter_status(hass, entry, dt_util.now())
+
+    assert [m["active"] for m in status["meters"]] == [False, True]
+    assert status["caps"] == [
+        {"name": "Schuifregelaar 6 kW", "active": True},
+        {"name": "Maandpiek niet beschikbaar", "active": False},
+    ]
+
+
+async def test_grid_meter_status_without_p1_or_peak_sensor(hass: HomeAssistant):
+    entry = _meter_entry(hass)
+
+    status = grid_meter_status(hass, entry, dt_util.now())
+
+    assert status["meters"] == [{"name": "Omvormer (eigen netmeting)", "active": True}]
+    assert status["caps"] == [{"name": "Schuifregelaar 6 kW", "active": True}]
 
 
 # --- 5-minute samples across a restart ---------------------------------------

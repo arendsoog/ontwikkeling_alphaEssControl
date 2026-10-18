@@ -25,7 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfPower
@@ -1435,9 +1435,65 @@ DISPATCH_INTERVAL_GRID_CHARGE = timedelta(seconds=10)
 # with the 30 s Modbus poll.
 GRID_SETTLE_P1_S = 5
 GRID_SETTLE_MODBUS_S = 35
-# A P1 reading older than this counts as missing (meter offline) and stops
-# grid charging; DSMR/HomeWizard normally report every 1-10 s.
+# A P1 reading older than this counts as missing (meter offline): grid
+# charging is then regulated on the inverter's own grid reading; DSMR/
+# HomeWizard normally report every 1-10 s.
 GRID_READING_MAX_AGE_S = 60
+
+
+def fresh_p1_power(
+    hass: HomeAssistant, source: str, now: datetime
+) -> tuple[float | None, datetime | None]:
+    """The P1/smart-meter source's net grid power (W) and when it was
+    measured -- power None when it has no reading or one older than
+    GRID_READING_MAX_AGE_S (meter offline)."""
+    measured_at = _house_load_reading_time(hass, source)
+    if measured_at is None or (now - measured_at).total_seconds() > GRID_READING_MAX_AGE_S:
+        return None, measured_at
+    return _house_load_power(hass, source), measured_at
+
+
+def grid_meter_status(hass: HomeAssistant, entry: ConfigEntry, now: datetime) -> dict[str, Any]:
+    """Which grid meter and which grid-charge cap are in use, for the panel.
+
+    `meters`: the P1/smart-meter source (when configured), then the
+    inverter's own grid reading -- the one in use marked active (the P1
+    meter while it gives fresh readings). It measures the house load, the
+    day/night tariff and the grid import the grid charge is regulated on.
+    `caps`: the "max grid load" slider and the month's peak (when a sensor
+    is configured) -- the higher one, in whole kW, is the cap in force
+    (see _effective_max_grid_load_wh).
+    """
+    options = entry.options
+    meters: list[dict[str, Any]] = []
+    source = options.get(CONF_HOUSE_LOAD_POWER_ENTITY)
+    p1_ok = False
+    if source:
+        if source.startswith("dsmr:"):
+            dsmr_entry = hass.config_entries.async_get_entry(source.removeprefix("dsmr:"))
+            name = f"P1-meter (DSMR {dsmr_entry.title if dsmr_entry else '?'})"
+        else:
+            state = hass.states.get(source)
+            name = f"P1-meter ({state.name if state else source})"
+        p1_ok = fresh_p1_power(hass, source, now)[0] is not None
+        meters.append({"name": name, "active": p1_ok})
+    meters.append({"name": "Omvormer (eigen netmeting)", "active": not p1_ok})
+
+    slider_w = _number_entity_value(hass, entry, "max_grid_load", DEFAULT_MAX_GRID_LOAD) * 1000
+    peak_entity = options.get(CONF_PEAK_LOAD_THIS_MONTH_ENTITY)
+    peak_w = _entity_power(hass, peak_entity)
+    peak_floor_w = math.floor(peak_w / 1000) * 1000 if peak_w is not None else None
+    peak_in_force = peak_floor_w is not None and peak_floor_w > slider_w
+    caps = [{"name": f"Schuifregelaar {slider_w / 1000:g} kW", "active": not peak_in_force}]
+    if peak_entity:
+        caps.append(
+            {
+                "name": "Maandpiek "
+                + ("niet beschikbaar" if peak_w is None else f"{peak_floor_w / 1000:g} kW"),
+                "active": peak_in_force,
+            }
+        )
+    return {"meters": meters, "caps": caps}
 
 
 class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDecision | None]):
@@ -1495,23 +1551,35 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         # the inverter had time to react to the previous write.
         self._grid_charge_power: int | None = None
         self._grid_charge_written_at: datetime | None = None
+        # True while the configured P1 meter gives no fresh reading and the
+        # inverter's own grid reading is used instead (logged on change).
+        self._p1_fallback = False
 
     def _measured_grid_power(self, now: datetime) -> tuple[float | None, datetime | None]:
         """Measured net grid power (W, + = import) and when it was measured.
 
-        With a P1/smart-meter source configured, only that meter counts: if
-        it gives no value, or one older than GRID_READING_MAX_AGE_S, this
-        returns None (and grid charging stops) -- deliberately no fallback,
-        the cap can't be guarded without it. Without a P1 source, the
-        inverter's own grid reading is used; its exact time isn't known
-        (None), only that it's polled every 30 s.
+        The P1/smart-meter source when one is configured and gives a fresh
+        reading (at most GRID_READING_MAX_AGE_S old). Otherwise -- no P1
+        source, or the meter is offline -- the inverter's own grid reading:
+        the same net import at the grid connection, only polled every 30 s,
+        so its exact time isn't known (None). With the meter offline its
+        month-peak sensor is gone too, so the cap falls back to the slider
+        (see _effective_max_grid_load_wh).
         """
         source = self.config_entry.options.get(CONF_HOUSE_LOAD_POWER_ENTITY)
         if source:
-            measured_at = _house_load_reading_time(self.hass, source)
-            if measured_at is None or (now - measured_at).total_seconds() > GRID_READING_MAX_AGE_S:
-                return None, measured_at
-            return _house_load_power(self.hass, source), measured_at
+            power, measured_at = fresh_p1_power(self.hass, source, now)
+            if power is not None:
+                if self._p1_fallback:
+                    LOGGER.info("dispatch: P1 meter reading back -- regulating on it again")
+                    self._p1_fallback = False
+                return power, measured_at
+            if not self._p1_fallback:
+                LOGGER.warning(
+                    "dispatch: no valid P1 meter reading -- regulating grid charge on the "
+                    "inverter's own grid reading until it returns"
+                )
+                self._p1_fallback = True
         return (self._modbus_coordinator.data or {}).get("grid_power"), None
 
     def _reading_after_last_write(self, measured_at: datetime | None, now: datetime) -> bool:
@@ -1553,11 +1621,11 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         self.update_interval = DISPATCH_INTERVAL_GRID_CHARGE
         grid_w, measured_at = self._measured_grid_power(now)
         if grid_w is None:
-            # No (fresh) meter reading: the cap can't be guarded, so don't
-            # charge from the grid until the meter is back.
+            # Neither the P1 meter nor the inverter gives a grid reading:
+            # the cap can't be guarded, so don't charge from the grid.
             if self._grid_charge_power != 0:
                 LOGGER.warning(
-                    "dispatch: no valid grid/P1 meter reading -- stopping grid charge until it returns"
+                    "dispatch: no grid reading at all -- stopping grid charge until one returns"
                 )
             self._grid_charge_power = 0
             return replace(decision, param=replace(decision.param, power=0))
