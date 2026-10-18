@@ -240,9 +240,19 @@ def test_source_list_in_order_with_the_active_one_marked():
     names = {"entsoe": "ENTSO-E", "frank_energie": "Frank Energie"}
     configured = {"entsoe": "sensor.entsoe", "frank_energie": "sensor.frank"}
 
+    # Frank Energie was tried first and gave nothing: shown as an error.
     assert source_list(names, configured, "frank_energie", "entsoe") == [
-        {"name": "Frank Energie", "active": False},
-        {"name": "ENTSO-E", "active": True},
+        {"name": "Frank Energie", "active": False, "error": True},
+        {"name": "ENTSO-E", "active": True, "error": False},
+    ]
+
+
+def test_source_list_all_errors_when_no_source_gave_data():
+    names = {"entsoe": "ENTSO-E", "frank_energie": "Frank Energie"}
+    configured = {"frank_energie": "sensor.frank"}
+
+    assert source_list(names, configured, "frank_energie", "") == [
+        {"name": "Frank Energie", "active": False, "error": True},
     ]
 
 
@@ -251,7 +261,7 @@ def test_source_list_skips_unconfigured_and_names_summed_locations():
     configured = {"forecast_solar": ["Voorkant", "Achterkant"], "solcast": []}
 
     assert source_list(names, configured, "forecast_solar", "forecast_solar") == [
-        {"name": "Forecast.Solar (Voorkant + Achterkant)", "active": True},
+        {"name": "Forecast.Solar (Voorkant + Achterkant)", "active": True, "error": False},
     ]
 
 

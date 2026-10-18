@@ -15,6 +15,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant, State
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
@@ -69,6 +70,7 @@ from custom_components.alpha_ess_local.orchestrator import (
     async_handle_daily_rollover,
     async_handle_hourly_rollover,
     get_db_path,
+    grid_meter_status,
     hour_correction_from_mean,
     merge_day_sources,
     migrate_legacy_db_if_needed,
@@ -1404,6 +1406,133 @@ async def test_real_data_coordinator_extra_pv_power_reports_configured_reading(
     assert data.extra_pv_power == 321.0
 
 
+async def test_real_data_coordinator_estimates_an_unreachable_extra_pv_from_the_roof(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 10:03:00")
+    hass.states.async_set("sensor.sma_pv_power", "unavailable")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            "extra_pv_power_entity": "sensor.sma_pv_power",
+            "pv_power": 4000,  # roof 4 kWp
+            "extra_pv_power_capacity": 6000,  # extra 6 kWp
+        },
+    )
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 1000, "battery_power": 0, "grid_power": 50}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    data = await coordinator._async_update_data()
+
+    hour = data.day.hour[dt_util.now().hour]
+    assert data.extra_pv_power == 1500.0  # 1 kW roof x 6/4
+    assert hour.five_min[0].real_extra_pv_power == 1500.0
+    assert hour.estimated is True  # left out of the learning
+
+
+async def test_fallbacks_are_logged_once_as_an_error(hass: HomeAssistant, freezer, caplog):
+    freezer.move_to("2024-01-15 10:03:00")
+    hass.states.async_set("sensor.sma_pv_power", "unavailable")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            "extra_pv_power_entity": "sensor.sma_pv_power",
+            "pv_power": 4000,
+            "extra_pv_power_capacity": 6000,
+        },
+    )
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 1000, "battery_power": 0, "grid_power": 50}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    await coordinator._async_update_data()
+    freezer.tick(timedelta(minutes=5))
+    await coordinator._async_update_data()
+
+    errors = [r for r in caplog.records if r.levelname == "ERROR" and "extra PV" in r.message]
+    assert len(errors) == 1  # once when it starts, not every sample
+
+
+async def test_real_data_coordinator_flags_an_hour_with_an_unknown_ev_charger(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 10:03:00")
+    hass.states.async_set("sensor.ev_power", "unavailable")
+    entry = MockConfigEntry(domain=DOMAIN, options={"ev_charger_power_entity": "sensor.ev_power"})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 0, "battery_power": 0, "grid_power": 900}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    data = await coordinator._async_update_data()
+
+    hour = data.day.hour[dt_util.now().hour]
+    assert hour.five_min_count == 1
+    assert hour.estimated is True
+
+
+async def test_real_data_coordinator_takes_no_sample_while_the_inverter_is_down(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 10:03:00")
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    # The last good poll's data, frozen: the latest poll failed.
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 800, "battery_power": 0, "grid_power": 50},
+        last_update_success=False,
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    data = await coordinator._async_update_data()
+
+    assert data.day.hour[dt_util.now().hour].five_min_count == 0
+
+
+async def test_schedule_coordinator_keeps_the_last_plan_while_the_inverter_is_down(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 14:00:00")
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(data={"battery_soc": 55.0}, last_update_success=False)
+    prices_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+    solar_coordinator = SimpleNamespace(data={"today": Day(valid=True), "tomorrow": Day()})
+    coordinator = AlphaEssLocalScheduleCoordinator(
+        hass, entry, modbus_coordinator, prices_coordinator, solar_coordinator
+    )
+    last_plan = {"today": Day(valid=True), "tomorrow": Day()}
+    coordinator.data = last_plan
+
+    with (
+        patch(
+            "custom_components.alpha_ess_local.storage.retrieve_mean_data",
+            MagicMock(return_value=None),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.orchestrator.run_scheduler", MagicMock()
+        ) as mock_run_scheduler,
+    ):
+        result = await coordinator._async_update_data()
+
+    assert result is last_plan
+    mock_run_scheduler.assert_not_called()
+
+
 # --- AlphaEssLocalScheduleCoordinator ----------------------------------------
 
 
@@ -2438,6 +2567,54 @@ async def test_extra_pv_control_enabled_writes_off_on_negative_price_when_batter
     assert calls[0].data == {"hub": "sma_tripower", "slave": 3, "address": 40016, "value": 0}
 
 
+async def test_unreachable_extra_pv_does_not_stop_the_battery_dispatch(
+    hass: HomeAssistant, freezer
+):
+    """Regression: a failing write to the extra PV aborted the whole cycle,
+    so the battery wasn't controlled either while the SMA was unreachable."""
+    freezer.move_to("2024-01-15 14:00:00")
+    current_hour = dt_util.now().hour
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            CONF_USABLE_BATTERY_CAPACITY: 10000,
+            CONF_CONTROL_ENABLED: True,
+            **_EXTRA_PV_OPTIONS,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    async def _fail(_call):
+        raise HomeAssistantError("SMA not reachable")
+
+    hass.services.async_register("modbus", "write_register", _fail)
+    day = _schedule_day_with_hour(current_hour, earning=Earning.EARNING_ON_USE, cutoff_soc=900)
+    client = _fake_client(
+        DispatchParam(
+            mode=DispatchMode.DEFAULT,
+            started=False,
+            power=0,
+            cutoff_soc=0,
+            duration=0,
+            para7=255,
+            pv_on=True,
+        )
+    )
+    coordinator = AlphaEssLocalDispatchCoordinator(
+        hass,
+        entry,
+        _fake_modbus_coordinator(client, battery_soc=95.0),
+        SimpleNamespace(data={"today": day}),
+    )
+
+    decision = await coordinator._async_update_data()
+
+    assert decision is not None
+    client.async_set_dispatch_param.assert_awaited()  # the battery still got its command
+    assert coordinator.extra_pv_unreachable is True  # shown red in the panel
+    assert coordinator._last_extra_pv_state is None  # retried next cycle
+
+
 async def test_extra_pv_stays_on_on_negative_price_when_battery_not_full(
     hass: HomeAssistant, freezer
 ):
@@ -2968,7 +3145,7 @@ def _remembering_client(initial_param):
     return client
 
 
-def _grid_charge_setup(hass, *, control_enabled=True, p1_power="1900"):
+def _grid_charge_setup(hass, *, control_enabled=True, p1_power="1900", inverter_grid=None):
     if p1_power is not None:
         hass.states.async_set("sensor.p1_net_power", p1_power, {"unit_of_measurement": "W"})
     entry = MockConfigEntry(
@@ -2999,8 +3176,11 @@ def _grid_charge_setup(hass, *, control_enabled=True, p1_power="1900"):
             pv_on=True,
         )
     )
+    modbus = _fake_modbus_coordinator(client)
+    if inverter_grid is not None:
+        modbus.data["grid_power"] = inverter_grid
     coordinator = AlphaEssLocalDispatchCoordinator(
-        hass, entry, _fake_modbus_coordinator(client), SimpleNamespace(data={"today": day})
+        hass, entry, modbus, SimpleNamespace(data={"today": day})
     )
     return coordinator, client
 
@@ -3066,7 +3246,7 @@ async def test_grid_charge_not_regulated_when_control_disabled(hass: HomeAssista
     assert coordinator.update_interval == DISPATCH_INTERVAL
 
 
-async def test_grid_charge_does_not_start_without_a_p1_reading(hass: HomeAssistant, freezer):
+async def test_grid_charge_does_not_start_without_any_grid_reading(hass: HomeAssistant, freezer):
     freezer.move_to("2024-01-15 14:00:00")
     coordinator, client = _grid_charge_setup(hass, p1_power=None)
 
@@ -3076,7 +3256,7 @@ async def test_grid_charge_does_not_start_without_a_p1_reading(hass: HomeAssista
     assert client.async_set_dispatch_param.await_args.args[0].power == 0
 
 
-async def test_grid_charge_stops_when_the_p1_meter_goes_unavailable(hass: HomeAssistant, freezer):
+async def test_grid_charge_stops_when_no_grid_reading_is_left(hass: HomeAssistant, freezer):
     freezer.move_to("2024-01-15 14:00:00")
     coordinator, client = _grid_charge_setup(hass)
     assert (await coordinator._async_update_data()).param.power == 1700
@@ -3089,7 +3269,9 @@ async def test_grid_charge_stops_when_the_p1_meter_goes_unavailable(hass: HomeAs
     assert client.async_set_dispatch_param.await_args.args[0].power == 0
 
 
-async def test_grid_charge_stops_on_a_stale_p1_reading(hass: HomeAssistant, freezer):
+async def test_grid_charge_stops_on_a_stale_p1_reading_without_inverter_reading(
+    hass: HomeAssistant, freezer
+):
     freezer.move_to("2024-01-15 14:00:00")
     coordinator, _client = _grid_charge_setup(hass)
     await coordinator._async_update_data()
@@ -3099,6 +3281,29 @@ async def test_grid_charge_stops_on_a_stale_p1_reading(hass: HomeAssistant, free
     decision = await coordinator._async_update_data()
 
     assert decision.param.power == 0
+
+
+async def test_grid_charge_falls_back_to_the_inverter_reading_when_p1_drops_out(
+    hass: HomeAssistant, freezer
+):
+    freezer.move_to("2024-01-15 14:00:00")
+    coordinator, client = _grid_charge_setup(hass, inverter_grid=2600)
+    assert (await coordinator._async_update_data()).param.power == 1700
+
+    # P1 meter offline: regulate on the inverter's own grid reading (2.6 kW
+    # import vs the 2.0 kW cap), once a full Modbus poll has passed.
+    hass.states.async_set("sensor.p1_net_power", "unavailable")
+    freezer.tick(timedelta(seconds=40))
+    decision = await coordinator._async_update_data()
+
+    assert decision.param.power == 1100
+    assert coordinator._p1_fallback is True
+
+    # Meter back: regulating on it again.
+    freezer.tick(timedelta(seconds=10))
+    hass.states.async_set("sensor.p1_net_power", "2000", {"unit_of_measurement": "W"})
+    await coordinator._async_update_data()
+    assert coordinator._p1_fallback is False
 
 
 async def test_grid_charge_resumes_when_the_p1_meter_returns(hass: HomeAssistant, freezer):
@@ -3112,6 +3317,77 @@ async def test_grid_charge_resumes_when_the_p1_meter_returns(hass: HomeAssistant
     decision = await coordinator._async_update_data()
 
     assert decision.param.power == 850
+
+
+# --- grid meter / cap shown in the panel --------------------------------------
+
+
+def _meter_entry(hass, **options):
+    entry = MockConfigEntry(domain=DOMAIN, options=options)
+    entry.add_to_hass(hass)
+    hass.states.async_set(_register_soc_number(hass, entry, "max_grid_load"), "6.0")
+    return entry
+
+
+async def test_grid_meter_status_p1_in_use_and_month_peak_in_force(hass: HomeAssistant):
+    hass.states.async_set(
+        "sensor.p1_net_power", "900", {"unit_of_measurement": "W", "friendly_name": "P1 net"}
+    )
+    hass.states.async_set("sensor.peak", "11.4", {"unit_of_measurement": "kW"})
+    entry = _meter_entry(
+        hass,
+        **{
+            CONF_HOUSE_LOAD_POWER_ENTITY: "sensor.p1_net_power",
+            CONF_PEAK_LOAD_THIS_MONTH_ENTITY: "sensor.peak",
+        },
+    )
+
+    status = grid_meter_status(hass, entry, dt_util.now())
+
+    # No runtime data in this test: the inverter gives no grid reading.
+    assert status["meters"] == [
+        {"name": "P1-meter (P1 net)", "active": True, "error": False},
+        {"name": "Omvormer (eigen netmeting)", "active": False, "error": True},
+    ]
+    assert status["caps"] == [
+        {"name": "Schuifregelaar 6 kW", "active": False, "error": False},
+        {"name": "Maandpiek 11 kW", "active": True, "error": False},
+    ]
+
+
+async def test_grid_meter_status_falls_back_when_the_p1_meter_is_offline(hass: HomeAssistant):
+    hass.states.async_set("sensor.p1_net_power", "unavailable")
+    hass.states.async_set("sensor.peak", "unavailable")
+    entry = _meter_entry(
+        hass,
+        **{
+            CONF_HOUSE_LOAD_POWER_ENTITY: "sensor.p1_net_power",
+            CONF_PEAK_LOAD_THIS_MONTH_ENTITY: "sensor.peak",
+        },
+    )
+
+    status = grid_meter_status(hass, entry, dt_util.now())
+
+    assert [m["active"] for m in status["meters"]] == [False, True]
+    assert status["meters"][0]["error"] is True
+    assert status["caps"] == [
+        {"name": "Schuifregelaar 6 kW", "active": True, "error": False},
+        {"name": "Maandpiek niet beschikbaar", "active": False, "error": True},
+    ]
+
+
+async def test_grid_meter_status_without_p1_or_peak_sensor(hass: HomeAssistant):
+    entry = _meter_entry(hass)
+    entry.runtime_data = SimpleNamespace(
+        modbus_coordinator=SimpleNamespace(data={"grid_power": 450})
+    )
+
+    status = grid_meter_status(hass, entry, dt_util.now())
+
+    assert status["meters"] == [
+        {"name": "Omvormer (eigen netmeting)", "active": True, "error": False}
+    ]
+    assert status["caps"] == [{"name": "Schuifregelaar 6 kW", "active": True, "error": False}]
 
 
 # --- 5-minute samples across a restart ---------------------------------------

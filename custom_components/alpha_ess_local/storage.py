@@ -226,6 +226,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # load (it only charges on solar surplus, so it's no load to plan for).
     _add_column_if_missing(conn, "five_min_data", "ev_power", "REAL DEFAULT 0")
     _add_column_if_missing(conn, "hour_data", "ev_load", "REAL DEFAULT 0")
+    # 1: a reading in the hour was missing and estimated (see Hour.estimated).
+    _add_column_if_missing(conn, "hour_data", "estimated", "INTEGER DEFAULT 0")
 
 
 def store_hour_data(
@@ -275,8 +277,8 @@ def store_hour_data(
                 (year, mon, day, hour, house_load, solar_power_roof,
                  estimated_solar_power_raw, extra_pv_power, feed_in, price, use_fee, return_fee,
                  solar_to_battery, grid_to_battery, vat_percentage,
-                 battery_charge_energy, battery_discharge_energy, ev_load)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 battery_charge_energy, battery_discharge_energy, ev_load, estimated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (year, mon, day, hour) DO UPDATE SET
                 house_load=excluded.house_load,
                 solar_power_roof=excluded.solar_power_roof,
@@ -291,7 +293,8 @@ def store_hour_data(
                 vat_percentage=excluded.vat_percentage,
                 battery_charge_energy=excluded.battery_charge_energy,
                 battery_discharge_energy=excluded.battery_discharge_energy,
-                ev_load=excluded.ev_load
+                ev_load=excluded.ev_load,
+                estimated=excluded.estimated
             """,
             (
                 day.year,
@@ -312,6 +315,7 @@ def store_hour_data(
                 the_hour.real_battery_charge_energy,
                 the_hour.real_battery_discharge_energy,
                 the_hour.real_ev_load,
+                int(the_hour.estimated),
             ),
         )
         conn.commit()
@@ -947,7 +951,7 @@ def learn_forecast_spread(db_path: str, pv_power: float, percentiles: list[float
                    h.solar_power_roof + COALESCE(h.extra_pv_power, 0)
             FROM forecast_log f JOIN hour_data h
               ON h.year = f.year AND h.mon = f.mon AND h.day = f.day AND h.hour = f.hour
-            WHERE f.solar >= ? AND h.price >= 0
+            WHERE f.solar >= ? AND h.price >= 0 AND COALESCE(h.estimated, 0) = 0
             """,
             (min_forecast,),
         ).fetchall()
@@ -1534,7 +1538,7 @@ def calculate_and_store_mean_data(db_path: str, pv_power: float) -> bool:
         rows = conn.execute(
             "SELECT year, mon, day, hour, MAX(0, house_load - COALESCE(ev_load, 0)),"
             " solar_power_roof + COALESCE(extra_pv_power, 0), estimated_solar_power_raw"
-            " FROM hour_data"
+            " FROM hour_data WHERE COALESCE(estimated, 0) = 0"
         ).fetchall()
 
     if not rows:

@@ -67,7 +67,7 @@ from ..const import (
     SOLAR_SOURCE_SOLCAST,
 )
 from ..data import MAX_FIVE_MINS, Charge, Day
-from ..orchestrator import get_db_path
+from ..orchestrator import get_db_path, grid_meter_status
 from ..prices import PRICE_SOURCES
 from ..schedule import set_charging_msg
 from ..solar import SOLAR_SOURCES
@@ -151,18 +151,21 @@ def _ws_panel_status(
             "extra_pv_string_entities": extra_pv_string_entities(hass, options),
             "extra_pv_power_capacity": options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0),
             "extra_pv_modbus_hub": options.get(CONF_EXTRA_PV_MODBUS_HUB) or None,
+            "extra_pv_unreachable": runtime.dispatch_coordinator.extra_pv_unreachable,
             "manual_override": None if override is None else set_charging_msg(override),
             "price_sources": price_sources,
             "solar_sources": solar_sources,
+            "grid_meter": grid_meter_status(hass, entry, dt_util.now()),
         },
     )
 
 
 def _today_source(coordinator: Any) -> str:
-    """Which source today's prices/forecast were read from ("" if none)."""
+    """Which source today's prices/forecast were read from ("" if none --
+    also when the sources gave nothing and the last known data is kept)."""
     data = coordinator.data or {}
     today = data.get("today")
-    return today.source if today is not None else ""
+    return today.source if today is not None and not today.kept else ""
 
 
 def source_list(
@@ -172,7 +175,8 @@ def source_list(
 
     `configured` maps each source to its setting: an entity_id, or a list
     of location names, shown after the name when there's more than one
-    (those locations' forecasts are summed).
+    (those locations' forecasts are summed). `error`: a source tried before
+    the one in use -- or every source, when none gave data -- gave nothing.
     """
     result = []
     for source in sorted(names, key=lambda s: s != primary):
@@ -182,7 +186,10 @@ def source_list(
         name = names[source]
         if isinstance(setting, list) and len(setting) > 1:
             name = f"{name} ({' + '.join(setting)})"
-        result.append({"name": name, "active": source == active})
+        result.append({"name": name, "active": source == active, "error": False})
+    in_use = next((i for i, s in enumerate(result) if s["active"]), len(result))
+    for item in result[:in_use]:
+        item["error"] = True
     return result
 
 

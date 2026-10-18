@@ -21,11 +21,11 @@ import glob
 import math
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfPower
@@ -615,6 +615,16 @@ def _sma_pv_power(hass: HomeAssistant, config_entry_id: str) -> float | None:
     return total if found else None
 
 
+def _estimated_extra_pv(pv_roof: float, options: Mapping[str, Any]) -> float | None:
+    """The extra PV installation's power estimated from the roof's: the same
+    sun, scaled by the two installations' peak power. None without both."""
+    roof_wp = options.get(CONF_PV_POWER, 0) or 0
+    extra_wp = options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0) or 0
+    if roof_wp <= 0 or extra_wp <= 0:
+        return None
+    return max(0.0, pv_roof) * extra_wp / roof_wp
+
+
 def _extra_pv_power(hass: HomeAssistant, value: str | None) -> float | None:
     """Resolve the configured extra-PV source to a power value.
 
@@ -702,6 +712,12 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         # REG_BATTERY_TOTAL_ENERGY_CHARGE comment). Also in-memory only.
         self._battery_charge_energy_at_hour_start: float | None = None
         self._battery_discharge_energy_at_hour_start: float | None = None
+        # True while the inverter doesn't answer (no samples taken meanwhile),
+        # the extra PV is being estimated, or the EV charger gives no reading
+        # -- each logged once when it starts and when it ends.
+        self._modbus_down = False
+        self._extra_pv_estimating = False
+        self._ev_missing = False
 
     async def _async_update_data(self) -> RealPowerData:
         """Sample current power values and roll the hour/day over as needed."""
@@ -970,9 +986,34 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
             hour.price = prices_today.hour[now.hour].price
 
         modbus_data = self._modbus_coordinator.data or {}
+        # The inverter didn't answer its last poll: its data is a frozen
+        # copy of the last good one, so take no sample this time.
+        modbus_ok = getattr(self._modbus_coordinator, "last_update_success", True) and bool(
+            modbus_data
+        )
+        if not modbus_ok and not self._modbus_down:
+            LOGGER.error("orchestrator: inverter not answering -- no 5-minute samples meanwhile")
+        elif modbus_ok and self._modbus_down:
+            LOGGER.info("orchestrator: inverter answering again -- sampling resumed")
+        self._modbus_down = not modbus_ok
         pv_roof = modbus_data.get("pv_power", 0)
         battery_power = modbus_data.get("battery_power", 0)
         extra_pv_power = _extra_pv_power(self.hass, self._extra_pv_entity_id())
+        estimated = False
+        if extra_pv_power is None and self._extra_pv_entity_id():
+            # The extra installation's reading is gone (unreachable, or an
+            # SMA asleep at night): it sees the same sun as the roof, so
+            # scale the roof's production by the two installations' peaks.
+            extra_pv_power = _estimated_extra_pv(pv_roof, self.config_entry.options)
+            estimated = extra_pv_power is not None and extra_pv_power > 0
+        # Logged only while the sun is up (an SMA asleep at night is normal).
+        if estimated and not self._extra_pv_estimating:
+            LOGGER.error(
+                "orchestrator: no extra PV reading -- estimating it from the roof's production"
+            )
+        elif extra_pv_power is not None and not estimated and self._extra_pv_estimating:
+            LOGGER.info("orchestrator: extra PV reading back")
+        self._extra_pv_estimating = estimated
 
         house_load_power = _house_load_power(self.hass, self._house_load_entity_id())
         total_active_power = (
@@ -983,24 +1024,37 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         if tariff is not None:
             hour.real_tariff = tariff
 
-        samples_before = hour.five_min_count
-        _sample_hour(
-            hour,
-            pv_roof,
-            extra_pv_power or 0.0,
-            total_active_power,
-            battery_power,
-            _effective_use_fee(
-                use_fee, hour.real_tariff, network_use_fee_normal, network_use_fee_low
-            ),
-            return_fee,
-            vat_percentage,
-            return_vat_percentage,
-            ev_power=_entity_power(
-                self.hass, self.config_entry.options.get(CONF_EV_CHARGER_POWER_ENTITY)
+        ev_entity = self.config_entry.options.get(CONF_EV_CHARGER_POWER_ENTITY)
+        ev_power = _entity_power(self.hass, ev_entity)
+        ev_missing = bool(ev_entity) and ev_power is None
+        if ev_missing:
+            estimated = True  # an EV charge would be counted as house load
+        if ev_missing and not self._ev_missing:
+            LOGGER.error(
+                "orchestrator: no EV charger reading -- its hours are left out of the learning"
             )
-            or 0.0,
-        )
+        elif not ev_missing and self._ev_missing:
+            LOGGER.info("orchestrator: EV charger reading back")
+        self._ev_missing = ev_missing
+
+        samples_before = hour.five_min_count
+        if modbus_ok:
+            _sample_hour(
+                hour,
+                pv_roof,
+                extra_pv_power or 0.0,
+                total_active_power,
+                battery_power,
+                _effective_use_fee(
+                    use_fee, hour.real_tariff, network_use_fee_normal, network_use_fee_low
+                ),
+                return_fee,
+                vat_percentage,
+                return_vat_percentage,
+                ev_power=ev_power or 0.0,
+            )
+            if estimated and hour.five_min_count > samples_before:
+                hour.estimated = True
 
         pv_total_energy_kwh = modbus_data.get("pv_total_energy")
         battery_charge_energy_kwh = modbus_data.get("battery_total_energy_charge")
@@ -1305,6 +1359,11 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         )
 
         modbus_data = self._modbus_coordinator.data or {}
+        if not getattr(self._modbus_coordinator, "last_update_success", True) and self.data:
+            # The inverter isn't answering: its SOC is a frozen old value and
+            # nothing can be sent to it anyway -- keep the last plan.
+            LOGGER.error("orchestrator: inverter not answering -- keeping the last plan")
+            return self.data
         cur_soc = round(modbus_data.get("battery_soc", 0) * SOC_MAX_BATTERY / 100)
 
         planning_tomorrow = _planning_tomorrow(
@@ -1435,9 +1494,77 @@ DISPATCH_INTERVAL_GRID_CHARGE = timedelta(seconds=10)
 # with the 30 s Modbus poll.
 GRID_SETTLE_P1_S = 5
 GRID_SETTLE_MODBUS_S = 35
-# A P1 reading older than this counts as missing (meter offline) and stops
-# grid charging; DSMR/HomeWizard normally report every 1-10 s.
+# A P1 reading older than this counts as missing (meter offline): grid
+# charging is then regulated on the inverter's own grid reading; DSMR/
+# HomeWizard normally report every 1-10 s.
 GRID_READING_MAX_AGE_S = 60
+
+
+def fresh_p1_power(
+    hass: HomeAssistant, source: str, now: datetime
+) -> tuple[float | None, datetime | None]:
+    """The P1/smart-meter source's net grid power (W) and when it was
+    measured -- power None when it has no reading or one older than
+    GRID_READING_MAX_AGE_S (meter offline)."""
+    measured_at = _house_load_reading_time(hass, source)
+    if measured_at is None or (now - measured_at).total_seconds() > GRID_READING_MAX_AGE_S:
+        return None, measured_at
+    return _house_load_power(hass, source), measured_at
+
+
+def grid_meter_status(hass: HomeAssistant, entry: ConfigEntry, now: datetime) -> dict[str, Any]:
+    """Which grid meter and which grid-charge cap are in use, for the panel.
+
+    `meters`: the P1/smart-meter source (when configured), then the
+    inverter's own grid reading -- the one in use marked active (the P1
+    meter while it gives fresh readings). It measures the house load, the
+    day/night tariff and the grid import the grid charge is regulated on.
+    `caps`: the "max grid load" slider and the month's peak (when a sensor
+    is configured) -- the higher one, in whole kW, is the cap in force
+    (see _effective_max_grid_load_wh).
+    """
+    options = entry.options
+    meters: list[dict[str, Any]] = []
+    source = options.get(CONF_HOUSE_LOAD_POWER_ENTITY)
+    p1_ok = False
+    if source:
+        if source.startswith("dsmr:"):
+            dsmr_entry = hass.config_entries.async_get_entry(source.removeprefix("dsmr:"))
+            name = f"P1-meter (DSMR {dsmr_entry.title if dsmr_entry else '?'})"
+        else:
+            state = hass.states.get(source)
+            name = f"P1-meter ({state.name if state else source})"
+        p1_ok = fresh_p1_power(hass, source, now)[0] is not None
+        meters.append({"name": name, "active": p1_ok, "error": not p1_ok})
+    runtime = getattr(entry, "runtime_data", None)
+    modbus_data = (runtime.modbus_coordinator.data if runtime else None) or {}
+    inverter_ok = modbus_data.get("grid_power") is not None
+    meters.append(
+        {"name": "Omvormer (eigen netmeting)", "active": not p1_ok, "error": not inverter_ok}
+    )
+
+    slider_w = _number_entity_value(hass, entry, "max_grid_load", DEFAULT_MAX_GRID_LOAD) * 1000
+    peak_entity = options.get(CONF_PEAK_LOAD_THIS_MONTH_ENTITY)
+    peak_w = _entity_power(hass, peak_entity)
+    peak_floor_w = math.floor(peak_w / 1000) * 1000 if peak_w is not None else None
+    peak_in_force = peak_floor_w is not None and peak_floor_w > slider_w
+    caps = [
+        {
+            "name": f"Schuifregelaar {slider_w / 1000:g} kW",
+            "active": not peak_in_force,
+            "error": False,
+        }
+    ]
+    if peak_entity:
+        caps.append(
+            {
+                "name": "Maandpiek "
+                + ("niet beschikbaar" if peak_w is None else f"{peak_floor_w / 1000:g} kW"),
+                "active": peak_in_force,
+                "error": peak_w is None,
+            }
+        )
+    return {"meters": meters, "caps": caps}
 
 
 class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDecision | None]):
@@ -1495,23 +1622,37 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         # the inverter had time to react to the previous write.
         self._grid_charge_power: int | None = None
         self._grid_charge_written_at: datetime | None = None
+        # True while the configured P1 meter gives no fresh reading and the
+        # inverter's own grid reading is used instead (logged on change).
+        self._p1_fallback = False
+        # True while writing the extra PV's on/off register keeps failing.
+        self._extra_pv_unreachable = False
 
     def _measured_grid_power(self, now: datetime) -> tuple[float | None, datetime | None]:
         """Measured net grid power (W, + = import) and when it was measured.
 
-        With a P1/smart-meter source configured, only that meter counts: if
-        it gives no value, or one older than GRID_READING_MAX_AGE_S, this
-        returns None (and grid charging stops) -- deliberately no fallback,
-        the cap can't be guarded without it. Without a P1 source, the
-        inverter's own grid reading is used; its exact time isn't known
-        (None), only that it's polled every 30 s.
+        The P1/smart-meter source when one is configured and gives a fresh
+        reading (at most GRID_READING_MAX_AGE_S old). Otherwise -- no P1
+        source, or the meter is offline -- the inverter's own grid reading:
+        the same net import at the grid connection, only polled every 30 s,
+        so its exact time isn't known (None). With the meter offline its
+        month-peak sensor is gone too, so the cap falls back to the slider
+        (see _effective_max_grid_load_wh).
         """
         source = self.config_entry.options.get(CONF_HOUSE_LOAD_POWER_ENTITY)
         if source:
-            measured_at = _house_load_reading_time(self.hass, source)
-            if measured_at is None or (now - measured_at).total_seconds() > GRID_READING_MAX_AGE_S:
-                return None, measured_at
-            return _house_load_power(self.hass, source), measured_at
+            power, measured_at = fresh_p1_power(self.hass, source, now)
+            if power is not None:
+                if self._p1_fallback:
+                    LOGGER.info("dispatch: P1 meter reading back -- regulating on it again")
+                    self._p1_fallback = False
+                return power, measured_at
+            if not self._p1_fallback:
+                LOGGER.error(
+                    "dispatch: no valid P1 meter reading -- regulating grid charge on the "
+                    "inverter's own grid reading until it returns"
+                )
+                self._p1_fallback = True
         return (self._modbus_coordinator.data or {}).get("grid_power"), None
 
     def _reading_after_last_write(self, measured_at: datetime | None, now: datetime) -> bool:
@@ -1553,11 +1694,11 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         self.update_interval = DISPATCH_INTERVAL_GRID_CHARGE
         grid_w, measured_at = self._measured_grid_power(now)
         if grid_w is None:
-            # No (fresh) meter reading: the cap can't be guarded, so don't
-            # charge from the grid until the meter is back.
+            # Neither the P1 meter nor the inverter gives a grid reading:
+            # the cap can't be guarded, so don't charge from the grid.
             if self._grid_charge_power != 0:
-                LOGGER.warning(
-                    "dispatch: no valid grid/P1 meter reading -- stopping grid charge until it returns"
+                LOGGER.error(
+                    "dispatch: no grid reading at all -- stopping grid charge until one returns"
                 )
             self._grid_charge_power = 0
             return replace(decision, param=replace(decision.param, power=0))
@@ -1638,6 +1779,11 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         self._manual_override = None if charge is None else (charge, cutoff_soc)
 
     @property
+    def extra_pv_unreachable(self) -> bool:
+        """True while writing the extra PV's on/off register keeps failing."""
+        return self._extra_pv_unreachable
+
+    @property
     def manual_override(self) -> Charge | None:
         """The currently forced charge action, or None when following the schedule."""
         return None if self._manual_override is None else self._manual_override[0]
@@ -1712,14 +1858,36 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
                     value,
                     "writing" if control_enabled else "control disabled, not writing",
                 )
+                written = True
                 if control_enabled:
-                    await self.hass.services.async_call(
-                        "modbus",
-                        "write_register",
-                        {"hub": extra_pv_hub, "slave": slave, "address": address, "value": value},
-                        blocking=True,
-                    )
-                self._last_extra_pv_state = extra_pv_state
+                    try:
+                        await self.hass.services.async_call(
+                            "modbus",
+                            "write_register",
+                            {
+                                "hub": extra_pv_hub,
+                                "slave": slave,
+                                "address": address,
+                                "value": value,
+                            },
+                            blocking=True,
+                        )
+                    except Exception as err:  # noqa: BLE001 -- any failure: retry, keep the battery going
+                        # The extra PV installation is unreachable: try again
+                        # next cycle, but never let it stop the battery's own
+                        # dispatch below.
+                        if not self._extra_pv_unreachable:
+                            LOGGER.error(
+                                "dispatch: extra PV unreachable (%s) -- retrying every cycle",
+                                err,
+                            )
+                        self._extra_pv_unreachable = True
+                        written = False
+                if written:
+                    if self._extra_pv_unreachable:
+                        LOGGER.info("dispatch: extra PV reachable again")
+                    self._extra_pv_unreachable = False
+                    self._last_extra_pv_state = extra_pv_state
 
         # Once-per-day budget persistence — schedule.py's DP now maintains
         # charge_on_grid_used/discharge_used itself (see
