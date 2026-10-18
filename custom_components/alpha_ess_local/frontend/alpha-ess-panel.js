@@ -1182,7 +1182,16 @@ class AlphaEssPanel extends HTMLElement {
       sourcesRow("Grens netladen", meter && meter.caps, "de hoogste geldt (maandpiek in hele kW)"),
       row("Extra PV-sturing negatieve prijzen", st ? (st.extra_pv_control_enabled ? "Actief" : "Uit") : "–", st ? tone(st.extra_pv_control_enabled) : ""),
     ];
-    return `${this._header("mdi:shield-check-outline", "Integratiestatus")}<div class="card-body status-grid"><div>${left.join("")}</div><div>${right.join("")}</div></div>`;
+    // One grid, left and right row i side by side, so each row lines up
+    // across both columns whatever its height. Narrow: all of the left
+    // column first, then the right (see .status-grid's --o-narrow).
+    const rows = Math.max(left.length, right.length);
+    const cells = [];
+    for (let i = 0; i < rows; i++) {
+      cells.push(`<div style="--o-wide:${2 * i};--o-narrow:${i}">${left[i] || ""}</div>`);
+      cells.push(`<div style="--o-wide:${2 * i + 1};--o-narrow:${rows + i}">${right[i] || ""}</div>`);
+    }
+    return `${this._header("mdi:shield-check-outline", "Integratiestatus")}<div class="card-body status-grid">${cells.join("")}</div>`;
   }
 
   // Power (kW) for the charts. Primary source is the integration's own
@@ -2550,7 +2559,7 @@ const STYLE = `
   .g-main { grid-template-columns: minmax(420px, 1.35fr) minmax(280px, 1fr) minmax(300px, 1fr); column-gap: 48px; }
   .g-main .flow-card { grid-row: span 2; }
   .g2 { grid-template-columns: 1fr 1fr; }
-  .g-status { grid-template-columns: minmax(300px, 0.45fr) 1fr; column-gap: 48px; }
+  .g-status { grid-template-columns: minmax(240px, 0.32fr) 1fr; column-gap: 48px; }
   @media (max-width: 1300px) {
     .g-main { grid-template-columns: 1fr 1fr; }
     .g-main .flow-card { grid-column: 1 / -1; grid-row: auto; }
@@ -2728,10 +2737,16 @@ const STYLE = `
   /* status rows */
   .status-note { font-size: 11px; color: var(--muted); }
   .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 56px; }
-  @media (max-width: 700px) { .status-grid { grid-template-columns: 1fr; } }
+  .status-grid > div { order: var(--o-wide); display: flex; flex-direction: column; }
+  .status-grid > div > .status-row { flex: 1; }
+  @media (max-width: 700px) {
+    .status-grid { grid-template-columns: 1fr; }
+    .status-grid > div { order: var(--o-narrow); }
+  }
   .status-row {
     display: flex;
     justify-content: space-between;
+    align-items: center;
     gap: 12px;
     padding: 15px 0;
     font-size: 15px;
