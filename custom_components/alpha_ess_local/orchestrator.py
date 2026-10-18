@@ -1759,6 +1759,11 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         self._manual_override = None if charge is None else (charge, cutoff_soc)
 
     @property
+    def extra_pv_unreachable(self) -> bool:
+        """True while writing the extra PV's on/off register keeps failing."""
+        return self._extra_pv_unreachable
+
+    @property
     def manual_override(self) -> Charge | None:
         """The currently forced charge action, or None when following the schedule."""
         return None if self._manual_override is None else self._manual_override[0]

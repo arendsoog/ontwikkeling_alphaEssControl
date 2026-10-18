@@ -1189,7 +1189,11 @@ class AlphaEssPanel extends HTMLElement {
       sourcesRow("Prijsbron", st && st.price_sources),
       sourcesRow("Netmeting", meter && meter.meters, "huisverbruik, dag/nachttarief, regelen van netladen"),
       sourcesRow("Grens netladen", meter && meter.caps, "de hoogste geldt (maandpiek in hele kW)"),
-      row("Extra PV-sturing negatieve prijzen", st ? (st.extra_pv_control_enabled ? "Actief" : "Uit") : "–", st ? tone(st.extra_pv_control_enabled) : ""),
+      row(
+        "Extra PV-sturing negatieve prijzen",
+        !st ? "–" : st.extra_pv_unreachable ? "Niet bereikbaar" : st.extra_pv_control_enabled ? "Actief" : "Uit",
+        !st ? "" : st.extra_pv_unreachable ? "error" : tone(st.extra_pv_control_enabled)
+      ),
     ];
     // One grid, left and right row i side by side, so each row lines up
     // across both columns whatever its height. Narrow: all of the left

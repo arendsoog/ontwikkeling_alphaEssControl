@@ -151,6 +151,7 @@ def _ws_panel_status(
             "extra_pv_string_entities": extra_pv_string_entities(hass, options),
             "extra_pv_power_capacity": options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0),
             "extra_pv_modbus_hub": options.get(CONF_EXTRA_PV_MODBUS_HUB) or None,
+            "extra_pv_unreachable": runtime.dispatch_coordinator.extra_pv_unreachable,
             "manual_override": None if override is None else set_charging_msg(override),
             "price_sources": price_sources,
             "solar_sources": solar_sources,

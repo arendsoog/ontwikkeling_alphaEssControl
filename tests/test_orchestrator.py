@@ -2584,7 +2584,7 @@ async def test_unreachable_extra_pv_does_not_stop_the_battery_dispatch(
 
     assert decision is not None
     client.async_set_dispatch_param.assert_awaited()  # the battery still got its command
-    assert coordinator._extra_pv_unreachable is True
+    assert coordinator.extra_pv_unreachable is True  # shown red in the panel
     assert coordinator._last_extra_pv_state is None  # retried next cycle
 
 
