@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from datetime import date
 
-from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.loader import IntegrationNotFound, async_get_integration
 from homeassistant.util import dt as dt_util
@@ -41,11 +40,6 @@ async def get_solar_forecast(hass: HomeAssistant, config_entry_id: str) -> dict 
     if entry is None:
         LOGGER.debug("Solar forecast: config entry %s not found", config_entry_id)
         return None
-    if entry.state is not ConfigEntryState.LOADED:
-        # Not set up (yet) -- e.g. right after a restart: no forecast from it
-        # this time, rather than an error that fails the whole refresh.
-        LOGGER.debug("Solar forecast: %s (%s) not loaded yet", entry.title, entry.domain)
-        return None
 
     try:
         integration = await async_get_integration(hass, entry.domain)
@@ -63,6 +57,9 @@ async def get_solar_forecast(hass: HomeAssistant, config_entry_id: str) -> dict 
         return None
 
     try:
+        # Right after a restart the entry may not be set up yet and its hook
+        # raises (e.g. Forecast.Solar's missing runtime_data): no forecast
+        # from it this time, rather than an error failing the whole refresh.
         result = await platform.async_get_solar_forecast(hass, config_entry_id)
     except Exception as exception:  # noqa: BLE001 -- another integration's code: never fail on it
         LOGGER.debug("Solar forecast: %s gave an error (%s)", entry.title, exception)
