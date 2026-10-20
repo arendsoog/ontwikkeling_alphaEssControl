@@ -150,6 +150,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ("multiple", "INTEGER"),
         # 1: tomorrow's prices weren't out yet, planned as priced like today.
         ("tomorrow_estimated", "INTEGER"),
+        # Once per day: what had gone into the battery that day when the
+        # hour was planned, and the day's limit of one battery (Wh).
+        ("charged_today", "REAL"),
+        ("day_budget", "REAL"),
         # Solar goes first: the room (Wh) a grid charge had to leave free for
         # the rest of the day's sun, that day's solar surplus still to come
         # (Wh), and whether feeding solar in was allowed (discharge switch).
@@ -750,6 +754,34 @@ def retrieve_hour_progress(
     )
 
 
+def retrieve_day_battery_charge_wh(
+    db_path: str, year: int, mon: int, day: int, hour: int, charge_total_kwh: float | None
+) -> float:
+    """What went into the battery today before now, in Wh: the stored hours
+    before `hour`, plus this hour so far (the inverter's cumulative charge
+    register `charge_total_kwh` against its value at the hour's start)."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        (done,) = conn.execute(
+            """
+            SELECT COALESCE(SUM(battery_charge_energy), 0) FROM hour_data
+            WHERE year = ? AND mon = ? AND day = ? AND hour < ?
+            """,
+            (year, mon, day, hour),
+        ).fetchone()
+        row = conn.execute(
+            """
+            SELECT battery_charge_energy_at_hour_start FROM hour_progress
+            WHERE year = ? AND mon = ? AND day = ? AND hour = ?
+            """,
+            (year, mon, day, hour),
+        ).fetchone()
+    this_hour = 0.0
+    if row is not None and row[0] is not None and charge_total_kwh is not None:
+        this_hour = max(0.0, (charge_total_kwh - row[0]) * 1000)
+    return float(done) + this_hour
+
+
 FIVE_MIN_KEEP_DAYS = 3
 
 
@@ -1019,6 +1051,8 @@ def store_hour_action(
     solar_after: float | None = None,
     feed_in_allowed: bool | None = None,
     empty_after: float | None = None,
+    charged_today: float | None = None,
+    day_budget: float | None = None,
 ) -> None:
     """Record the planned action (data.Charge) for an hour and why it was
     chosen; the latest run wins. Leaves the dispatch columns alone.
@@ -1026,7 +1060,9 @@ def store_hour_action(
     `tomorrow_estimated`: tomorrow's prices weren't out, so the plan took
     them as today's. `solar_room`/`solar_after`/`feed_in_allowed`: see
     schedule.solar_reservation and ScheduleConfig.discharge_enabled.
-    `empty_after`: see schedule.battery_empty_after."""
+    `empty_after`: see schedule.battery_empty_after. `charged_today` /
+    `day_budget`: once per day, what had gone into the battery that day of
+    its one-battery limit (Wh)."""
     with _connection(db_path) as conn:
         _ensure_schema(conn)
         conn.execute(
@@ -1034,8 +1070,8 @@ def store_hour_action(
             INSERT INTO hour_action
                 (year, mon, day, hour, charge, selection, opt_extra, min_profit, price,
                  cutoff_soc, multiple, tomorrow_estimated, solar_room, solar_after,
-                 feed_in_allowed, empty_after)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 feed_in_allowed, empty_after, charged_today, day_budget)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (year, mon, day, hour) DO UPDATE SET
                 charge=excluded.charge, selection=excluded.selection,
                 opt_extra=excluded.opt_extra, min_profit=excluded.min_profit,
@@ -1043,7 +1079,8 @@ def store_hour_action(
                 multiple=excluded.multiple,
                 tomorrow_estimated=excluded.tomorrow_estimated,
                 solar_room=excluded.solar_room, solar_after=excluded.solar_after,
-                feed_in_allowed=excluded.feed_in_allowed, empty_after=excluded.empty_after
+                feed_in_allowed=excluded.feed_in_allowed, empty_after=excluded.empty_after,
+                charged_today=excluded.charged_today, day_budget=excluded.day_budget
             """,
             (
                 year,
@@ -1062,6 +1099,8 @@ def store_hour_action(
                 solar_after,
                 None if feed_in_allowed is None else int(feed_in_allowed),
                 empty_after,
+                charged_today,
+                day_budget,
             ),
         )
         conn.commit()
@@ -1106,7 +1145,7 @@ def retrieve_day_decisions(db_path: str, year: int, mon: int, day: int) -> list[
             SELECT hour, charge, selection, opt_extra, min_profit, price, cutoff_soc,
                    mode, power, power_max, written, manual, multiple,
                    tomorrow_estimated, solar_room, solar_after, feed_in_allowed,
-                   empty_after
+                   empty_after, charged_today, day_budget
             FROM hour_action WHERE year = ? AND mon = ? AND day = ? ORDER BY hour
             """,
             (year, mon, day),
@@ -1130,6 +1169,8 @@ def retrieve_day_decisions(db_path: str, year: int, mon: int, day: int) -> list[
         "solar_after",
         "feed_in_allowed",
         "empty_after",
+        "charged_today",
+        "day_budget",
     )
     return [dict(zip(keys, row, strict=True)) for row in rows]
 

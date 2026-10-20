@@ -1277,13 +1277,22 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         once_per_day = options.get(
             CONF_PERSIST_DAILY_CHARGE_LIMIT, DEFAULT_PERSIST_DAILY_CHARGE_LIMIT
         )
+        # The grid charge has no spent flag any more: once per day it is
+        # bounded by what went into the battery today (one battery a day,
+        # solar included); several a day it isn't bounded at all.
+        today.charge_on_grid_used = False
         if once_per_day:
-            _mark_finished_grid_charge(today, stored_actions, now.hour)
+            today.charged_today_wh = await self.hass.async_add_executor_job(
+                storage.retrieve_day_battery_charge_wh,
+                db_path,
+                today_date.year,
+                today_date.month,
+                today_date.day,
+                now.hour,
+                (self._modbus_coordinator.data or {}).get("battery_total_energy_charge"),
+            )
         else:
-            # Several charges a day, in any hours: no once-per-day flags,
-            # no grid discharge.
-            today.charge_on_grid_used = False
-            today.discharge_used = False
+            today.discharge_used = False  # no grid discharge at all
         # Before the planner, so its own bookkeeping (index_charge, the
         # once-per-day result comparison) sees what the past hours did.
         _keep_past_hours(today, (self.data or {}).get("today"), now.hour, stored_actions)
@@ -1389,6 +1398,8 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                     opt_extra=today.opt_extra,
                     min_profit=config.daily_min_profit,
                     multiple_per_day=config.multiple_per_day,
+                    charged_today=None if config.multiple_per_day else today.charged_today_wh,
+                    day_budget=None if config.multiple_per_day else config.usable_battery_capacity,
                     tomorrow_estimated=planning_tomorrow is not tomorrow,
                     solar_room=solar_room,
                     solar_after=solar_after,
@@ -1426,30 +1437,6 @@ def _forecast_rows(today: Day, tomorrow: Day, cur_hour: int) -> list[storage.For
                 )
             )
     return rows
-
-
-def _mark_finished_grid_charge(today: Day, stored_actions: dict[int, int], cur_hour: int) -> None:
-    """Spend today's once-per-day grid charge once a session has really ended.
-
-    The planner only marks it spent when it *predicts* the target is reached
-    within the hour; a session that ended differently (target reached
-    sooner, or not continued the next hour) left it unspent, so a second
-    grid charge could follow later the same day. A grid-charge hour followed
-    by an hour that wasn't one is a finished session. The hour just before
-    `cur_hour` doesn't count yet: the session may still continue now.
-    """
-    if today.charge_on_grid_used:
-        return
-    finished = [
-        hour
-        for hour, charge in stored_actions.items()
-        if hour < cur_hour - 1
-        and charge == Charge.CHARGING_ON_GRID
-        and stored_actions.get(hour + 1) != Charge.CHARGING_ON_GRID
-    ]
-    if finished:
-        today.charge_on_grid_used = True
-        today.index_charge = max(finished)
 
 
 def _keep_past_hours(

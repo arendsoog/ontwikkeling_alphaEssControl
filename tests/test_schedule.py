@@ -12,6 +12,7 @@ import pytest
 
 from custom_components.alpha_ess_local.data import SOC_MIN, Charge, Day, Earning
 from custom_components.alpha_ess_local.schedule import (
+    CYCLE_STEPS,
     SCENARIOS,
     SELECTION_BELOW_MINIMUM,
     SELECTION_BUDGET_USED,
@@ -577,11 +578,31 @@ def _sessions(day):
     return starts
 
 
-def test_once_per_day_plans_a_single_grid_charge_session():
+def _charged_wh(day, config):
+    """What the plan puts into the battery over the day, in Wh."""
+    step = config.usable_battery_capacity / SOC_STEPS
+    socs = [hour.estimated_start_soc for hour in day.hour]
+    return sum(max(0, b - a) for a, b in zip(socs, socs[1:], strict=False)) * step
+
+
+def test_once_per_day_charges_in_separate_cheap_hours_within_one_battery():
+    """Once per day is a budget of one battery a day, not one session: both
+    cheap valleys may charge (16 kWh of dear hours to cover), but together
+    no more than the 10 kWh battery."""
     today = _two_valley_day()
+    config = _config(discharge_enabled=False)
+    _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
+
+    assert _sessions(today) == 2
+    assert _charged_wh(today, config) <= 10000 + 10000 / CYCLE_STEPS
+
+
+def test_once_per_day_counts_what_went_in_earlier_today():
+    today = _two_valley_day()
+    today.charged_today_wh = 10000  # a whole battery went in already
     _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, _config())
 
-    assert _sessions(today) == 1
+    assert _sessions(today) == 0
 
 
 def test_multiple_per_day_charges_in_each_cheap_valley():
@@ -1056,11 +1077,10 @@ def test_calculate_best_schedule_spreads_grid_charge_across_multiple_hours_when_
     assert today.charge_on_grid_used is False
 
 
-def test_calculate_best_schedule_charge_on_grid_used_true_once_session_completes():
-    # Same session, but planned from its *last* hour (5) with soc_wh already
-    # reflecting the 8500 Wh the first 5 hours (0-4) would have delivered --
-    # charge_on_grid_used should flip True exactly at the hour the target is
-    # actually reached, not before.
+def test_calculate_best_schedule_never_marks_the_grid_charge_spent():
+    # Once per day the grid charge is bounded by the measured daily budget
+    # (Day.charged_today_wh), not by a spent flag -- even when the planned
+    # charge completes in this hour.
     today = _negative_price_day()
     tomorrow = Day(valid=False)
     config = _config(max_grid_load=2000.0)
@@ -1072,7 +1092,7 @@ def test_calculate_best_schedule_charge_on_grid_used_true_once_session_completes
 
     assert valid is True
     assert today.hour[5].charge == Charge.CHARGING_ON_GRID
-    assert today.charge_on_grid_used is True
+    assert today.charge_on_grid_used is False
 
 
 def test_calculate_best_schedule_charge_on_grid_used_stays_false_mid_session():
