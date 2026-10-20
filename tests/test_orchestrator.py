@@ -60,7 +60,6 @@ from custom_components.alpha_ess_local.orchestrator import (
     _house_load_power,
     _house_load_tariff,
     _keep_past_hours,
-    _mark_finished_grid_charge,
     _number_entity_value,
     _planning_tomorrow,
     _sample_hour,
@@ -169,50 +168,6 @@ def test_forecast_rows_skip_a_day_without_data():
     rows = _forecast_rows(today, Day(valid=False), cur_hour=22)
 
     assert [r.hour for r in rows] == [22, 23]
-
-
-# --- _mark_finished_grid_charge ---------------------------------------------
-
-GRID = int(Charge.CHARGING_ON_GRID)
-PV = int(Charge.CHARGING_ON_PV)
-
-
-def test_finished_grid_charge_spends_the_daily_budget():
-    """Regression: 04:00 grid-charged, 05:00 didn't continue -- the budget
-    stayed unspent, so a second grid charge could follow later that day."""
-    today = Day(valid=True, year=2026, mon=10, day=9)
-
-    _mark_finished_grid_charge(today, {4: GRID, 5: PV}, cur_hour=6)
-
-    assert today.charge_on_grid_used is True
-    assert today.index_charge == 4
-
-
-def test_grid_charge_in_the_previous_hour_may_still_continue():
-    today = Day(valid=True, year=2026, mon=10, day=9)
-
-    _mark_finished_grid_charge(today, {4: GRID}, cur_hour=5)
-
-    assert today.charge_on_grid_used is False
-
-
-def test_multi_hour_grid_charge_counts_once_it_stops():
-    today = Day(valid=True, year=2026, mon=10, day=9)
-
-    _mark_finished_grid_charge(today, {2: GRID, 3: GRID}, cur_hour=4)
-    assert today.charge_on_grid_used is False  # 03:00 may continue at 04:00
-
-    _mark_finished_grid_charge(today, {2: GRID, 3: GRID, 4: PV}, cur_hour=5)
-    assert today.charge_on_grid_used is True
-    assert today.index_charge == 3
-
-
-def test_no_grid_charge_leaves_the_budget_alone():
-    today = Day(valid=True, year=2026, mon=10, day=9)
-
-    _mark_finished_grid_charge(today, {1: PV, 2: PV}, cur_hour=6)
-
-    assert today.charge_on_grid_used is False
 
 
 # --- merge_day_sources -------------------------------------------------------
@@ -1877,7 +1832,9 @@ async def test_schedule_coordinator_overlays_persisted_dispatch_daily_state(
     ):
         data = await coordinator._async_update_data()
 
-    assert data["today"].charge_on_grid_used is True
+    # The grid charge is bounded by the measured daily budget now, so a
+    # persisted "spent" flag no longer blocks it; the rest is restored.
+    assert data["today"].charge_on_grid_used is False
     assert data["today"].discharge_used is False
     assert data["today"].index_charge == 6
     assert data["today"].index_discharge == -1
