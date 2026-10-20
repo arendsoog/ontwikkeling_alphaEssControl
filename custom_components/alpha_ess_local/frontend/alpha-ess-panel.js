@@ -2320,11 +2320,13 @@ class AlphaEssPanel extends HTMLElement {
       if (days === 0) return time;
       return days === 1 ? `morgen ${time}` : `over ${days} dagen ${time}`;
     };
-    // Once per day: how much of the day's one battery had gone in.
-    const charged = (d) =>
-      d.day_budget && d.charged_today !== null && d.charged_today !== undefined
-        ? `${fmtNum(d.charged_today / 1000, 1)} / ${fmtNum(d.day_budget / 1000, 0)} kWh`
-        : "–";
+    // What had gone into the battery that day; once per day, against its
+    // limit of one battery.
+    const charged = (d) => {
+      if (d.charged_today === null || d.charged_today === undefined) return "–";
+      const kwh = fmtNum(d.charged_today / 1000, 1);
+      return d.day_budget ? `${kwh} / ${fmtNum(d.day_budget / 1000, 0)} kWh` : `${kwh} kWh`;
+    };
     const rows = decisions
       .map((d) => {
         const info = ACTIONS[d.action] || { label: d.action || "–", color: "transparent" };
