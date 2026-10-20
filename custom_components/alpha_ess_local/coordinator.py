@@ -54,7 +54,7 @@ DAY_DATA_SCAN_INTERVAL = timedelta(minutes=30)
 # though a source *is* configured. update_interval (30 min) is far too slow
 # to recover from a one-off startup race — this retries a few times, quickly,
 # then gives up and falls back to the normal interval.
-_STARTUP_RETRY_DELAYS_SECONDS = (10, 20, 30)
+_STARTUP_RETRY_DELAYS_SECONDS = (10, 20, 30, 60, 120, 300)
 
 
 class _StartupRaceRetryHelper:
@@ -64,8 +64,9 @@ class _StartupRaceRetryHelper:
         self._coordinator = coordinator
         self._attempt = 0
         self._unsub: callable | None = None
+        self._missing_logged = False
 
-    def note_result(self, *, configured: bool, found_data: bool) -> None:
+    def note_result(self, *, configured: bool, found_data: bool, what: str = "data") -> None:
         """Call after building this refresh's result.
 
         `configured`: whether the user actually set up a source at all (no
@@ -77,8 +78,16 @@ class _StartupRaceRetryHelper:
             self._unsub = None
 
         if found_data or not configured:
+            if self._missing_logged and found_data:
+                LOGGER.info("%s for today available again", what)
+            self._missing_logged = False
             self._attempt = 0
             return
+
+        if not self._missing_logged:
+            # Logged once, so it shows in Home Assistant's own log.
+            LOGGER.error("No %s for today from any configured source", what)
+            self._missing_logged = True
 
         if self._attempt >= len(_STARTUP_RETRY_DELAYS_SECONDS):
             return
@@ -212,6 +221,7 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         self._retry_helper.note_result(
             configured=bool(entsoe_entity_id or frank_energie_entity_id),
             found_data=today_day.valid,
+            what="prices",
         )
 
         previous = self.data or {}
@@ -275,6 +285,7 @@ class AlphaEssLocalSolarCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         self._retry_helper.note_result(
             configured=bool(forecast_solar_entry_ids or solcast_entry_ids),
             found_data=today_day.valid,
+            what="solar forecast",
         )
 
         previous = self.data or {}

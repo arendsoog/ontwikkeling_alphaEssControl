@@ -11,6 +11,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -72,7 +73,7 @@ async def test_get_solar_forecast_returns_none_for_unknown_entry(hass: HomeAssis
 
 
 async def test_get_solar_forecast_calls_energy_platform_hook(hass: HomeAssistant):
-    entry = MockConfigEntry(domain=FORECAST_SOLAR_DOMAIN)
+    entry = MockConfigEntry(domain=FORECAST_SOLAR_DOMAIN, state=ConfigEntryState.LOADED)
     entry.add_to_hass(hass)
 
     fake_platform = SimpleNamespace(
@@ -88,6 +89,30 @@ async def test_get_solar_forecast_calls_energy_platform_hook(hass: HomeAssistant
 
     assert result == {"x": 1.0}
     fake_platform.async_get_solar_forecast.assert_awaited_once_with(hass, entry.entry_id)
+
+
+async def test_get_solar_forecast_none_while_the_entry_is_not_loaded(hass: HomeAssistant):
+    """Regression: right after a restart Forecast.Solar wasn't set up yet and
+    its energy hook raised, failing the whole solar refresh."""
+    entry = MockConfigEntry(domain=FORECAST_SOLAR_DOMAIN, state=ConfigEntryState.SETUP_IN_PROGRESS)
+    entry.add_to_hass(hass)
+
+    assert await get_solar_forecast(hass, entry.entry_id) is None
+
+
+async def test_get_solar_forecast_none_when_the_hook_raises(hass: HomeAssistant):
+    entry = MockConfigEntry(domain=FORECAST_SOLAR_DOMAIN, state=ConfigEntryState.LOADED)
+    entry.add_to_hass(hass)
+    fake_platform = SimpleNamespace(
+        async_get_solar_forecast=AsyncMock(side_effect=AttributeError("no runtime_data"))
+    )
+    fake_integration = SimpleNamespace(async_get_platform=AsyncMock(return_value=fake_platform))
+
+    with patch(
+        "custom_components.alpha_ess_local.solar.async_get_integration",
+        AsyncMock(return_value=fake_integration),
+    ):
+        assert await get_solar_forecast(hass, entry.entry_id) is None
 
 
 async def test_get_solar_forecast_handles_missing_hook(hass: HomeAssistant):
