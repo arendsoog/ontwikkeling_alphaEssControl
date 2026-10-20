@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -41,6 +41,7 @@ from .const import (
 )
 from .data import Day
 from .orchestrator import get_db_path, hour_correction_from_mean
+from .prices import apply_earning_classification
 from .prices import build_day as build_price_day
 from .solar import build_day as build_solar_day
 
@@ -54,7 +55,7 @@ DAY_DATA_SCAN_INTERVAL = timedelta(minutes=30)
 # though a source *is* configured. update_interval (30 min) is far too slow
 # to recover from a one-off startup race — this retries a few times, quickly,
 # then gives up and falls back to the normal interval.
-_STARTUP_RETRY_DELAYS_SECONDS = (10, 20, 30)
+_STARTUP_RETRY_DELAYS_SECONDS = (10, 20, 30, 60, 120, 300)
 
 
 class _StartupRaceRetryHelper:
@@ -64,8 +65,9 @@ class _StartupRaceRetryHelper:
         self._coordinator = coordinator
         self._attempt = 0
         self._unsub: callable | None = None
+        self._missing_logged = False
 
-    def note_result(self, *, configured: bool, found_data: bool) -> None:
+    def note_result(self, *, configured: bool, found_data: bool, what: str = "data") -> None:
         """Call after building this refresh's result.
 
         `configured`: whether the user actually set up a source at all (no
@@ -77,8 +79,16 @@ class _StartupRaceRetryHelper:
             self._unsub = None
 
         if found_data or not configured:
+            if self._missing_logged and found_data:
+                LOGGER.info("%s for today available again", what)
+            self._missing_logged = False
             self._attempt = 0
             return
+
+        if not self._missing_logged:
+            # Logged once, so it shows in Home Assistant's own log.
+            LOGGER.error("No %s for today from any configured source", what)
+            self._missing_logged = True
 
         if self._attempt >= len(_STARTUP_RETRY_DELAYS_SECONDS):
             return
@@ -134,11 +144,16 @@ class AlphaEssLocalDataUpdateCoordinator(DataUpdateCoordinator):
             update_interval=SCAN_INTERVAL,
         )
         self.client = client
+        # When the inverter last answered a poll (None: not yet) -- one
+        # failed poll in between is no outage (see orchestrator._inverter_down).
+        self.last_success_at: datetime | None = None
 
     async def _async_update_data(self) -> dict:
         """Fetch data from the device."""
         try:
-            return await self.client.async_get_data()
+            data = await self.client.async_get_data()
+            self.last_success_at = dt_util.utcnow()
+            return data
         except AlphaEssLocalApiClientAuthenticationError as exception:
             raise UpdateFailed(exception) from exception
         except AlphaEssLocalApiClientError as exception:
@@ -166,6 +181,8 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             update_interval=DAY_DATA_SCAN_INTERVAL,
         )
         self._retry_helper = _StartupRaceRetryHelper(self)
+        # True while today is priced from yesterday's stored hours.
+        self._using_yesterday = False
 
     async def _async_update_data(self) -> dict[str, Day]:
         """Rebuild today's and tomorrow's prices from the configured entities."""
@@ -212,13 +229,58 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         self._retry_helper.note_result(
             configured=bool(entsoe_entity_id or frank_energie_entity_id),
             found_data=today_day.valid,
+            what="prices",
         )
 
         previous = self.data or {}
+        today_day = keep_last_known(today_day, previous.get("today"), today)
+        if not today_day.valid:
+            # Nothing from the sources and nothing read earlier today (e.g.
+            # right after a restart): yesterday's stored prices, hour by
+            # hour, rather than a plan without prices.
+            today_day = await self._yesterdays_prices(
+                today, use_fee, return_fee, vat_percentage, return_vat_percentage
+            )
         return {
-            "today": keep_last_known(today_day, previous.get("today"), today),
+            "today": today_day,
             "tomorrow": keep_last_known(tomorrow_day, previous.get("tomorrow"), tomorrow),
         }
+
+    async def _yesterdays_prices(
+        self,
+        today: date,
+        use_fee: float,
+        return_fee: float,
+        vat_percentage: float,
+        return_vat_percentage: float,
+    ) -> Day:
+        """Today priced like yesterday, from the integration's own stored
+        hours (marked `kept`, so the panel shows the sources in red)."""
+        day = Day(year=today.year, mon=today.month, day=today.day)
+        yesterday = today - timedelta(days=1)
+        prices = await self.hass.async_add_executor_job(
+            storage.retrieve_day_prices,
+            get_db_path(self.hass, self.config_entry),
+            yesterday.year,
+            yesterday.month,
+            yesterday.day,
+        )
+        # A day stored without prices has them all at 0: no use as a guess.
+        if not any(prices.values()):
+            return day
+        for hour_index, price in prices.items():
+            day.hour[hour_index].valid = True
+            day.hour[hour_index].price = price
+        apply_earning_classification(
+            day, use_fee, return_fee, vat_percentage, return_vat_percentage
+        )
+        day.valid = True
+        day.kept = True
+        day.source = "yesterday"
+        if not self._using_yesterday:
+            LOGGER.error("No prices for %s -- planning with yesterday's prices meanwhile", today)
+        self._using_yesterday = True
+        return day
 
 
 class AlphaEssLocalSolarCoordinator(DataUpdateCoordinator[dict[str, Day]]):
@@ -275,6 +337,7 @@ class AlphaEssLocalSolarCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         self._retry_helper.note_result(
             configured=bool(forecast_solar_entry_ids or solcast_entry_ids),
             found_data=today_day.valid,
+            what="solar forecast",
         )
 
         previous = self.data or {}

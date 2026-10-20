@@ -615,6 +615,22 @@ def _sma_pv_power(hass: HomeAssistant, config_entry_id: str) -> float | None:
     return total if found else None
 
 
+# The inverter counts as down -- its data a frozen old copy -- only when it
+# hasn't answered any poll for this long: a dropped poll now and then (two
+# Modbus clients sharing the inverter, a busy proxy) is no outage.
+INVERTER_DOWN_AFTER = timedelta(minutes=5)
+
+
+def _inverter_down(modbus_coordinator: Any, now: datetime) -> bool:
+    """Whether the inverter has given no answer for INVERTER_DOWN_AFTER."""
+    last_success_at = getattr(modbus_coordinator, "last_success_at", None)
+    if last_success_at is None:
+        # Not polled successfully since setup (or a coordinator without the
+        # timestamp): go by its last poll.
+        return not getattr(modbus_coordinator, "last_update_success", True)
+    return now - last_success_at > INVERTER_DOWN_AFTER
+
+
 def _estimated_extra_pv(pv_roof: float, options: Mapping[str, Any]) -> float | None:
     """The extra PV installation's power estimated from the roof's: the same
     sun, scaled by the two installations' peak power. None without both."""
@@ -986,9 +1002,9 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
             hour.price = prices_today.hour[now.hour].price
 
         modbus_data = self._modbus_coordinator.data or {}
-        # The inverter didn't answer its last poll: its data is a frozen
-        # copy of the last good one, so take no sample this time.
-        modbus_ok = getattr(self._modbus_coordinator, "last_update_success", True) and bool(
+        # The inverter hasn't answered for a while: its data is a frozen
+        # copy of the last good one, so take no samples meanwhile.
+        modbus_ok = not _inverter_down(self._modbus_coordinator, dt_util.utcnow()) and bool(
             modbus_data
         )
         if not modbus_ok and not self._modbus_down:
@@ -1368,9 +1384,16 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         )
 
         modbus_data = self._modbus_coordinator.data or {}
-        if not getattr(self._modbus_coordinator, "last_update_success", True) and self.data:
-            # The inverter isn't answering: its SOC is a frozen old value and
-            # nothing can be sent to it anyway -- keep the last plan.
+        last_plan_today = (self.data or {}).get("today")
+        if (
+            _inverter_down(self._modbus_coordinator, dt_util.utcnow())
+            and last_plan_today is not None
+            and (last_plan_today.year, last_plan_today.mon, last_plan_today.day)
+            == (today_date.year, today_date.month, today_date.day)
+        ):
+            # The inverter hasn't answered for minutes: its SOC is a frozen
+            # old value and nothing can be sent to it anyway -- keep today's
+            # last plan.
             LOGGER.error("orchestrator: inverter not answering -- keeping the last plan")
             return self.data
         cur_soc = round(modbus_data.get("battery_soc", 0) * SOC_MAX_BATTERY / 100)

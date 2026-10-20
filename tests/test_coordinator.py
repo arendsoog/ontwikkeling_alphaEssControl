@@ -112,6 +112,44 @@ async def test_prices_coordinator_handles_no_configured_entities(hass: HomeAssis
     assert data["tomorrow"].valid is False
 
 
+async def test_prices_coordinator_falls_back_to_yesterdays_stored_prices(
+    hass: HomeAssistant, freezer
+):
+    """No source gives today's prices (e.g. right after a restart): today is
+    priced like yesterday from the stored hours, instead of a plan with
+    none -- marked kept, so the panel shows the sources in red."""
+    from custom_components.alpha_ess_local import storage
+    from custom_components.alpha_ess_local.orchestrator import get_db_path
+
+    freezer.move_to("2026-10-20 03:00:00")
+    entry = MockConfigEntry(domain=DOMAIN, options={"frank_energie_price_entity": "sensor.frank"})
+    entry.add_to_hass(hass)
+    day_before = dt_util.now().date() - timedelta(days=1)
+    yesterday = Day(valid=True, year=day_before.year, mon=day_before.month, day=day_before.day)
+    for hour, price in ((7, 0.27), (18, 0.28)):
+        yesterday.hour[hour].valid = True
+        yesterday.hour[hour].real_house_load = 900
+        yesterday.hour[hour].price = price
+        storage.store_hour_data(
+            get_db_path(hass, entry),
+            yesterday,
+            hour,
+            use_fee=0.02,
+            return_fee=0.01,
+            vat_percentage=21,
+        )
+
+    coordinator = AlphaEssLocalPricesCoordinator(hass, entry)
+    data = await coordinator._async_update_data()
+
+    today = data["today"]
+    assert today.valid is True
+    assert today.kept is True
+    assert (today.hour[7].price, today.hour[18].price) == (0.27, 0.28)
+    assert today.hour[7].valid and not today.hour[12].valid
+    coordinator._retry_helper.note_result(configured=False, found_data=True)  # no lingering retry
+
+
 async def test_solar_coordinator_builds_today_and_tomorrow(hass: HomeAssistant):
     entry = MockConfigEntry(
         domain=DOMAIN,

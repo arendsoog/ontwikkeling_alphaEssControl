@@ -56,7 +56,14 @@ async def get_solar_forecast(hass: HomeAssistant, config_entry_id: str) -> dict 
         LOGGER.debug("Solar forecast: %s has no async_get_solar_forecast", entry.domain)
         return None
 
-    result = await platform.async_get_solar_forecast(hass, config_entry_id)
+    try:
+        # Right after a restart the entry may not be set up yet and its hook
+        # raises (e.g. Forecast.Solar's missing runtime_data): no forecast
+        # from it this time, rather than an error failing the whole refresh.
+        result = await platform.async_get_solar_forecast(hass, config_entry_id)
+    except Exception as exception:  # noqa: BLE001 -- another integration's code: never fail on it
+        LOGGER.debug("Solar forecast: %s gave an error (%s)", entry.title, exception)
+        return None
     if result is None:
         return None
     return result.get("wh_hours")
@@ -85,20 +92,20 @@ async def get_combined_solar_forecast(
 
     A multi-orientation roof (e.g. east + west) needs one Forecast.Solar
     entry per plane; their per-hour forecasts are added together here to get
-    the whole system's estimate.
+    the whole system's estimate. If a plane gives nothing (not loaded,
+    unreachable), the source has no forecast at all -- half the roof would
+    look like a dull day; the next source is tried instead.
     """
     combined: dict[int, float] = {}
-    found_any = False
     for config_entry_id in config_entry_ids:
         wh_hours = await get_solar_forecast(hass, config_entry_id)
         hours = _wh_hours_to_day_hours(wh_hours, target_date) if wh_hours else None
         if not hours:
-            continue
-        found_any = True
+            return None
         for hour, wh in hours.items():
             combined[hour] = combined.get(hour, 0.0) + wh
 
-    return combined if found_any else None
+    return combined or None
 
 
 async def read_solar_forecast(

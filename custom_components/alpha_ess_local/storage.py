@@ -754,6 +754,19 @@ def retrieve_hour_progress(
     )
 
 
+def retrieve_day_prices(db_path: str, year: int, mon: int, day: int) -> dict[int, float]:
+    """A stored day's market price per hour ({hour: EUR/kWh}), as the hours
+    were stored -- the fallback when no price source gives today's."""
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            "SELECT hour, price FROM hour_data"
+            " WHERE year = ? AND mon = ? AND day = ? AND price IS NOT NULL",
+            (year, mon, day),
+        ).fetchall()
+    return {hour: float(price) for hour, price in rows}
+
+
 def retrieve_day_battery_charge_wh(
     db_path: str, year: int, mon: int, day: int, hour: int, charge_total_kwh: float | None
 ) -> float:

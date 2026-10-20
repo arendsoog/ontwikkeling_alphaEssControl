@@ -90,6 +90,23 @@ async def test_get_solar_forecast_calls_energy_platform_hook(hass: HomeAssistant
     fake_platform.async_get_solar_forecast.assert_awaited_once_with(hass, entry.entry_id)
 
 
+async def test_get_solar_forecast_none_when_the_hook_raises(hass: HomeAssistant):
+    """Regression: right after a restart Forecast.Solar wasn't set up yet and
+    its energy hook raised, failing the whole solar refresh."""
+    entry = MockConfigEntry(domain=FORECAST_SOLAR_DOMAIN)
+    entry.add_to_hass(hass)
+    fake_platform = SimpleNamespace(
+        async_get_solar_forecast=AsyncMock(side_effect=AttributeError("no runtime_data"))
+    )
+    fake_integration = SimpleNamespace(async_get_platform=AsyncMock(return_value=fake_platform))
+
+    with patch(
+        "custom_components.alpha_ess_local.solar.async_get_integration",
+        AsyncMock(return_value=fake_integration),
+    ):
+        assert await get_solar_forecast(hass, entry.entry_id) is None
+
+
 async def test_get_solar_forecast_handles_missing_hook(hass: HomeAssistant):
     entry = MockConfigEntry(domain=FORECAST_SOLAR_DOMAIN)
     entry.add_to_hass(hass)
