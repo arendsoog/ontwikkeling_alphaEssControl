@@ -1297,17 +1297,18 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         # bounded by what went into the battery today (one battery a day,
         # solar included); several a day it isn't bounded at all.
         today.charge_on_grid_used = False
-        if once_per_day:
-            today.charged_today_wh = await self.hass.async_add_executor_job(
-                storage.retrieve_day_battery_charge_wh,
-                db_path,
-                today_date.year,
-                today_date.month,
-                today_date.day,
-                now.hour,
-                (self._modbus_coordinator.data or {}).get("battery_total_energy_charge"),
-            )
-        else:
+        # What went into the battery today: the once-per-day budget's
+        # count, and shown in the decision log either way.
+        today.charged_today_wh = await self.hass.async_add_executor_job(
+            storage.retrieve_day_battery_charge_wh,
+            db_path,
+            today_date.year,
+            today_date.month,
+            today_date.day,
+            now.hour,
+            (self._modbus_coordinator.data or {}).get("battery_total_energy_charge"),
+        )
+        if not once_per_day:
             today.discharge_used = False  # no grid discharge at all
         # Before the planner, so its own bookkeeping (index_charge, the
         # once-per-day result comparison) sees what the past hours did.
@@ -1421,7 +1422,7 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                     opt_extra=today.opt_extra,
                     min_profit=config.daily_min_profit,
                     multiple_per_day=config.multiple_per_day,
-                    charged_today=None if config.multiple_per_day else today.charged_today_wh,
+                    charged_today=today.charged_today_wh,
                     day_budget=None if config.multiple_per_day else config.usable_battery_capacity,
                     tomorrow_estimated=planning_tomorrow is not tomorrow,
                     solar_room=solar_room,
@@ -1719,7 +1720,9 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
 
         if self._reading_after_last_write(measured_at, now):
             current = self._grid_charge_power
-            new = dispatch.regulate_grid_charge_power(current, grid_w, config)
+            battery_w = (self._modbus_coordinator.data or {}).get("battery_power")
+            actual_charge_w = None if battery_w is None else max(0.0, -battery_w)
+            new = dispatch.regulate_grid_charge_power(current, grid_w, config, actual_charge_w)
             over_cap = grid_w > config.max_grid_load
             if abs(new - current) >= dispatch.GRID_CHARGE_DEADBAND_W or (
                 over_cap and new < current

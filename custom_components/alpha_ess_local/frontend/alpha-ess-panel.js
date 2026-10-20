@@ -417,7 +417,12 @@ class AlphaEssPanel extends HTMLElement {
   }
 
   connectedCallback() {
-    this._timers.push(setInterval(() => this._loadHistory(), HISTORY_REFRESH_MS));
+    this._timers.push(
+      setInterval(() => {
+        this._loadHistory();
+        this._refreshHistoryTab();
+      }, HISTORY_REFRESH_MS)
+    );
     this._timers.push(setInterval(() => this._loadStatus(), STATUS_REFRESH_MS));
     // Keep the "now" markers and past-hour shading moving.
     this._timers.push(setInterval(() => this._renderAll(), 60 * 1000));
@@ -440,6 +445,17 @@ class AlphaEssPanel extends HTMLElement {
     if (!this._hass) return;
     this._loadHistory();
     this._loadStatus();
+    this._refreshHistoryTab();
+  }
+
+  // The history tab, when it shows a period that includes today: each hour
+  // is stored a few minutes after it ends, so fetch again to show it.
+  _refreshHistoryTab() {
+    if (this._tab !== "history" || this._histLoading || !this._hass) return;
+    const { start, end } = this._historyRange();
+    const now = Date.now();
+    if (now < start.getTime() || now > end.getTime() + 24 * 3600 * 1000) return;
+    this._loadHistoryPeriod();
   }
 
   set hass(hass) {
@@ -2320,11 +2336,13 @@ class AlphaEssPanel extends HTMLElement {
       if (days === 0) return time;
       return days === 1 ? `morgen ${time}` : `over ${days} dagen ${time}`;
     };
-    // Once per day: how much of the day's one battery had gone in.
-    const charged = (d) =>
-      d.day_budget && d.charged_today !== null && d.charged_today !== undefined
-        ? `${fmtNum(d.charged_today / 1000, 1)} / ${fmtNum(d.day_budget / 1000, 0)} kWh`
-        : "–";
+    // What had gone into the battery that day; once per day, against its
+    // limit of one battery.
+    const charged = (d) => {
+      if (d.charged_today === null || d.charged_today === undefined) return "–";
+      const kwh = fmtNum(d.charged_today / 1000, 1);
+      return d.day_budget ? `${kwh} / ${fmtNum(d.day_budget / 1000, 0)} kWh` : `${kwh} kWh`;
+    };
     const rows = decisions
       .map((d) => {
         const info = ACTIONS[d.action] || { label: d.action || "–", color: "transparent" };
