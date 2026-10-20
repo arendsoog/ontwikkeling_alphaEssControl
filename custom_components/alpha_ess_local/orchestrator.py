@@ -1720,7 +1720,9 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
 
         if self._reading_after_last_write(measured_at, now):
             current = self._grid_charge_power
-            new = dispatch.regulate_grid_charge_power(current, grid_w, config)
+            battery_w = (self._modbus_coordinator.data or {}).get("battery_power")
+            actual_charge_w = None if battery_w is None else max(0.0, -battery_w)
+            new = dispatch.regulate_grid_charge_power(current, grid_w, config, actual_charge_w)
             over_cap = grid_w > config.max_grid_load
             if abs(new - current) >= dispatch.GRID_CHARGE_DEADBAND_W or (
                 over_cap and new < current

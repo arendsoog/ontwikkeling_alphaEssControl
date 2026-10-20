@@ -230,12 +230,17 @@ def test_decide_dispatch_charging_on_grid_above_cutoff_earning_on_use():
     assert decision.param.pv_on is False  # earning-on-use security check
 
 
-def test_decide_dispatch_charging_on_grid_above_cutoff_normal_price():
+def test_decide_dispatch_charging_on_grid_holds_at_the_target():
+    """Regression: at the target it switched to No-charge, the house drained
+    the battery just below, and the charge started again -- flipping back
+    and forth. Now it holds there in state-of-charge control at 0 W."""
     hour = _hour(charge=Charge.CHARGING_ON_GRID, earning=Earning.EARNING_ON_RETURN, cutoff_soc=900)
     decision = decide_dispatch(hour, cur_soc=900, config=_config())
 
-    assert decision.param.mode == DispatchMode.NO_BATTERY_CHARGE
+    assert decision.param.mode == DispatchMode.STATE_OF_CHARGE_CONTROL
     assert decision.param.power == 0
+    assert decision.param.cutoff_soc == 900
+    assert not is_grid_charge(decision.param, hour)  # nothing to regulate
 
 
 # --- decide_dispatch: NO_DISCHARGING -------------------------------------------
@@ -369,7 +374,26 @@ def test_regulate_grid_charge_never_goes_below_zero():
 
 def test_regulate_grid_charge_never_exceeds_full_battery_power():
     full = _full_dispatch_power(10000)
-    assert regulate_grid_charge_power(full, 0, _CAP_CONFIG) == full
+    roomy = DispatchConfig(usable_battery_capacity=10000, max_grid_load=50000)
+    assert regulate_grid_charge_power(full, 0, roomy) == full
+
+
+def test_regulate_grid_charge_never_above_the_cap():
+    assert regulate_grid_charge_power(4800, 0, _CAP_CONFIG) == 5000
+
+
+def test_regulate_grid_charge_does_not_climb_while_the_battery_takes_nothing():
+    """Regression: with the battery not taking the power, the import stayed
+    low and the power kept climbing (to 14.9 kW against an 11 kW cap)."""
+    # Commanded 3 kW, battery takes 0, import 1 kW: at most 0 + 4 kW headroom.
+    assert regulate_grid_charge_power(3000, 1000, _CAP_CONFIG, actual_charge_w=0) == 4000
+    # It still rises normally while the battery takes what it's told.
+    assert regulate_grid_charge_power(3000, 3000, _CAP_CONFIG, actual_charge_w=3000) == 4000
+    # Repeated cycles with nothing taken stay put instead of winding up.
+    power = 4000
+    for _ in range(5):
+        power = regulate_grid_charge_power(power, 1000, _CAP_CONFIG, actual_charge_w=0)
+    assert power == 4000
 
 
 def test_regulate_grid_charge_leaves_power_alone_without_a_cap():

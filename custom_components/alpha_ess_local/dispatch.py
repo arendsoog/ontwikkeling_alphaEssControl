@@ -137,18 +137,19 @@ def decide_dispatch(
             hour.feed_in = True
 
     elif hour.charge == Charge.CHARGING_ON_GRID:
-        if below_cutoff:
+        if hour.earning == Earning.EARNING_ON_USE:
             mode = (
                 DispatchMode.MAXIMISE_CONSUMPTION
-                if hour.earning == Earning.EARNING_ON_USE
-                else DispatchMode.STATE_OF_CHARGE_CONTROL
+                if below_cutoff
+                else DispatchMode.ONLY_CHARGE_FROM_PV
             )
         else:
-            mode = (
-                DispatchMode.ONLY_CHARGE_FROM_PV
-                if hour.earning == Earning.EARNING_ON_USE
-                else DispatchMode.NO_BATTERY_CHARGE
-            )
+            # State-of-charge control also once the target is reached (at
+            # 0 W, below): the battery holds the energy just bought instead
+            # of feeding the house with it, and the mode doesn't flip back
+            # and forth around the target (No-charge let the house drain it
+            # just below, which started the charge again).
+            mode = DispatchMode.STATE_OF_CHARGE_CONTROL
 
     else:  # Charge.NO_DISCHARGING
         mode = DispatchMode.ONLY_CHARGE_FROM_PV if below_cutoff else DispatchMode.NO_BATTERY_CHARGE
@@ -178,7 +179,11 @@ def decide_dispatch(
             # min() with full_power (already int) before casting to int
             # keeps this safe even when max_grid_load is unconstrained
             # (float("inf") would overflow an int() cast on its own).
-            power = int(min(full_power, max(0.0, config.max_grid_load - house_load_w)))
+            power = (
+                int(min(full_power, max(0.0, config.max_grid_load - house_load_w)))
+                if below_cutoff
+                else 0  # target reached: hold
+            )
         param_cutoff_soc = cutoff_soc
         pv_on = True
     elif mode == DispatchMode.MAXIMISE_CONSUMPTION:
@@ -238,27 +243,44 @@ GRID_CHARGE_DEADBAND_W = 100
 
 
 def is_grid_charge(param: DispatchParam, hour: Hour) -> bool:
-    """True when this decision charges the battery from the grid."""
+    """True when this decision charges the battery from the grid (not when
+    it holds it at the reached target, at 0 W)."""
     return (
         param.mode == DispatchMode.STATE_OF_CHARGE_CONTROL
         and hour.charge == Charge.CHARGING_ON_GRID
+        and param.power > 0
     )
 
 
-def regulate_grid_charge_power(current_power: int, grid_w: float, config: DispatchConfig) -> int:
+def regulate_grid_charge_power(
+    current_power: int,
+    grid_w: float,
+    config: DispatchConfig,
+    actual_charge_w: float | None = None,
+) -> int:
     """Next grid-charge power (W) so the measured grid import moves to the cap.
 
     `grid_w` is the whole house's measured net grid power (positive =
     import), which already includes the current charge power -- so the gap
     to the cap is exactly how much the charge power should change.
+
+    Never above the cap itself, and -- with `actual_charge_w`, what the
+    battery really takes -- never more than that plus the headroom: when
+    the battery isn't taking the commanded power (target reached, its own
+    limits), the import stays low and the power would otherwise keep
+    climbing (it reached 14.9 kW against an 11 kW cap), to be written in
+    full the moment the battery takes it again.
     """
     cap = config.max_grid_load
     if cap == float("inf"):
         return current_power
     error = cap - grid_w
     gain = GRID_CHARGE_GAIN_DOWN if error < 0 else GRID_CHARGE_GAIN_UP
-    max_power = _full_dispatch_power(config.usable_battery_capacity)
-    return int(max(0.0, min(float(max_power), current_power + gain * error)))
+    upper = min(float(_full_dispatch_power(config.usable_battery_capacity)), cap)
+    new = current_power + gain * error
+    if error > 0 and actual_charge_w is not None:
+        new = min(new, max(0.0, actual_charge_w) + error)
+    return int(max(0.0, min(upper, new)))
 
 
 class ExtraPvState(IntEnum):
