@@ -265,7 +265,8 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             yesterday.month,
             yesterday.day,
         )
-        if not prices:
+        # A day stored without prices has them all at 0: no use as a guess.
+        if not any(prices.values()):
             return day
         for hour_index, price in prices.items():
             day.hour[hour_index].valid = True
