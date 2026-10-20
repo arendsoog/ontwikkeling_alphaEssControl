@@ -2930,4 +2930,6 @@ const STYLE = `
   }
 `;
 
-customElements.define("alpha-ess-panel", AlphaEssPanel);
+// Loaded a second time (a new version while the page stays open): the
+// element is already defined, which would throw.
+if (!customElements.get("alpha-ess-panel")) customElements.define("alpha-ess-panel", AlphaEssPanel);

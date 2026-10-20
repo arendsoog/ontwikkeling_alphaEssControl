@@ -59,6 +59,7 @@ from custom_components.alpha_ess_local.orchestrator import (
     _grid_to_battery,
     _house_load_power,
     _house_load_tariff,
+    _inverter_down,
     _keep_past_hours,
     _number_entity_value,
     _planning_tomorrow,
@@ -1470,7 +1471,11 @@ async def test_schedule_coordinator_keeps_the_last_plan_while_the_inverter_is_do
     coordinator = AlphaEssLocalScheduleCoordinator(
         hass, entry, modbus_coordinator, prices_coordinator, solar_coordinator
     )
-    last_plan = {"today": Day(valid=True), "tomorrow": Day()}
+    now = dt_util.now()
+    last_plan = {
+        "today": Day(valid=True, year=now.year, mon=now.month, day=now.day),
+        "tomorrow": Day(),
+    }
     coordinator.data = last_plan
 
     with (
@@ -1486,6 +1491,19 @@ async def test_schedule_coordinator_keeps_the_last_plan_while_the_inverter_is_do
 
     assert result is last_plan
     mock_run_scheduler.assert_not_called()
+
+
+def test_inverter_counts_as_down_only_after_minutes_without_an_answer():
+    now = dt_util.utcnow()
+    # One poll just failed, but it answered a minute ago: not down -- the
+    # plan and the samples go on (a dropped poll is no outage).
+    flaky = SimpleNamespace(last_update_success=False, last_success_at=now - timedelta(minutes=1))
+    assert _inverter_down(flaky, now) is False
+    gone = SimpleNamespace(last_update_success=False, last_success_at=now - timedelta(minutes=6))
+    assert _inverter_down(gone, now) is True
+    # Never answered since setup: go by the last poll.
+    assert _inverter_down(SimpleNamespace(last_update_success=False), now) is True
+    assert _inverter_down(SimpleNamespace(), now) is False
 
 
 # --- AlphaEssLocalScheduleCoordinator ----------------------------------------

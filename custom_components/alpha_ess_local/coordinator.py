@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -41,6 +41,7 @@ from .const import (
 )
 from .data import Day
 from .orchestrator import get_db_path, hour_correction_from_mean
+from .prices import apply_earning_classification
 from .prices import build_day as build_price_day
 from .solar import build_day as build_solar_day
 
@@ -143,11 +144,16 @@ class AlphaEssLocalDataUpdateCoordinator(DataUpdateCoordinator):
             update_interval=SCAN_INTERVAL,
         )
         self.client = client
+        # When the inverter last answered a poll (None: not yet) -- one
+        # failed poll in between is no outage (see orchestrator._inverter_down).
+        self.last_success_at: datetime | None = None
 
     async def _async_update_data(self) -> dict:
         """Fetch data from the device."""
         try:
-            return await self.client.async_get_data()
+            data = await self.client.async_get_data()
+            self.last_success_at = dt_util.utcnow()
+            return data
         except AlphaEssLocalApiClientAuthenticationError as exception:
             raise UpdateFailed(exception) from exception
         except AlphaEssLocalApiClientError as exception:
@@ -175,6 +181,8 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             update_interval=DAY_DATA_SCAN_INTERVAL,
         )
         self._retry_helper = _StartupRaceRetryHelper(self)
+        # True while today is priced from yesterday's stored hours.
+        self._using_yesterday = False
 
     async def _async_update_data(self) -> dict[str, Day]:
         """Rebuild today's and tomorrow's prices from the configured entities."""
@@ -225,10 +233,53 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         )
 
         previous = self.data or {}
+        today_day = keep_last_known(today_day, previous.get("today"), today)
+        if not today_day.valid:
+            # Nothing from the sources and nothing read earlier today (e.g.
+            # right after a restart): yesterday's stored prices, hour by
+            # hour, rather than a plan without prices.
+            today_day = await self._yesterdays_prices(
+                today, use_fee, return_fee, vat_percentage, return_vat_percentage
+            )
         return {
-            "today": keep_last_known(today_day, previous.get("today"), today),
+            "today": today_day,
             "tomorrow": keep_last_known(tomorrow_day, previous.get("tomorrow"), tomorrow),
         }
+
+    async def _yesterdays_prices(
+        self,
+        today: date,
+        use_fee: float,
+        return_fee: float,
+        vat_percentage: float,
+        return_vat_percentage: float,
+    ) -> Day:
+        """Today priced like yesterday, from the integration's own stored
+        hours (marked `kept`, so the panel shows the sources in red)."""
+        day = Day(year=today.year, mon=today.month, day=today.day)
+        yesterday = today - timedelta(days=1)
+        prices = await self.hass.async_add_executor_job(
+            storage.retrieve_day_prices,
+            get_db_path(self.hass, self.config_entry),
+            yesterday.year,
+            yesterday.month,
+            yesterday.day,
+        )
+        if not prices:
+            return day
+        for hour_index, price in prices.items():
+            day.hour[hour_index].valid = True
+            day.hour[hour_index].price = price
+        apply_earning_classification(
+            day, use_fee, return_fee, vat_percentage, return_vat_percentage
+        )
+        day.valid = True
+        day.kept = True
+        day.source = "yesterday"
+        if not self._using_yesterday:
+            LOGGER.error("No prices for %s -- planning with yesterday's prices meanwhile", today)
+        self._using_yesterday = True
+        return day
 
 
 class AlphaEssLocalSolarCoordinator(DataUpdateCoordinator[dict[str, Day]]):
