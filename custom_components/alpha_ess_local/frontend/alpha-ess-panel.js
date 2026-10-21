@@ -1779,6 +1779,16 @@ class AlphaEssPanel extends HTMLElement {
           label: "Extra PV-sturing negatieve prijzen",
           info: "Schakelt de extra PV-installatie uit bij negatieve prijzen, zodra de batterij haar doel-SOC heeft bereikt.",
         }),
+      ].join("") || '<div class="empty">Status laden…</div>'
+    );
+
+    // Everything here feeds the hourly planning: a change counts from the
+    // next planning run, at the next full hour.
+    const planning = column(
+      "mdi:calendar-clock",
+      "Planning",
+      `<p class="hint">Wijzigingen hier gelden vanaf het volgende hele uur, als de planning opnieuw rekent. Max belasting net-laden geldt voor de sturing direct.</p>` +
+      [
         toggle({
           option: "persist_daily_charge_limit",
           icon: "mdi:numeric-1-circle-outline",
@@ -1791,13 +1801,6 @@ class AlphaEssPanel extends HTMLElement {
           label: "Ontladen naar het net via schema toestaan",
           info: "Mag de planning één keer per dag op een duur uur extra ontladen (ook naar het net), als het schema de minimale dagelijkse winst haalt. Ook zon terugleveren terwijl de batterij nog ruimte heeft mag alleen als dit aan staat; anders gaat het zonne-overschot eerst de batterij in. Huisverbruik uit de batterij gaat altijd door.",
         }),
-      ].join("") || '<div class="empty">Status laden…</div>'
-    );
-
-    const planning = column(
-      "mdi:calendar-clock",
-      "Planning",
-      [
         slider({
           entity: "daily_min_profit",
           icon: "mdi:cash-check",
@@ -1876,7 +1879,9 @@ class AlphaEssPanel extends HTMLElement {
         e
       ),
     ].join("");
-    return rows ? `<div class="section-title">Limieten</div><div class="limits">${rows}</div>` : "";
+    return rows
+      ? `<div class="section-title">Limieten</div><p class="hint">Geldt vanaf het volgende hele uur, als de planning opnieuw rekent.</p><div class="limits">${rows}</div>`
+      : "";
   }
 
   _ctlLabel(spec) {
