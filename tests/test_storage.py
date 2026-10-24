@@ -29,6 +29,7 @@ from custom_components.alpha_ess_local.storage import (
     learn_forecast_spread,
     retrieve_day_actions,
     retrieve_day_battery_charge_wh,
+    retrieve_day_battery_discharge_wh,
     retrieve_day_decisions,
     retrieve_day_five_min,
     retrieve_day_forecast,
@@ -1170,6 +1171,22 @@ def test_day_battery_charge_sums_stored_hours_and_the_current_one(tmp_path):
     assert retrieve_day_battery_charge_wh(db_path, 2024, 1, 15, 5, 100.8) == pytest.approx(7300)
     assert retrieve_day_battery_charge_wh(db_path, 2024, 1, 15, 5, None) == 6500
     assert retrieve_day_battery_charge_wh(db_path, 2024, 1, 16, 5, 100.8) == 0
+
+
+def test_day_battery_discharge_sums_stored_hours_and_the_current_one(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    day = _valid_day()
+    for h, out in ((6, 1200), (7, 1500)):
+        day.hour[h].valid = True
+        day.hour[h].real_house_load = 1300
+        day.hour[h].real_battery_discharge_energy = out
+        store_hour_data(db_path, day, h, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+    store_hour_progress(
+        db_path, 2024, 1, 15, 8, 1300, 0, 0, 0, 3, 0, 0, battery_discharge_energy_at_hour_start=50.0
+    )
+
+    assert retrieve_day_battery_discharge_wh(db_path, 2024, 1, 15, 8, 50.4) == pytest.approx(3100)
+    assert retrieve_day_battery_discharge_wh(db_path, 2024, 1, 15, 8, None) == 2700
 
 
 def test_mean_learning_leaves_out_hours_with_estimated_readings(tmp_path):

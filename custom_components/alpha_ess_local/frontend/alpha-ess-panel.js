@@ -1793,7 +1793,7 @@ class AlphaEssPanel extends HTMLElement {
           option: "persist_daily_charge_limit",
           icon: "mdi:numeric-1-circle-outline",
           label: "Netladen/ontladen maximaal 1x per dag",
-          info: "Aan: per dag gaat er hooguit één volle batterij in (zon en net samen) -- laden vanaf het net in de goedkoopste uren, ook losse uren, binnen die grens en met ruimte voor het verwachte zonne-overschot van die dag; vult de zon de batterij, dan niet vanaf het net (dan laadt hij de avond ervoor bij). Ontladen naar het net hooguit één keer per dag. Ook na een herstart. Uit: geen daggrens -- laden vanaf het net in de goedkoopste uren, ook verspreid over de dag, met ruimte voor het verwachte zonne-overschot van die dag, zolang het plan meer dan de minimale dagelijkse winst oplevert; de batterij ontlaadt dan alleen voor eigen verbruik, niet naar het net. In beide standen laadt hij alleen zoveel als het oplevert, bijvoorbeeld tot de volgende goedkope uren.",
+          info: "Aan: per dag hooguit 22 kWh laden (zon en net samen) en hooguit 22 kWh ontladen (huis en net samen). Uit: meer dan 22 kWh per dag mag. De 22 kWh is de bruikbare batterijcapaciteit uit de instellingen.",
         }),
         toggle({
           entity: "discharge_enabled",
@@ -2345,8 +2345,10 @@ class AlphaEssPanel extends HTMLElement {
     // limit of one battery.
     const charged = (d) => {
       if (d.charged_today === null || d.charged_today === undefined) return "–";
-      const kwh = fmtNum(d.charged_today / 1000, 1);
-      return d.day_budget ? `${kwh} / ${fmtNum(d.day_budget / 1000, 0)} kWh` : `${kwh} kWh`;
+      const kwh = (v) => fmtNum((v || 0) / 1000, 1);
+      const out = d.discharged_today === null || d.discharged_today === undefined ? "" : ` · uit ${kwh(d.discharged_today)}`;
+      const limit = d.day_budget ? ` / ${fmtNum(d.day_budget / 1000, 0)}` : "";
+      return `in ${kwh(d.charged_today)}${out}${limit} kWh`;
     };
     const rows = decisions
       .map((d) => {
@@ -2370,7 +2372,7 @@ class AlphaEssPanel extends HTMLElement {
       <div class="section-title">Beslissingen per uur</div>
       <div class="table-scroll">
         <table class="hist-table decision-table">
-          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th><th>Zon gaat voor</th><th>Batterij leeg (alleen thuis)</th><th>Vandaag geladen</th></tr></thead>
+          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th><th>Zon gaat voor</th><th>Batterij leeg (alleen thuis)</th><th>Vandaag in / uit batterij</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;

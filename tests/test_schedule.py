@@ -597,6 +597,30 @@ def test_once_per_day_charges_in_separate_cheap_hours_within_one_battery():
     assert _charged_wh(today, config) <= 10000 + 10000 / CYCLE_STEPS
 
 
+def test_once_per_day_takes_at_most_one_battery_out_a_day():
+    """One cycle a day: at most one battery comes out too (house and grid).
+    Midnight at 100%, 5 kWh in and 10 kWh (a whole battery) out since: the
+    SOC may not drop below 100% + 50% - 100% = 50% today -- the house runs
+    from the grid instead, however dear."""
+    today = _flat_day(price=0.60, solar=0, house_load=500)
+    today.charged_today_wh = 5000
+    today.discharged_today_wh = 10000
+    config = _config(discharge_enabled=False)
+    _calculate_best_schedule(50, 12, today, Day(valid=False), False, False, None, config)
+
+    assert all(today.hour[h].estimated_start_soc >= 50 for h in range(12, 24))
+
+
+def test_once_per_day_discharge_floor_leaves_room_below_one_battery():
+    """Only 2 kWh came out today: the battery may still supply the house."""
+    today = _flat_day(price=0.60, solar=0, house_load=500)
+    today.discharged_today_wh = 2000
+    config = _config(discharge_enabled=False)
+    _calculate_best_schedule(80, 12, today, Day(valid=False), False, False, None, config)
+
+    assert today.hour[23].estimated_start_soc < 80
+
+
 def test_once_per_day_counts_what_went_in_earlier_today():
     today = _two_valley_day()
     today.charged_today_wh = 10000  # a whole battery went in already

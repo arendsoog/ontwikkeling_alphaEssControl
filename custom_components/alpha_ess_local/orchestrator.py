@@ -1308,6 +1308,15 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             now.hour,
             (self._modbus_coordinator.data or {}).get("battery_total_energy_charge"),
         )
+        today.discharged_today_wh = await self.hass.async_add_executor_job(
+            storage.retrieve_day_battery_discharge_wh,
+            db_path,
+            today_date.year,
+            today_date.month,
+            today_date.day,
+            now.hour,
+            (self._modbus_coordinator.data or {}).get("battery_total_energy_discharge"),
+        )
         if not once_per_day:
             today.discharge_used = False  # no grid discharge at all
         # Before the planner, so its own bookkeeping (index_charge, the
@@ -1423,6 +1432,7 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                     min_profit=config.daily_min_profit,
                     multiple_per_day=config.multiple_per_day,
                     charged_today=today.charged_today_wh,
+                    discharged_today=today.discharged_today_wh,
                     day_budget=None if config.multiple_per_day else config.usable_battery_capacity,
                     tomorrow_estimated=planning_tomorrow is not tomorrow,
                     solar_room=solar_room,

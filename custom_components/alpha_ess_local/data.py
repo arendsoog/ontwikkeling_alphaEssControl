@@ -141,6 +141,9 @@ class Day:
     # solar and grid) -- counts against the once-per-day limit of one full
     # battery (schedule.CYCLE_STEPS).
     charged_today_wh: float = 0.0
+    # And what already came out of it today (Wh, house and grid) -- at most
+    # one full battery too, so the planner keeps the SOC above a floor.
+    discharged_today_wh: float = 0.0
     hour: list = field(default_factory=lambda: [Hour() for _ in range(MAX_HOURS)])
     # Which schedule set_schedule chose and why (schedule.SELECTION_*), and
     # the optimised schedule's extra result over the baseline (EUR, None if

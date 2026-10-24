@@ -153,6 +153,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         # Once per day: what had gone into the battery that day when the
         # hour was planned, and the day's limit of one battery (Wh).
         ("charged_today", "REAL"),
+        ("discharged_today", "REAL"),
         ("day_budget", "REAL"),
         # Solar goes first: the room (Wh) a grid charge had to leave free for
         # the rest of the day's sun, that day's solar surplus still to come
@@ -767,41 +768,78 @@ def retrieve_day_prices(db_path: str, year: int, mon: int, day: int) -> dict[int
     return {hour: float(price) for hour, price in rows}
 
 
-def retrieve_day_battery_charge_wh(
-    db_path: str, year: int, mon: int, day: int, hour: int, charge_total_kwh: float | None
+def _day_battery_energy_wh(
+    db_path: str,
+    year: int,
+    mon: int,
+    day: int,
+    hour: int,
+    total_kwh: float | None,
+    energy_column: str,
+    start_column: str,
 ) -> float:
-    """What went into the battery today before now, in Wh: the stored hours,
-    plus everything since -- the inverter's cumulative charge register
-    `charge_total_kwh` against its value at the start of the first hour not
-    stored yet. At an hour boundary the planner can run before the hour just
-    ended is stored; that hour is then counted from its own start, not lost.
-    """
+    """What went into (or out of) the battery today before now, in Wh: the
+    stored hours, plus everything since -- the inverter's cumulative
+    register `total_kwh` against its value at the start of the first hour
+    not stored yet. At an hour boundary the planner can run before the hour
+    just ended is stored; that hour is then counted from its own start."""
     with _connection(db_path) as conn:
         _ensure_schema(conn)
         stored = conn.execute(
-            """
-            SELECT hour, battery_charge_energy FROM hour_data
+            f"""
+            SELECT hour, {energy_column} FROM hour_data
             WHERE year = ? AND mon = ? AND day = ? AND hour < ?
             """,
             (year, mon, day, hour),
         ).fetchall()
         progress = conn.execute(
-            """
-            SELECT hour, battery_charge_energy_at_hour_start FROM hour_progress
+            f"""
+            SELECT hour, {start_column} FROM hour_progress
             WHERE year = ? AND mon = ? AND day = ? AND hour <= ?
-              AND battery_charge_energy_at_hour_start IS NOT NULL
+              AND {start_column} IS NOT NULL
             ORDER BY hour
             """,
             (year, mon, day, hour),
         ).fetchall()
-    stored_hours = {h for h, _ in stored}
     done = sum(energy or 0.0 for _, energy in stored)
-    since = 0.0
-    last_stored = max(stored_hours, default=-1)
+    last_stored = max((h for h, _ in stored), default=-1)
     open_start = next((start for h, start in progress if h > last_stored), None)
-    if open_start is not None and charge_total_kwh is not None:
-        since = max(0.0, (charge_total_kwh - open_start) * 1000)
+    since = 0.0
+    if open_start is not None and total_kwh is not None:
+        since = max(0.0, (total_kwh - open_start) * 1000)
     return float(done) + since
+
+
+def retrieve_day_battery_charge_wh(
+    db_path: str, year: int, mon: int, day: int, hour: int, charge_total_kwh: float | None
+) -> float:
+    """What went into the battery today before now, in Wh (solar and grid)."""
+    return _day_battery_energy_wh(
+        db_path,
+        year,
+        mon,
+        day,
+        hour,
+        charge_total_kwh,
+        "battery_charge_energy",
+        "battery_charge_energy_at_hour_start",
+    )
+
+
+def retrieve_day_battery_discharge_wh(
+    db_path: str, year: int, mon: int, day: int, hour: int, discharge_total_kwh: float | None
+) -> float:
+    """What came out of the battery today before now, in Wh (house and grid)."""
+    return _day_battery_energy_wh(
+        db_path,
+        year,
+        mon,
+        day,
+        hour,
+        discharge_total_kwh,
+        "battery_discharge_energy",
+        "battery_discharge_energy_at_hour_start",
+    )
 
 
 FIVE_MIN_KEEP_DAYS = 3
@@ -1075,6 +1113,7 @@ def store_hour_action(
     empty_after: float | None = None,
     charged_today: float | None = None,
     day_budget: float | None = None,
+    discharged_today: float | None = None,
 ) -> None:
     """Record the planned action (data.Charge) for an hour and why it was
     chosen; the latest run wins. Leaves the dispatch columns alone.
@@ -1092,8 +1131,8 @@ def store_hour_action(
             INSERT INTO hour_action
                 (year, mon, day, hour, charge, selection, opt_extra, min_profit, price,
                  cutoff_soc, multiple, tomorrow_estimated, solar_room, solar_after,
-                 feed_in_allowed, empty_after, charged_today, day_budget)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 feed_in_allowed, empty_after, charged_today, day_budget, discharged_today)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (year, mon, day, hour) DO UPDATE SET
                 charge=excluded.charge, selection=excluded.selection,
                 opt_extra=excluded.opt_extra, min_profit=excluded.min_profit,
@@ -1102,7 +1141,8 @@ def store_hour_action(
                 tomorrow_estimated=excluded.tomorrow_estimated,
                 solar_room=excluded.solar_room, solar_after=excluded.solar_after,
                 feed_in_allowed=excluded.feed_in_allowed, empty_after=excluded.empty_after,
-                charged_today=excluded.charged_today, day_budget=excluded.day_budget
+                charged_today=excluded.charged_today, day_budget=excluded.day_budget,
+                discharged_today=excluded.discharged_today
             """,
             (
                 year,
@@ -1123,6 +1163,7 @@ def store_hour_action(
                 empty_after,
                 charged_today,
                 day_budget,
+                discharged_today,
             ),
         )
         conn.commit()
@@ -1167,7 +1208,7 @@ def retrieve_day_decisions(db_path: str, year: int, mon: int, day: int) -> list[
             SELECT hour, charge, selection, opt_extra, min_profit, price, cutoff_soc,
                    mode, power, power_max, written, manual, multiple,
                    tomorrow_estimated, solar_room, solar_after, feed_in_allowed,
-                   empty_after, charged_today, day_budget
+                   empty_after, charged_today, day_budget, discharged_today
             FROM hour_action WHERE year = ? AND mon = ? AND day = ? ORDER BY hour
             """,
             (year, mon, day),
@@ -1193,6 +1234,7 @@ def retrieve_day_decisions(db_path: str, year: int, mon: int, day: int) -> list[
         "empty_after",
         "charged_today",
         "day_budget",
+        "discharged_today",
     )
     return [dict(zip(keys, row, strict=True)) for row in rows]
 
