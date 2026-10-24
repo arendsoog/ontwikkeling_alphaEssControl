@@ -1792,8 +1792,8 @@ class AlphaEssPanel extends HTMLElement {
         toggle({
           option: "persist_daily_charge_limit",
           icon: "mdi:numeric-1-circle-outline",
-          label: "Netladen/ontladen",
-          info: "Gaat alleen over laden uit het net en ontladen naar het net -- niet over zon en het huisverbruik. Aan: uit het net per dag hooguit één volle batterij, in de goedkoopste uren (ook losse uren), en ontladen naar het net hooguit één keer per dag; ook na een herstart. Uit: geen daggrens, en de batterij ontlaadt alleen voor eigen verbruik, niet naar het net. In beide standen laadt hij alleen wat het oplevert (bijvoorbeeld tot de volgende goedkope uren), laat hij ruimte voor de zon van die dag en moet het plan de minimale dagelijkse winst halen.",
+          label: "Netladen/ontladen maximaal 1x per dag",
+          info: "Aan: per dag hooguit 22 kWh laden (zon en net samen) en hooguit 22 kWh ontladen (huis en net samen). Uit: meer dan 22 kWh per dag mag. De 22 kWh is de bruikbare batterijcapaciteit uit de instellingen.",
         }),
         toggle({
           entity: "discharge_enabled",
@@ -2341,12 +2341,14 @@ class AlphaEssPanel extends HTMLElement {
       if (days === 0) return time;
       return days === 1 ? `morgen ${time}` : `over ${days} dagen ${time}`;
     };
-    // What had gone into the battery from the grid that day; with the
-    // daily limit on, against its limit of one battery.
+    // What had gone into the battery that day; once per day, against its
+    // limit of one battery.
     const charged = (d) => {
       if (d.charged_today === null || d.charged_today === undefined) return "–";
-      const kwh = fmtNum(d.charged_today / 1000, 1);
-      return d.day_budget ? `${kwh} / ${fmtNum(d.day_budget / 1000, 0)} kWh` : `${kwh} kWh`;
+      const kwh = (v) => fmtNum((v || 0) / 1000, 1);
+      const out = d.discharged_today === null || d.discharged_today === undefined ? "" : ` · uit ${kwh(d.discharged_today)}`;
+      const limit = d.day_budget ? ` / ${fmtNum(d.day_budget / 1000, 0)}` : "";
+      return `in ${kwh(d.charged_today)}${out}${limit} kWh`;
     };
     const rows = decisions
       .map((d) => {
@@ -2370,7 +2372,7 @@ class AlphaEssPanel extends HTMLElement {
       <div class="section-title">Beslissingen per uur</div>
       <div class="table-scroll">
         <table class="hist-table decision-table">
-          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th><th>Zon gaat voor</th><th>Batterij leeg (alleen thuis)</th><th>Uit net geladen (vandaag)</th></tr></thead>
+          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th><th>Zon gaat voor</th><th>Batterij leeg (alleen thuis)</th><th>Vandaag in / uit batterij</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;
