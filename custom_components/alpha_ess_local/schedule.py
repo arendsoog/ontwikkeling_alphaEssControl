@@ -116,13 +116,14 @@ class ScheduleConfig:
     # BTW-exempt teruglevering formula) -- None means "no override, apply
     # vat_percentage to both sides", same as prior behavior.
     return_vat_percentage: float | None = None
-    # False ("grid charge/discharge limited"): at most one full battery from
-    # the grid per day (Day.grid_charged_today_wh, CYCLE_STEPS), in any
-    # (separate) cheap hours -- solar charging and the battery serving the
-    # house don't count -- and one grid discharge at most. True: no daily
-    # limit, and no discharging to the grid -- the battery only supplies
-    # the house. Either way grid charging leaves room for that day's sun,
-    # and the plan must beat the no-grid-charge baseline by daily_min_profit.
+    # False ("once per day"): at most one full battery goes in per day,
+    # solar and grid together (Day.charged_today_wh, CYCLE_STEPS) -- grid
+    # charging in any (separate) cheap hours within that, leaving room for
+    # the day's expected solar surplus -- and one grid discharge at most.
+    # True: no daily limit, grid charging in any hours leaving room for that
+    # day's sun, and no discharging to the grid -- the battery only supplies
+    # the house. Either way the plan must beat the no-grid-charge baseline
+    # by daily_min_profit.
     multiple_per_day: bool = False
     # Learned solar uncertainty: per lead-time group (storage.LEAD_BUCKETS),
     # the factor real/forecast solar at each scenario's percentile
@@ -197,7 +198,7 @@ def solar_reservation(day: Day, hour: int, config: ScheduleConfig) -> tuple[floa
     weighs it: the room a grid charge must leave free in the battery
     (_Plan's room, capped at the battery's span) and the whole solar
     surplus still expected (once per day: no grid charge when a charge
-    plus this exceeds one battery). For the decision log."""
+    plus this exceeds one battery, see CYCLE_STEPS). For the decision log."""
     span = (config.max_soc_negative_price - SOC_MIN) / SOC_MAX_BATTERY
     span_wh = span * config.usable_battery_capacity
     room = surplus = 0.0
@@ -430,10 +431,12 @@ def _evaluate_hour_action(
 # solar room and the grid-load cap), so it charges what is worth it -- e.g.
 # until the next cheap hours, today or tomorrow -- rather than always full.
 GRID_LEVELS = 10
-# Grid charge/discharge limited (not multiple_per_day): at most one full
-# battery from the grid per day, in any hours. Only grid charging counts --
-# solar charging and the battery serving the house don't. Counted in
-# 1/CYCLE_STEPS units of the battery.
+# Once per day (not multiple_per_day): at most one full battery goes in per
+# day -- one cycle -- solar and grid together, in any hours. Solar goes
+# first: it is never refused for this budget, and a grid charge must leave
+# room in it for the solar surplus still expected later that day (so on a
+# day the sun fills the battery there is no grid charge; the 48-hour plan
+# charges the evening before instead). Counted in 1/CYCLE_STEPS units.
 CYCLE_STEPS = 20
 _SOC_PER_CYCLE_STEP = SOC_STEPS // CYCLE_STEPS
 
@@ -442,8 +445,7 @@ _SOC_PER_CYCLE_STEP = SOC_STEPS // CYCLE_STEPS
 class _Option:
     """One way to spend an hour from a given SOC: the action, the SOC index
     it ends at, its profit, whether its grid charge reached its amount and
-    the CYCLE_STEPS units it puts into the battery (counted against the daily
-    limit for a grid charge only)."""
+    the CYCLE_STEPS units it puts into the battery."""
 
     action: Charge
     next_soc_index: int
@@ -493,8 +495,7 @@ class _Plan:
     to the end of the known days.
 
     The state is the once-per-day bookkeeping -- the CYCLE_STEPS units
-    charged from the grid so far that day and whether the grid discharge is
-    spent
+    charged so far that day and whether the grid discharge is spent
     (units << 1 | spent), reset at midnight; with multiple_per_day there
     is none. The hours after start_hour are
     solved once; the start hour itself is kept open so every forced action
@@ -535,8 +536,16 @@ class _Plan:
         solar_span_wh = (
             (config.max_soc_negative_price - SOC_MIN) / SOC_MAX_BATTERY
         ) * config.usable_battery_capacity
+        # The solar surplus still expected later that same day, in
+        # CYCLE_STEPS units -- see CYCLE_STEPS.
+        cycle_step_wh = config.usable_battery_capacity / CYCLE_STEPS
+        solar_after = 0.0
+        self.solar_units_after: dict[int, int] = {}
         for hour in range(self.end_hour - 1, start_hour - 1, -1):
             the_hour = self.hour_at(hour)
+            self.solar_units_after[hour] = (
+                math.ceil(solar_after / cycle_step_wh - 1e-9) if cycle_step_wh else 0
+            )
             grid_allowed = not (grid_blocked_today and hour < MAX_HOURS)
             table = _hour_options(the_hour, config, room, step_wh, grid_allowed)
             self.options[hour] = table
@@ -553,6 +562,10 @@ class _Plan:
                 if hour % 24 == 0
                 else min(solar_span_wh, max(0.0, _net_solar_wh(the_hour, config) + room))
             )
+            if hour % 24 == 0:
+                solar_after = 0.0
+            else:
+                solar_after += max(0.0, _net_solar_wh(the_hour, config))
 
     def hour_at(self, hour: int) -> Hour:
         if hour >= MAX_HOURS:
@@ -566,16 +579,18 @@ class _Plan:
             nxt = 0
         else:
             charged, discharge_spent = state >> 1, state & 1
+            charged_after = charged + option.cycle_units
             if option.action == Charge.CHARGING_ON_GRID:
-                # Within the day's one battery from the grid.
-                charged += option.cycle_units
-                if charged > CYCLE_STEPS:
+                # Within the day's one battery, leaving the room the rest
+                # of the day's solar surplus needs in it.
+                if charged_after + self.solar_units_after[hour] > CYCLE_STEPS:
                     return None
             elif option.action == Charge.CHARGING_DISCHARGE:
                 if discharge_spent:
                     return None
                 discharge_spent = 1
-            nxt = (charged << 1) | discharge_spent
+            # Solar is never refused for the budget.
+            nxt = (min(charged_after, CYCLE_STEPS) << 1) | discharge_spent
         return 0 if reset and (hour + 1) % 24 == 0 else nxt
 
     def _best(
@@ -639,7 +654,7 @@ class _Plan:
             if hour == self.start_hour:
                 raw = self._next_state(hour, state, option, reset=False)
                 # The grid charge is bounded by the measured daily budget
-                # (Day.grid_charged_today_wh), not a spent flag; only the once-
+                # (Day.charged_today_wh), not a spent flag; only the once-
                 # per-day grid discharge is (persisted across restarts).
                 self.today.charge_on_grid_used = False
                 self.today.discharge_used = not self.multiple and bool(raw & 1)
@@ -650,17 +665,16 @@ class _Plan:
 def _start_state(
     config: ScheduleConfig, today: Day, charge_used_before: bool, discharge_used_before: bool
 ) -> int:
-    """The DP state at the start hour: with the daily limit, what went into
-    the battery from the grid today so far (a whole battery when
-    `charge_used_before`, i.e. no grid charge left today), and whether the
-    grid discharge is spent."""
+    """The DP state at the start hour: with once per day, what went into the
+    battery today so far (a whole battery when `charge_used_before`, i.e.
+    no grid charge left today), and whether the grid discharge is spent."""
     if config.multiple_per_day:
         return 0
     step_wh = config.usable_battery_capacity / CYCLE_STEPS
     if charge_used_before:
         charged = CYCLE_STEPS
     else:
-        charged = round(today.grid_charged_today_wh / step_wh) if step_wh else 0
+        charged = round(today.charged_today_wh / step_wh) if step_wh else 0
     charged = int(_clamp(charged, 0, CYCLE_STEPS))
     return (charged << 1) | int(discharge_used_before)
 

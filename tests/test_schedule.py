@@ -599,7 +599,7 @@ def test_once_per_day_charges_in_separate_cheap_hours_within_one_battery():
 
 def test_once_per_day_counts_what_went_in_earlier_today():
     today = _two_valley_day()
-    today.grid_charged_today_wh = 10000  # a whole battery came from the grid already
+    today.charged_today_wh = 10000  # a whole battery went in already
     _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, _config())
 
     assert _sessions(today) == 0
@@ -642,10 +642,9 @@ def test_multiple_per_day_charges_for_the_morning_before_a_sunny_day():
     assert today.hour[16].estimated_start_soc >= 80  # the sun still filled it
 
 
-def test_daily_limit_still_charges_for_the_morning_before_a_sunny_day():
-    """With the daily grid limit on, only grid charging counts against it:
-    the 02:00 charge for the dear morning is fine though the sun fills the
-    battery later -- it only has to leave room for that sun."""
+def test_once_per_day_no_grid_charge_on_a_day_the_sun_fills_the_battery():
+    """Once per day, the sun goes first: no grid charge on a day its
+    surplus alone fills the battery."""
     today = _flat_day(price=0.60, solar=0, house_load=500)
     today.hour[2].price = 0.05
     for h in range(10, 16):
@@ -654,8 +653,7 @@ def test_daily_limit_still_charges_for_the_morning_before_a_sunny_day():
     config = _config(discharge_enabled=False)
     _calculate_best_schedule(10, 0, today, Day(valid=False), False, False, None, config)
 
-    assert today.hour[2].charge == Charge.CHARGING_ON_GRID
-    assert today.hour[16].estimated_start_soc >= 80  # the sun still filled it
+    assert all(hour.charge != Charge.CHARGING_ON_GRID for hour in today.hour)
 
 
 @pytest.mark.parametrize(("discharge_enabled", "stores"), [(False, True), (True, False)])
@@ -1081,7 +1079,7 @@ def test_calculate_best_schedule_spreads_grid_charge_across_multiple_hours_when_
 
 def test_calculate_best_schedule_never_marks_the_grid_charge_spent():
     # Once per day the grid charge is bounded by the measured daily budget
-    # (Day.grid_charged_today_wh), not by a spent flag -- even when the planned
+    # (Day.charged_today_wh), not by a spent flag -- even when the planned
     # charge completes in this hour.
     today = _negative_price_day()
     tomorrow = Day(valid=False)

@@ -767,36 +767,41 @@ def retrieve_day_prices(db_path: str, year: int, mon: int, day: int) -> dict[int
     return {hour: float(price) for hour, price in rows}
 
 
-def retrieve_day_grid_charge_wh(db_path: str, year: int, mon: int, day: int, hour: int) -> float:
-    """What went into the battery from the grid today before now, in Wh
-    (solar charging doesn't count): the stored hours, plus the hours not
-    stored yet -- this one so far, and at an hour boundary also the one just
-    ended, when the planner runs before it's stored -- from their running
-    average (W) over their 5-minute samples."""
+def retrieve_day_battery_charge_wh(
+    db_path: str, year: int, mon: int, day: int, hour: int, charge_total_kwh: float | None
+) -> float:
+    """What went into the battery today before now, in Wh: the stored hours,
+    plus everything since -- the inverter's cumulative charge register
+    `charge_total_kwh` against its value at the start of the first hour not
+    stored yet. At an hour boundary the planner can run before the hour just
+    ended is stored; that hour is then counted from its own start, not lost.
+    """
     with _connection(db_path) as conn:
         _ensure_schema(conn)
         stored = conn.execute(
             """
-            SELECT hour, grid_to_battery FROM hour_data
+            SELECT hour, battery_charge_energy FROM hour_data
             WHERE year = ? AND mon = ? AND day = ? AND hour < ?
             """,
             (year, mon, day, hour),
         ).fetchall()
         progress = conn.execute(
             """
-            SELECT hour, grid_to_battery, sample_count FROM hour_progress
+            SELECT hour, battery_charge_energy_at_hour_start FROM hour_progress
             WHERE year = ? AND mon = ? AND day = ? AND hour <= ?
+              AND battery_charge_energy_at_hour_start IS NOT NULL
+            ORDER BY hour
             """,
             (year, mon, day, hour),
         ).fetchall()
+    stored_hours = {h for h, _ in stored}
     done = sum(energy or 0.0 for _, energy in stored)
-    last_stored = max((h for h, _ in stored), default=-1)
-    open_hours = sum(
-        (average or 0.0) * (count or 0) * 5 / 60
-        for h, average, count in progress
-        if h > last_stored
-    )
-    return float(done) + open_hours
+    since = 0.0
+    last_stored = max(stored_hours, default=-1)
+    open_start = next((start for h, start in progress if h > last_stored), None)
+    if open_start is not None and charge_total_kwh is not None:
+        since = max(0.0, (charge_total_kwh - open_start) * 1000)
+    return float(done) + since
 
 
 FIVE_MIN_KEEP_DAYS = 3
