@@ -259,6 +259,23 @@ def test_planning_tomorrow_keeps_real_prices():
     assert _planning_tomorrow(_priced_day(0.30), tomorrow, _priced_day(0.05)) is tomorrow
 
 
+def test_merge_day_sources_prices_a_gap_like_its_neighbour():
+    """Regression: an hour with a solar forecast but no price got price 0,
+    so the planner charged from the grid in one of the dearest hours."""
+    price_day = Day(valid=True)
+    for hour, price in ((16, 0.045), (17, 0.083), (19, 0.137)):
+        price_day.hour[hour].valid = True
+        price_day.hour[hour].price = price
+    solar_day = Day(valid=True)
+    solar_day.hour[18].valid = True
+    solar_day.hour[18].estimated_solar_power = 150
+
+    merged = merge_day_sources(_date(), price_day, solar_day, None)
+
+    assert merged.hour[18].valid
+    assert merged.hour[18].price == 0.083  # the nearest priced hour (earlier on a tie)
+
+
 def test_merge_day_sources_sets_year_mon_day_from_target_date():
     merged = merge_day_sources(_date(), Day(), Day(), None)
     assert (merged.year, merged.mon, merged.day) == (2024, 1, 15)
@@ -2801,6 +2818,25 @@ async def test_watch_for_source_recovery_refreshes_schedule_on_valid_transition(
     await hass.async_block_till_done()
     schedule_coordinator.async_request_refresh.assert_awaited_once()
 
+    unsub()
+
+
+async def test_watch_for_source_recovery_replans_when_real_data_replaces_a_stand_in(
+    hass: HomeAssistant,
+):
+    """Regression: after a restart today was priced like yesterday (a kept
+    stand-in, valid), so the real prices arriving later didn't count as a
+    recovery and the plan kept yesterday's prices until the next hour."""
+    stand_in = Day(valid=True, kept=True)
+    source_coordinator = _FakeListenerCoordinator(hass, {"today": stand_in})
+    schedule_coordinator = SimpleNamespace(async_request_refresh=AsyncMock())
+
+    unsub = watch_for_source_recovery(source_coordinator, schedule_coordinator)
+    source_coordinator.data = {"today": Day(valid=True)}
+    source_coordinator.fire()
+    await hass.async_block_till_done()
+
+    schedule_coordinator.async_request_refresh.assert_awaited_once()
     unsub()
 
 

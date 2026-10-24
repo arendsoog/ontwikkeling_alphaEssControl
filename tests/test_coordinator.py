@@ -126,7 +126,7 @@ async def test_prices_coordinator_falls_back_to_yesterdays_stored_prices(
     entry.add_to_hass(hass)
     day_before = dt_util.now().date() - timedelta(days=1)
     yesterday = Day(valid=True, year=day_before.year, mon=day_before.month, day=day_before.day)
-    for hour, price in ((7, 0.27), (18, 0.28)):
+    for hour, price in ((7, 0.27), (18, 0.28), (19, 0.0)):
         yesterday.hour[hour].valid = True
         yesterday.hour[hour].real_house_load = 900
         yesterday.hour[hour].price = price
@@ -147,6 +147,7 @@ async def test_prices_coordinator_falls_back_to_yesterdays_stored_prices(
     assert today.kept is True
     assert (today.hour[7].price, today.hour[18].price) == (0.27, 0.28)
     assert today.hour[7].valid and not today.hour[12].valid
+    assert not today.hour[19].valid  # stored as 0 = no price then, not free
     coordinator._retry_helper.note_result(configured=False, found_data=True)  # no lingering retry
 
 

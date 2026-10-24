@@ -183,6 +183,15 @@ def hour_correction_from_mean(
     return {hour: (entry.solar_factor, entry.solar_offset) for hour, entry in mean.items()}
 
 
+def _nearest_priced(price_day: Day, index: int) -> Hour | None:
+    """The priced hour nearest to `index` (the earlier one on a tie)."""
+    for distance in range(1, MAX_HOURS):
+        for candidate in (index - distance, index + distance):
+            if 0 <= candidate < MAX_HOURS and price_day.hour[candidate].valid:
+                return price_day.hour[candidate]
+    return None
+
+
 def merge_day_sources(
     target_date: date,
     price_day: Day,
@@ -215,6 +224,14 @@ def merge_day_sources(
             target.valid = True
             target.estimated_solar_power = solar_hour.estimated_solar_power
             target.estimated_solar_power_raw = solar_hour.estimated_solar_power_raw
+
+        if not price_hour.valid and price_day.valid and target.valid:
+            # An hour with a forecast but no price (a gap in the source):
+            # not free -- priced like its nearest priced neighbours.
+            neighbour = _nearest_priced(price_day, i)
+            if neighbour is not None:
+                target.price = neighbour.price
+                target.earning = neighbour.earning
 
         mean = house_load.get(i) if house_load else None
         if mean is not None:
@@ -2104,17 +2121,20 @@ def watch_for_source_recovery(
 
     Returns the unsubscribe callable (pass to `entry.async_on_unload`).
     """
-    had_valid = bool(
-        (source_coordinator.data or {}).get("today") and source_coordinator.data["today"].valid
-    )
+
+    def _real(today: Day | None) -> bool:
+        # Valid data from a source -- not a kept or estimated stand-in
+        # (yesterday's prices after a restart, the last known forecast).
+        return bool(today and today.valid and not today.kept)
+
+    had_real = _real((source_coordinator.data or {}).get("today"))
 
     def _on_source_updated() -> None:
-        nonlocal had_valid
-        today = (source_coordinator.data or {}).get("today")
-        now_valid = bool(today and today.valid)
-        if now_valid and not had_valid:
+        nonlocal had_real
+        now_real = _real((source_coordinator.data or {}).get("today"))
+        if now_real and not had_real:
             source_coordinator.hass.async_create_task(schedule_coordinator.async_request_refresh())
-        had_valid = now_valid
+        had_real = now_real
 
     return source_coordinator.async_add_listener(_on_source_updated)
 
