@@ -230,16 +230,17 @@ def test_decide_dispatch_charging_on_grid_above_cutoff_earning_on_use():
     assert decision.param.pv_on is False  # earning-on-use security check
 
 
-def test_decide_dispatch_charging_on_grid_holds_at_the_target():
-    """Regression: at the target it switched to No-charge, the house drained
-    the battery just below, and the charge started again -- flipping back
-    and forth. Now it holds there in state-of-charge control at 0 W."""
+def test_decide_dispatch_charging_on_grid_at_the_target_only_charges_from_pv():
+    """At the target: no discharge into the house (it switched to No-charge,
+    the house drained it just below and the charge restarted -- flipping),
+    and no solar fed in either (holding at 0 W in state-of-charge control
+    sent the surplus to the grid): only charge from PV, at full power."""
     hour = _hour(charge=Charge.CHARGING_ON_GRID, earning=Earning.EARNING_ON_RETURN, cutoff_soc=900)
     decision = decide_dispatch(hour, cur_soc=900, config=_config())
 
-    assert decision.param.mode == DispatchMode.STATE_OF_CHARGE_CONTROL
-    assert decision.param.power == 0
-    assert decision.param.cutoff_soc == 900
+    assert decision.param.mode == DispatchMode.ONLY_CHARGE_FROM_PV
+    assert decision.param.power == FULL_POWER
+    assert decision.param.pv_on is True
     assert not is_grid_charge(decision.param, hour)  # nothing to regulate
 
 

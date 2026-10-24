@@ -1294,19 +1294,18 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             CONF_PERSIST_DAILY_CHARGE_LIMIT, DEFAULT_PERSIST_DAILY_CHARGE_LIMIT
         )
         # The grid charge has no spent flag any more: once per day it is
-        # bounded by what went into the battery today (one battery a day,
-        # solar included); several a day it isn't bounded at all.
+        # bounded by what went into the battery from the grid today (one
+        # battery a day); several a day it isn't bounded at all.
         today.charge_on_grid_used = False
-        # What went into the battery today: the once-per-day budget's
+        # What went into the battery from the grid today: the daily limit's
         # count, and shown in the decision log either way.
-        today.charged_today_wh = await self.hass.async_add_executor_job(
-            storage.retrieve_day_battery_charge_wh,
+        today.grid_charged_today_wh = await self.hass.async_add_executor_job(
+            storage.retrieve_day_grid_charge_wh,
             db_path,
             today_date.year,
             today_date.month,
             today_date.day,
             now.hour,
-            (self._modbus_coordinator.data or {}).get("battery_total_energy_charge"),
         )
         if not once_per_day:
             today.discharge_used = False  # no grid discharge at all
@@ -1422,7 +1421,7 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                     opt_extra=today.opt_extra,
                     min_profit=config.daily_min_profit,
                     multiple_per_day=config.multiple_per_day,
-                    charged_today=today.charged_today_wh,
+                    charged_today=today.grid_charged_today_wh,
                     day_budget=None if config.multiple_per_day else config.usable_battery_capacity,
                     tomorrow_estimated=planning_tomorrow is not tomorrow,
                     solar_room=solar_room,

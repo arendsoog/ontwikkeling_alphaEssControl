@@ -1792,8 +1792,8 @@ class AlphaEssPanel extends HTMLElement {
         toggle({
           option: "persist_daily_charge_limit",
           icon: "mdi:numeric-1-circle-outline",
-          label: "Netladen/ontladen maximaal 1x per dag",
-          info: "Aan: per dag gaat er hooguit één volle batterij in (zon en net samen) -- laden vanaf het net in de goedkoopste uren, ook losse uren, binnen die grens en met ruimte voor het verwachte zonne-overschot van die dag; vult de zon de batterij, dan niet vanaf het net (dan laadt hij de avond ervoor bij). Ontladen naar het net hooguit één keer per dag. Ook na een herstart. Uit: geen daggrens -- laden vanaf het net in de goedkoopste uren, ook verspreid over de dag, met ruimte voor het verwachte zonne-overschot van die dag, zolang het plan meer dan de minimale dagelijkse winst oplevert; de batterij ontlaadt dan alleen voor eigen verbruik, niet naar het net. In beide standen laadt hij alleen zoveel als het oplevert, bijvoorbeeld tot de volgende goedkope uren.",
+          label: "Netladen/ontladen",
+          info: "Gaat alleen over laden uit het net en ontladen naar het net -- niet over zon en het huisverbruik. Aan: uit het net per dag hooguit één volle batterij, in de goedkoopste uren (ook losse uren), en ontladen naar het net hooguit één keer per dag; ook na een herstart. Uit: geen daggrens, en de batterij ontlaadt alleen voor eigen verbruik, niet naar het net. In beide standen laadt hij alleen wat het oplevert (bijvoorbeeld tot de volgende goedkope uren), laat hij ruimte voor de zon van die dag en moet het plan de minimale dagelijkse winst halen.",
         }),
         toggle({
           entity: "discharge_enabled",
@@ -2341,8 +2341,8 @@ class AlphaEssPanel extends HTMLElement {
       if (days === 0) return time;
       return days === 1 ? `morgen ${time}` : `over ${days} dagen ${time}`;
     };
-    // What had gone into the battery that day; once per day, against its
-    // limit of one battery.
+    // What had gone into the battery from the grid that day; with the
+    // daily limit on, against its limit of one battery.
     const charged = (d) => {
       if (d.charged_today === null || d.charged_today === undefined) return "–";
       const kwh = fmtNum(d.charged_today / 1000, 1);
@@ -2370,7 +2370,7 @@ class AlphaEssPanel extends HTMLElement {
       <div class="section-title">Beslissingen per uur</div>
       <div class="table-scroll">
         <table class="hist-table decision-table">
-          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th><th>Zon gaat voor</th><th>Batterij leeg (alleen thuis)</th><th>Vandaag geladen</th></tr></thead>
+          <thead><tr><th>Uur</th><th>Prijs</th><th>Actie</th><th>Waarom</th><th>Omvormer</th><th>Doel-SOC</th><th>Zon gaat voor</th><th>Batterij leeg (alleen thuis)</th><th>Uit net geladen (vandaag)</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;

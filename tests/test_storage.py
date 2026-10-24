@@ -28,10 +28,10 @@ from custom_components.alpha_ess_local.storage import (
     lead_bucket,
     learn_forecast_spread,
     retrieve_day_actions,
-    retrieve_day_battery_charge_wh,
     retrieve_day_decisions,
     retrieve_day_five_min,
     retrieve_day_forecast,
+    retrieve_day_grid_charge_wh,
     retrieve_day_hours,
     retrieve_day_savings,
     retrieve_dispatch_daily_state,
@@ -1136,40 +1136,36 @@ def test_period_summary_rejects_unknown_group(tmp_path):
         )
 
 
-def test_day_battery_charge_counts_the_hour_just_ended_before_it_is_stored(tmp_path):
+def test_day_grid_charge_counts_only_grid_charging(tmp_path):
+    """The daily limit counts what came from the grid, not solar charging."""
+    db_path = str(tmp_path / "test.db")
+    day = _valid_day()
+    for h, grid, solar in ((3, 4000, 0), (12, 0, 3000)):
+        day.hour[h].valid = True
+        day.hour[h].real_house_load = 500
+        day.hour[h].real_grid_to_battery = grid
+        day.hour[h].real_solar_to_battery = solar
+        store_hour_data(db_path, day, h, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+
+    assert retrieve_day_grid_charge_wh(db_path, 2024, 1, 15, 14) == 4000
+    assert retrieve_day_grid_charge_wh(db_path, 2024, 1, 16, 14) == 0
+
+
+def test_day_grid_charge_counts_the_hour_just_ended_before_it_is_stored(tmp_path):
     """Regression: planning at 04:00 ran before 03:00 was stored, so what
-    went in during 03:00 counted nowhere -- 1.7 kWh at 03:00, 0.0 at 04:00."""
+    came in during 03:00 counted nowhere -- 1.7 kWh at 03:00, 0.0 at 04:00."""
     db_path = str(tmp_path / "test.db")
     day = _valid_day()
-    for h in (1, 2):
-        day.hour[h].valid = True
-        day.hour[h].real_house_load = 500
-        day.hour[h].real_battery_charge_energy = 0
-        store_hour_data(db_path, day, h, use_fee=0.02, return_fee=0.01, vat_percentage=21)
-    # Hour 3 (the one that just ended) only has its progress row so far.
-    store_hour_progress(
-        db_path, 2024, 1, 15, 3, 500, 0, 0, 0, 12, 0, 0, battery_charge_energy_at_hour_start=100.0
-    )
+    day.hour[2].valid = True
+    day.hour[2].real_house_load = 500
+    day.hour[2].real_grid_to_battery = 1000
+    store_hour_data(db_path, day, 2, use_fee=0.02, return_fee=0.01, vat_percentage=21)
+    # Hour 3 (just ended) only has its progress: 12 samples averaging 4.2 kW
+    # from the grid; hour 4 has 1 sample at 6 kW so far.
+    store_hour_progress(db_path, 2024, 1, 15, 3, 500, 0, 0, 0, 12, 0, 4200)
+    store_hour_progress(db_path, 2024, 1, 15, 4, 500, 0, 0, 0, 1, 0, 6000)
 
-    # 04:00, register now 104.2 kWh: all of 03:00's 4.2 kWh counts.
-    assert retrieve_day_battery_charge_wh(db_path, 2024, 1, 15, 4, 104.2) == pytest.approx(4200)
-
-
-def test_day_battery_charge_sums_stored_hours_and_the_current_one(tmp_path):
-    db_path = str(tmp_path / "test.db")
-    day = _valid_day()
-    for h, charged in ((3, 4000), (4, 2500)):
-        day.hour[h].valid = True
-        day.hour[h].real_house_load = 500
-        day.hour[h].real_battery_charge_energy = charged
-        store_hour_data(db_path, day, h, use_fee=0.02, return_fee=0.01, vat_percentage=21)
-    store_hour_progress(
-        db_path, 2024, 1, 15, 5, 500, 0, 0, 0, 3, 0, 0, battery_charge_energy_at_hour_start=100.0
-    )
-
-    assert retrieve_day_battery_charge_wh(db_path, 2024, 1, 15, 5, 100.8) == pytest.approx(7300)
-    assert retrieve_day_battery_charge_wh(db_path, 2024, 1, 15, 5, None) == 6500
-    assert retrieve_day_battery_charge_wh(db_path, 2024, 1, 16, 5, 100.8) == 0
+    assert retrieve_day_grid_charge_wh(db_path, 2024, 1, 15, 4) == pytest.approx(1000 + 4200 + 500)
 
 
 def test_mean_learning_leaves_out_hours_with_estimated_readings(tmp_path):
