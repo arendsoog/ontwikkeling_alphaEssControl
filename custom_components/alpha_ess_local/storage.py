@@ -757,12 +757,14 @@ def retrieve_hour_progress(
 
 def retrieve_day_prices(db_path: str, year: int, mon: int, day: int) -> dict[int, float]:
     """A stored day's market price per hour ({hour: EUR/kWh}), as the hours
-    were stored -- the fallback when no price source gives today's."""
+    were stored -- the fallback when no price source gives today's. A price
+    of exactly 0 was stored while no price was known (an hour isn't stored
+    without one), so it counts as missing rather than as free power."""
     with _connection(db_path) as conn:
         _ensure_schema(conn)
         rows = conn.execute(
             "SELECT hour, price FROM hour_data"
-            " WHERE year = ? AND mon = ? AND day = ? AND price IS NOT NULL",
+            " WHERE year = ? AND mon = ? AND day = ? AND price IS NOT NULL AND price != 0",
             (year, mon, day),
         ).fetchall()
     return {hour: float(price) for hour, price in rows}
