@@ -28,6 +28,8 @@ from custom_components.alpha_ess_local.const import (
     CONF_NETWORK_USE_FEE_LOW,
     CONF_NETWORK_USE_FEE_NORMAL,
     CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
+    CONF_PRICE_ENTITIES,
+    CONF_PRICE_SOURCE_PRIMARY,
     CONF_PROVIDER_USE_FEE,
     CONF_PV_PANEL_COUNT,
     CONF_PV_PANEL_WP,
@@ -142,7 +144,7 @@ async def test_options_flow_shows_form_with_defaults(hass: HomeAssistant, mock_a
         DEFAULT_NETWORK_USE_FEE
     )
     assert _default_for(result["data_schema"], CONF_PROVIDER_USE_FEE) == DEFAULT_PROVIDER_USE_FEE
-    assert _suggested_value_for(result["data_schema"], CONF_ENTSOE_PRICE_ENTITY) is None
+    assert _suggested_value_for(result["data_schema"], CONF_PRICE_ENTITIES) == []
 
 
 async def test_options_flow_saves_and_updates_entry_options(hass: HomeAssistant, mock_api_client):
@@ -158,7 +160,7 @@ async def test_options_flow_saves_and_updates_entry_options(hass: HomeAssistant,
         hass,
         entry,
         "prices",
-        {CONF_ENTSOE_PRICE_ENTITY: "sensor.entsoe_average_electricity_price_today"},
+        {CONF_PRICE_ENTITIES: ["sensor.entsoe_average_electricity_price_today"]},
     )
     await _save_section(
         hass, entry, "control", {CONF_ALLOW_PROVIDER_CONTROL_HOURS: ["6", "7", "8", "16"]}
@@ -171,9 +173,7 @@ async def test_options_flow_saves_and_updates_entry_options(hass: HomeAssistant,
     assert entry.options[CONF_PV_PANEL_COUNT] == 20
     assert entry.options[CONF_PV_POWER] == 7300
     assert entry.options[CONF_ALLOW_PROVIDER_CONTROL_HOURS] == ["6", "7", "8", "16"]
-    assert (
-        entry.options[CONF_ENTSOE_PRICE_ENTITY] == "sensor.entsoe_average_electricity_price_today"
-    )
+    assert entry.options[CONF_PRICE_ENTITIES] == ["sensor.entsoe_average_electricity_price_today"]
     # untouched fields of a saved section are filled with their coded defaults
     assert entry.options[CONF_PROVIDER_USE_FEE] == DEFAULT_PROVIDER_USE_FEE
 
@@ -300,21 +300,84 @@ async def test_options_flow_note_empty_when_both_sources_configured(
     assert result["description_placeholders"]["missing_source_note"] == ""
 
 
-async def test_options_flow_prices_note_lists_only_missing_price_sources(
+async def test_options_flow_price_entities_offers_only_price_sensors(
+    hass: HomeAssistant, mock_api_client
+):
+    """The picker lists the sensors with readable prices (not Frank Energie's
+    gas prices, nor other sensors), plus an already chosen one that's gone."""
+    frank = _register_price_entity(hass, "frank_energie", "frank_energie_prices", "prices")
+    nordpool = _register_price_entity(hass, "nordpool", "nordpool_kwh_nl_eur", "raw_today")
+    config_entry = MockConfigEntry(domain="frank_energie")
+    config_entry.add_to_hass(hass)
+    gas = er.async_get(hass).async_get_or_create(
+        "sensor", "frank_energie", "frank_energie.gas_market", config_entry=config_entry
+    )
+    hass.states.async_set(gas.entity_id, "1.1", {"prices": []})
+    hass.states.async_set("sensor.temperature", "20", {})
+    entry = await _create_entry(hass, mock_api_client)
+    hass.config_entries.async_update_entry(
+        entry, options={CONF_PRICE_ENTITIES: [nordpool, "sensor.gone"]}
+    )
+
+    result = await _open_section(hass, entry, "prices")
+
+    marker = next(k for k in result["data_schema"].schema if k == CONF_PRICE_ENTITIES)
+    config = result["data_schema"].schema[marker].config
+    assert sorted(config["include_entities"]) == sorted([frank, nordpool, "sensor.gone"])
+    assert config["multiple"] is True
+    assert config["reorder"] is True
+    assert _suggested_value_for(result["data_schema"], CONF_PRICE_ENTITIES) == [
+        nordpool,
+        "sensor.gone",
+    ]
+    assert result["description_placeholders"]["missing_source_note"] == ""
+
+
+async def test_options_flow_prices_prefills_and_replaces_the_old_pair(
+    hass: HomeAssistant, mock_api_client
+):
+    """Saved before the list existed: the form shows the old pair in its old
+    order, and saving stores the list and drops the old keys."""
+    entry = await _create_entry(hass, mock_api_client)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            CONF_ENTSOE_PRICE_ENTITY: "sensor.entsoe",
+            CONF_FRANK_ENERGIE_PRICE_ENTITY: "sensor.frank",
+            CONF_PRICE_SOURCE_PRIMARY: "frank_energie",
+        },
+    )
+
+    result = await _open_section(hass, entry, "prices")
+    assert _suggested_value_for(result["data_schema"], CONF_PRICE_ENTITIES) == [
+        "sensor.frank",
+        "sensor.entsoe",
+    ]
+
+    await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_PRICE_ENTITIES: ["sensor.frank", "sensor.entsoe"]}
+    )
+    await hass.async_block_till_done()
+
+    assert entry.options[CONF_PRICE_ENTITIES] == ["sensor.frank", "sensor.entsoe"]
+    for key in (
+        CONF_ENTSOE_PRICE_ENTITY,
+        CONF_FRANK_ENERGIE_PRICE_ENTITY,
+        CONF_PRICE_SOURCE_PRIMARY,
+    ):
+        assert key not in entry.options
+
+
+async def test_options_flow_prices_note_when_no_price_sensor_exists(
     hass: HomeAssistant, mock_api_client
 ):
     """Each section's note only covers its own sources -- no solar names on Prices."""
-    _register_price_entity(hass, "frank_energie", "frank_energie_prices", "prices")
     entry = await _create_entry(hass, mock_api_client)
 
     result = await _open_section(hass, entry, "prices")
 
-    keys = [str(key) for key in result["data_schema"].schema]
-    assert CONF_FRANK_ENERGIE_PRICE_ENTITY in keys
-    assert CONF_ENTSOE_PRICE_ENTITY not in keys
     note = result["description_placeholders"]["missing_source_note"]
     assert "ENTSO-E" in note
-    assert "Frank Energie" not in note
     assert "Solcast" not in note
 
 

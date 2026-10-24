@@ -18,10 +18,7 @@ from .api import (
 )
 from .const import (
     CONF_APPLY_VAT_ON_RETURN,
-    CONF_ENTSOE_PRICE_ENTITY,
     CONF_FORECAST_SOLAR_ENTRIES,
-    CONF_FRANK_ENERGIE_PRICE_ENTITY,
-    CONF_PRICE_SOURCE_PRIMARY,
     CONF_PROVIDER_RETURN_FEE,
     CONF_PROVIDER_USE_FEE,
     CONF_SOLAR_SOURCE_PRIMARY,
@@ -29,7 +26,6 @@ from .const import (
     CONF_VAT_PERCENTAGE,
     DEFAULT_APPLY_VAT_ON_RETURN,
     DEFAULT_FORECAST_SOLAR_ENTRIES,
-    DEFAULT_PRICE_SOURCE_PRIMARY,
     DEFAULT_PROVIDER_RETURN_FEE,
     DEFAULT_PROVIDER_USE_FEE,
     DEFAULT_SOLAR_SOURCE_PRIMARY,
@@ -41,7 +37,7 @@ from .const import (
 )
 from .data import Day
 from .orchestrator import get_db_path, hour_correction_from_mean
-from .prices import apply_earning_classification
+from .prices import apply_earning_classification, configured_price_entities
 from .prices import build_day as build_price_day
 from .solar import build_day as build_solar_day
 
@@ -164,7 +160,7 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
     """Derives today's/tomorrow's prices from other HA integrations' entities.
 
     No network I/O of our own — just reads already-cached state from the
-    entities configured via entsoe_price_entity/frank_energie_price_entity,
+    entities configured via price_entities,
     so a 30-minute interval is cheap and just keeps day-rollover / newly
     published day-ahead prices picked up promptly.
     """
@@ -187,8 +183,7 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
     async def _async_update_data(self) -> dict[str, Day]:
         """Rebuild today's and tomorrow's prices from the configured entities."""
         options = self.config_entry.options
-        entsoe_entity_id = options.get(CONF_ENTSOE_PRICE_ENTITY)
-        frank_energie_entity_id = options.get(CONF_FRANK_ENERGIE_PRICE_ENTITY)
+        price_entities = configured_price_entities(options)
         use_fee = options.get(CONF_PROVIDER_USE_FEE, DEFAULT_PROVIDER_USE_FEE)
         return_fee = options.get(CONF_PROVIDER_RETURN_FEE, DEFAULT_PROVIDER_RETURN_FEE)
         vat_percentage = options.get(CONF_VAT_PERCENTAGE, DEFAULT_VAT_PERCENTAGE)
@@ -198,36 +193,30 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             else 0.0
         )
 
-        primary = options.get(CONF_PRICE_SOURCE_PRIMARY, DEFAULT_PRICE_SOURCE_PRIMARY)
-
         today = dt_util.now().date()
         tomorrow = today + timedelta(days=1)
 
         today_day = build_price_day(
             self.hass,
             today,
-            entsoe_entity_id,
-            frank_energie_entity_id,
+            price_entities,
             use_fee,
             return_fee,
             vat_percentage,
             return_vat_percentage,
-            primary,
         )
         tomorrow_day = build_price_day(
             self.hass,
             tomorrow,
-            entsoe_entity_id,
-            frank_energie_entity_id,
+            price_entities,
             use_fee,
             return_fee,
             vat_percentage,
             return_vat_percentage,
-            primary,
         )
 
         self._retry_helper.note_result(
-            configured=bool(entsoe_entity_id or frank_energie_entity_id),
+            configured=bool(price_entities),
             found_data=today_day.valid,
             what="prices",
         )

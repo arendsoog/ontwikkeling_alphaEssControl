@@ -54,6 +54,10 @@ DEFAULT_NETWORK_USE_FEE = 0.0
 # integration rather than duplicated here. No raw tokens are stored.
 CONF_ENTSOE_PRICE_ENTITY = "entsoe_price_entity"
 CONF_FRANK_ENERGIE_PRICE_ENTITY = "frank_energie_price_entity"
+# The price entities in the order they're tried (the first with prices is
+# used, the rest are backups) -- replaces the two entities above and
+# CONF_PRICE_SOURCE_PRIMARY, which are still read until prices are saved.
+CONF_PRICE_ENTITIES = "price_entities"
 
 # Options flow: solar forecast source config entries (config.ini [General])
 # Unlike the price sources above, these reference *config entries* (not

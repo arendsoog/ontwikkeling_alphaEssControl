@@ -44,7 +44,7 @@
             },
             "prices": {
                 "title": "Prices",
-                "description": "Supplier and network costs, VAT and the price source.{missing_source_note}",
+                "description": "Supplier and network costs, VAT and the price sources. Pick an entity with day-ahead prices (e.g. from ENTSO-E, Frank Energie or Nord Pool) and add more as backups with 'Add entity': the first one that has prices is used.{missing_source_note}",
                 "data": {
                     "provider_use_fee": "Provider use fee",
                     "provider_return_fee": "Provider return fee",
@@ -52,9 +52,7 @@
                     "apply_vat_on_return": "Apply VAT to feed-in price",
                     "network_use_fee_normal": "Network cost, normal tariff",
                     "network_use_fee_low": "Network cost, low/night tariff",
-                    "entsoe_price_entity": "ENTSO-E entity",
-                    "frank_energie_price_entity": "Frank Energie entity",
-                    "price_source_primary": "Price source order (2 = fallback when 1 has no prices)"
+                    "price_entities": "Price sources (in order; drag to change)"
                 }
             },
             "solar_forecast": {

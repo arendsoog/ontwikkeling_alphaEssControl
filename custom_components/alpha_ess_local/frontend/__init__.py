@@ -27,7 +27,6 @@ from ..config_flow import SMA_PV_POWER_STRING_KEY
 from ..const import (
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
-    CONF_ENTSOE_PRICE_ENTITY,
     CONF_EV_CHARGER_ENERGY_ENTITY,
     CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXTRA_PV_CONTROL_ENABLED,
@@ -36,12 +35,10 @@ from ..const import (
     CONF_EXTRA_PV_POWER_ENTITY,
     CONF_EXTRA_PV_STRING_ENTITIES,
     CONF_FORECAST_SOLAR_ENTRIES,
-    CONF_FRANK_ENERGIE_PRICE_ENTITY,
     CONF_INVERTER_NOMINAL_POWER,
     CONF_NETWORK_USE_FEE_LOW,
     CONF_NETWORK_USE_FEE_NORMAL,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
-    CONF_PRICE_SOURCE_PRIMARY,
     CONF_PROVIDER_RETURN_FEE,
     CONF_PROVIDER_USE_FEE,
     CONF_PV_POWER,
@@ -54,21 +51,18 @@ from ..const import (
     DEFAULT_EXTRA_PV_CONTROL_ENABLED,
     DEFAULT_NETWORK_USE_FEE,
     DEFAULT_PERSIST_DAILY_CHARGE_LIMIT,
-    DEFAULT_PRICE_SOURCE_PRIMARY,
     DEFAULT_PROVIDER_RETURN_FEE,
     DEFAULT_PROVIDER_USE_FEE,
     DEFAULT_SOLAR_SOURCE_PRIMARY,
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
-    PRICE_SOURCE_ENTSOE,
-    PRICE_SOURCE_FRANK_ENERGIE,
     SOLAR_SOURCE_FORECAST_SOLAR,
     SOLAR_SOURCE_SOLCAST,
 )
 from ..data import MAX_FIVE_MINS, Charge, Day
 from ..orchestrator import get_db_path, grid_meter_status
-from ..prices import PRICE_SOURCES
+from ..prices import configured_price_entities
 from ..schedule import set_charging_msg
 from ..solar import SOLAR_SOURCES
 
@@ -99,13 +93,11 @@ def _ws_panel_status(
     options = entry.options
     runtime = entry.runtime_data
     override = runtime.dispatch_coordinator.manual_override
+    price_entities = configured_price_entities(options)
     price_sources = source_list(
-        PRICE_SOURCES,
-        {
-            PRICE_SOURCE_ENTSOE: options.get(CONF_ENTSOE_PRICE_ENTITY),
-            PRICE_SOURCE_FRANK_ENERGIE: options.get(CONF_FRANK_ENERGIE_PRICE_ENTITY),
-        },
-        options.get(CONF_PRICE_SOURCE_PRIMARY, DEFAULT_PRICE_SOURCE_PRIMARY),
+        {entity: _entity_name(hass, entity) for entity in price_entities},
+        {entity: entity for entity in price_entities},
+        price_entities[0] if price_entities else "",
         _today_source(runtime.prices_coordinator),
     )
     solar_sources = source_list(
@@ -191,6 +183,12 @@ def source_list(
     for item in result[:in_use]:
         item["error"] = True
     return result
+
+
+def _entity_name(hass: HomeAssistant, entity_id: str) -> str:
+    """An entity's friendly name, or its id when it has no state (yet)."""
+    state = hass.states.get(entity_id)
+    return state.name if state is not None else entity_id
 
 
 def _entry_titles(hass: HomeAssistant, entry_ids: list[str] | None) -> list[str]:

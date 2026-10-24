@@ -45,6 +45,7 @@ from .const import (
     CONF_NETWORK_USE_FEE_NORMAL,
     CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
+    CONF_PRICE_ENTITIES,
     CONF_PRICE_SOURCE_PRIMARY,
     CONF_PROVIDER_RETURN_FEE,
     CONF_PROVIDER_USE_FEE,
@@ -67,7 +68,6 @@ from .const import (
     DEFAULT_NETWORK_USE_FEE,
     DEFAULT_PERSIST_DAILY_CHARGE_LIMIT,
     DEFAULT_PORT,
-    DEFAULT_PRICE_SOURCE_PRIMARY,
     DEFAULT_PROVIDER_RETURN_FEE,
     DEFAULT_PROVIDER_USE_FEE,
     DEFAULT_SOLAR_SOURCE_PRIMARY,
@@ -76,7 +76,7 @@ from .const import (
     DOMAIN,
     LOGGER,
 )
-from .prices import PRICE_SOURCES
+from .prices import configured_price_entities, is_price_entity
 from .solar import SOLAR_SOURCES
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
@@ -110,54 +110,6 @@ def _config_entry_checklist(entries: list[config_entries.ConfigEntry]) -> select
                 for entry in entries
             ],
             multiple=True,
-            mode=selector.SelectSelectorMode.LIST,
-        )
-    )
-
-
-def _entities_with_attribute(
-    hass: HomeAssistant,
-    domain: str,
-    attribute: str,
-    *,
-    exclude_unique_id_prefix: str | None = None,
-) -> list[er.RegistryEntry]:
-    """Sensor entities from a domain's config entries that currently expose `attribute`.
-
-    Used to auto-detect the *specific* entity prices.py needs (e.g. ENTSO-e's
-    "average price" sensor, which carries the prices_today attribute) out of
-    every sensor that integration creates, rather than offering a raw pick-any
-    -sensor EntitySelector where it's easy to select the wrong one.
-
-    `exclude_unique_id_prefix` drops entities such as Frank Energie's gas-price
-    sensors, which carry the same `prices` attribute as the electricity ones
-    but use a stable "frank_energie.gas_*" unique_id regardless of locale.
-    """
-    registry = er.async_get(hass)
-    return [
-        reg_entry
-        for entry in hass.config_entries.async_entries(domain)
-        for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id)
-        if reg_entry.domain == "sensor"
-        and (state := hass.states.get(reg_entry.entity_id)) is not None
-        and attribute in state.attributes
-        and not (
-            exclude_unique_id_prefix and reg_entry.unique_id.startswith(exclude_unique_id_prefix)
-        )
-    ]
-
-
-def _entity_checklist(entries: list[er.RegistryEntry]) -> selector.SelectSelector:
-    """A single-pick list of candidate entities — same look as the config-entry checklists."""
-    return selector.SelectSelector(
-        selector.SelectSelectorConfig(
-            options=[
-                selector.SelectOptionDict(
-                    value=entry.entity_id,
-                    label=entry.name or entry.original_name or entry.entity_id,
-                )
-                for entry in entries
-            ],
             mode=selector.SelectSelectorMode.LIST,
         )
     )
@@ -334,13 +286,39 @@ def _source_order_selector(sources: Mapping[str, str]) -> selector.SelectSelecto
     )
 
 
-def _prices_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """Supplier/network fees, VAT, and the price source entity."""
-    entsoe_entities = _entities_with_attribute(hass, "entsoe", "prices_today")
-    frank_energie_entities = _entities_with_attribute(
-        hass, "frank_energie", "prices", exclude_unique_id_prefix="frank_energie.gas_"
-    )
+def _price_entity_candidates(hass: HomeAssistant) -> list[str]:
+    """Sensors carrying day-ahead prices prices.py can read (ENTSO-e,
+    Frank Energie, Nord Pool, ...), for the price-entity picker.
 
+    Frank Energie's gas-price sensors carry the same `prices` attribute as
+    the electricity ones; they're left out by their stable unique_id.
+    """
+    registry = er.async_get(hass)
+    candidates = []
+    for state in hass.states.async_all("sensor"):
+        if not is_price_entity(state):
+            continue
+        reg_entry = registry.async_get(state.entity_id)
+        if reg_entry and reg_entry.unique_id.startswith("frank_energie.gas_"):
+            continue
+        candidates.append(state.entity_id)
+    return candidates
+
+
+def _ordered_entities_selector(include_entities: list[str]) -> selector.EntitySelector:
+    """A list of entities picked one by one ("add entity"), in the order
+    they're tried -- draggable on Home Assistant versions that can."""
+    config: dict[str, Any] = {"domain": "sensor", "multiple": True}
+    if include_entities:
+        config["include_entities"] = include_entities
+    try:
+        return selector.EntitySelector({**config, "reorder": True})
+    except vol.Invalid:
+        return selector.EntitySelector(config)
+
+
+def _prices_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
+    """Supplier/network fees, VAT, and the price entities."""
     fields: list[tuple[Any, Any]] = [
         (
             vol.Optional(
@@ -400,47 +378,22 @@ def _prices_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionF
         ),
     ]
 
-    # Price source fields are auto-populated checklists (see
-    # _entities_with_attribute), not a raw pick-any-sensor EntitySelector:
-    # this way there's nothing to misconfigure, and the field simply doesn't
-    # appear when the corresponding integration isn't installed — see the
-    # `missing` note returned below.
-    if entsoe_entities:
-        fields.append(
-            (
-                vol.Optional(
-                    CONF_ENTSOE_PRICE_ENTITY,
-                    description={"suggested_value": options.get(CONF_ENTSOE_PRICE_ENTITY)},
-                ),
-                _entity_checklist(entsoe_entities),
-            )
+    # The price entities: picked one by one, tried in their order -- the
+    # first with prices for a day is used, the next ones are backups. The
+    # picker offers only sensors with readable prices (plus the ones already
+    # chosen, should one be unavailable right now).
+    configured = configured_price_entities(options)
+    candidates = _price_entity_candidates(hass)
+    fields.append(
+        (
+            vol.Optional(CONF_PRICE_ENTITIES, description={"suggested_value": configured}),
+            _ordered_entities_selector(
+                [*candidates, *(entity for entity in configured if entity not in candidates)]
+            ),
         )
-    if frank_energie_entities:
-        fields.append(
-            (
-                vol.Optional(
-                    CONF_FRANK_ENERGIE_PRICE_ENTITY,
-                    description={"suggested_value": options.get(CONF_FRANK_ENERGIE_PRICE_ENTITY)},
-                ),
-                _entity_checklist(frank_energie_entities),
-            )
-        )
-    if entsoe_entities and frank_energie_entities:
-        fields.append(
-            (
-                vol.Optional(
-                    CONF_PRICE_SOURCE_PRIMARY,
-                    default=options.get(CONF_PRICE_SOURCE_PRIMARY, DEFAULT_PRICE_SOURCE_PRIMARY),
-                ),
-                _source_order_selector(PRICE_SOURCES),
-            )
-        )
+    )
 
-    missing = [
-        name
-        for name, found in (("ENTSO-E", entsoe_entities), ("Frank Energie", frank_energie_entities))
-        if not found
-    ]
+    missing = [] if candidates or configured else ["ENTSO-E / Frank Energie / Nord Pool"]
     return fields, missing
 
 
@@ -729,6 +682,16 @@ OPTIONS_SECTIONS = {
     "control": _control_fields,
 }
 
+# Options a section's newer field replaced: dropped when that section is
+# saved, so they aren't read as a fallback any more.
+_SUPERSEDED_KEYS = {
+    "prices": {
+        CONF_ENTSOE_PRICE_ENTITY,
+        CONF_FRANK_ENERGIE_PRICE_ENTITY,
+        CONF_PRICE_SOURCE_PRIMARY,
+    },
+}
+
 
 def _section_schema(
     hass: HomeAssistant, section: str, options: Mapping[str, Any]
@@ -853,6 +816,7 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
 
         if user_input is not None:
             section_keys = {str(marker) for marker in schema.schema}
+            section_keys |= _SUPERSEDED_KEYS.get(section, set())
             data = {
                 key: value
                 for key, value in self.config_entry.options.items()

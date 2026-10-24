@@ -1,30 +1,60 @@
 """Day-ahead price handling for AlphaESSControl.
 
 Port of Prices.c. Unlike the original, prices are read from existing HA
-entities (the ENTSO-e / Frank Energie integrations, configured via the
-options flow's entsoe_price_entity/frank_energie_price_entity) rather than
-fetched via our own HTTP calls to those services.
+entities (e.g. the ENTSO-e / Frank Energie / Nord Pool integrations) rather
+than fetched via our own HTTP calls to those services. The options flow's
+price_entities is an ordered list: the first entity with prices for a day is
+used, the next ones are backups.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date, datetime
+from typing import Any
 
 from homeassistant.core import HomeAssistant, State
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_ENTSOE_PRICE_ENTITY,
+    CONF_FRANK_ENERGIE_PRICE_ENTITY,
+    CONF_PRICE_ENTITIES,
+    CONF_PRICE_SOURCE_PRIMARY,
     DEFAULT_PRICE_SOURCE_PRIMARY,
     LOGGER,
-    PRICE_SOURCE_ENTSOE,
     PRICE_SOURCE_FRANK_ENERGIE,
 )
 from .data import Day, Earning
 
 _ENTSOE_MWH_UNITS = {"eur/mwh", "€/mwh"}
 
-# Display names, in the default order of preference.
-PRICE_SOURCES = {PRICE_SOURCE_ENTSOE: "ENTSO-E", PRICE_SOURCE_FRANK_ENERGIE: "Frank Energie"}
+# The attributes a price entity can carry its day-ahead prices in: ENTSO-e
+# (prices_today/prices_tomorrow), Frank Energie (prices), Nord Pool
+# (raw_today/raw_tomorrow). Used to tell price entities from other sensors.
+PRICE_LIST_ATTRIBUTES = ("prices_today", "prices", "raw_today")
+
+
+def configured_price_entities(options: Mapping[str, Any]) -> list[str]:
+    """The price entities in the order they're tried.
+
+    Installations set up before price_entities existed still have one
+    ENTSO-e and one Frank Energie entity plus which of the two goes first;
+    those are read as that same ordered list until the prices are saved
+    again.
+    """
+    if CONF_PRICE_ENTITIES in options:
+        return [entity for entity in options[CONF_PRICE_ENTITIES] or [] if entity]
+    legacy = [options.get(CONF_ENTSOE_PRICE_ENTITY), options.get(CONF_FRANK_ENERGIE_PRICE_ENTITY)]
+    primary = options.get(CONF_PRICE_SOURCE_PRIMARY, DEFAULT_PRICE_SOURCE_PRIMARY)
+    if primary == PRICE_SOURCE_FRANK_ENERGIE:
+        legacy.reverse()
+    return [entity for entity in legacy if entity]
+
+
+def is_price_entity(state: State) -> bool:
+    """Whether a sensor carries day-ahead prices this module can read."""
+    return any(isinstance(state.attributes.get(name), list) for name in PRICE_LIST_ATTRIBUTES)
 
 
 def _as_datetime(value: object) -> datetime | None:
@@ -148,53 +178,80 @@ def _hourly_means(prices: dict[int, list[float]]) -> dict[int, float]:
     return {hour: sum(values) / len(values) for hour, values in prices.items()}
 
 
+def _parse_nordpool_prices(state: State, target_date: date) -> dict[int, float] | None:
+    """Parse Nord Pool's raw_today/raw_tomorrow attributes for a calendar date.
+
+    Each entry is {"start": <datetime>, "end": <datetime>, "value": <float>},
+    in the entity's unit -- converted from cents or per MWh to EUR/kWh.
+    """
+    unit = str(state.attributes.get("unit_of_measurement") or "").strip().lower()
+    scale = 1.0
+    if state.attributes.get("price_in_cents") or unit.startswith(("c/", "ct/", "cent")):
+        scale = 0.01
+    elif unit.endswith("/mwh"):
+        scale = 0.001
+
+    prices: dict[int, list[float]] = {}
+    for attribute in ("raw_today", "raw_tomorrow"):
+        for entry in state.attributes.get(attribute) or []:
+            try:
+                start = _as_datetime(entry["start"])
+                value = entry["value"]
+                if value is None:
+                    continue
+                price = float(value) * scale
+            except (KeyError, TypeError, ValueError) as exception:
+                LOGGER.warning(
+                    "Nord Pool entity %s: could not parse price entry %r (%s)",
+                    state.entity_id,
+                    entry,
+                    exception,
+                )
+                return None
+            if start is None:
+                continue
+            local_start = dt_util.as_local(start)
+            if local_start.date() == target_date:
+                prices.setdefault(local_start.hour, []).append(price)
+
+    return _hourly_means(prices) or None
+
+
+def parse_entity_prices(state: State, target_date: date) -> dict[int, float] | None:
+    """One price entity's prices for `target_date`, whichever shape it uses."""
+    attributes = state.attributes
+    if "prices_today" in attributes:
+        attribute = "prices_today" if target_date == dt_util.now().date() else "prices_tomorrow"
+        return _parse_entsoe_prices(state, attribute)
+    if "prices" in attributes:
+        return _parse_frank_energie_prices(state, target_date)
+    if "raw_today" in attributes:
+        return _parse_nordpool_prices(state, target_date)
+    LOGGER.debug("Entity %s carries no prices this integration can read", state.entity_id)
+    return None
+
+
 def read_hour_prices(
-    hass: HomeAssistant,
-    entsoe_entity_id: str | None,
-    frank_energie_entity_id: str | None,
-    target_date: date,
-    entsoe_attribute: str,
+    hass: HomeAssistant, entity_ids: list[str], target_date: date
 ) -> dict[int, float] | None:
-    """Port of ReadPrices: try ENTSO-e, fall back to Frank Energie."""
-    return read_hour_prices_with_source(
-        hass, entsoe_entity_id, frank_energie_entity_id, target_date, entsoe_attribute
-    )[0]
+    """Port of ReadPrices: the first entity's prices, falling back to the next."""
+    return read_hour_prices_with_source(hass, entity_ids, target_date)[0]
 
 
 def read_hour_prices_with_source(
-    hass: HomeAssistant,
-    entsoe_entity_id: str | None,
-    frank_energie_entity_id: str | None,
-    target_date: date,
-    entsoe_attribute: str,
-    primary: str = DEFAULT_PRICE_SOURCE_PRIMARY,
+    hass: HomeAssistant, entity_ids: list[str], target_date: date
 ) -> tuple[dict[int, float] | None, str]:
-    """The prices from `primary` if it has them, else from the other source.
+    """The prices of the first entity in `entity_ids` that has them.
 
-    Also returns which source they came from ("" if neither had any).
+    Also returns that entity's id ("" if none had any).
     """
-
-    def entsoe() -> dict[int, float] | None:
-        state = hass.states.get(entsoe_entity_id) if entsoe_entity_id else None
-        return _parse_entsoe_prices(state, entsoe_attribute) if state else None
-
-    def frank_energie() -> dict[int, float] | None:
-        state = hass.states.get(frank_energie_entity_id) if frank_energie_entity_id else None
-        return _parse_frank_energie_prices(state, target_date) if state else None
-
-    readers = {PRICE_SOURCE_ENTSOE: entsoe, PRICE_SOURCE_FRANK_ENERGIE: frank_energie}
-    configured = {
-        PRICE_SOURCE_ENTSOE: entsoe_entity_id,
-        PRICE_SOURCE_FRANK_ENERGIE: frank_energie_entity_id,
-    }
-    for source in sorted(readers, key=lambda s: s != primary):
-        if not configured[source]:
-            continue
-        prices = readers[source]()
+    for entity_id in entity_ids:
+        state = hass.states.get(entity_id)
+        prices = parse_entity_prices(state, target_date) if state else None
         if prices:
-            LOGGER.debug("Found prices for %s (using %s)", target_date, PRICE_SOURCES[source])
-            return prices, source
-        LOGGER.debug("No %s prices for %s", PRICE_SOURCES[source], target_date)
+            LOGGER.debug("Found prices for %s (using %s)", target_date, entity_id)
+            return prices, entity_id
+        LOGGER.debug("No prices for %s from %s", target_date, entity_id)
 
     return None, ""
 
@@ -252,21 +309,16 @@ def apply_earning_classification(
 def build_day(
     hass: HomeAssistant,
     target_date: date,
-    entsoe_entity_id: str | None,
-    frank_energie_entity_id: str | None,
+    entity_ids: list[str],
     use_fee: float,
     return_fee: float,
     vat_percentage: float,
     return_vat_percentage: float | None = None,
-    primary: str = DEFAULT_PRICE_SOURCE_PRIMARY,
 ) -> Day:
-    """Build a Day of prices for target_date from the configured source entities."""
+    """Build a Day of prices for target_date from the configured price entities."""
     day = Day(year=target_date.year, mon=target_date.month, day=target_date.day)
 
-    entsoe_attribute = "prices_today" if target_date == dt_util.now().date() else "prices_tomorrow"
-    prices, day.source = read_hour_prices_with_source(
-        hass, entsoe_entity_id, frank_energie_entity_id, target_date, entsoe_attribute, primary
-    )
+    prices, day.source = read_hour_prices_with_source(hass, entity_ids, target_date)
     if not prices:
         return day
 

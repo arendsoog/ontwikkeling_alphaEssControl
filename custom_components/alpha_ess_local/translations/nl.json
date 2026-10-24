@@ -44,7 +44,7 @@
             },
             "prices": {
                 "title": "Prijzen",
-                "description": "Leverings- en netwerkkosten, BTW en de prijsbron.{missing_source_note}",
+                "description": "Leverings- en netwerkkosten, BTW en de prijsbronnen. Kies een entiteit met dagprijzen (bijvoorbeeld van ENTSO-E, Frank Energie of Nord Pool) en voeg er met 'Entiteit toevoegen' meer toe als reserve: de eerste die prijzen heeft wordt gebruikt.{missing_source_note}",
                 "data": {
                     "provider_use_fee": "Leveringskosten",
                     "provider_return_fee": "Terugleverkosten",
@@ -52,9 +52,7 @@
                     "apply_vat_on_return": "BTW toepassen op terugleverprijs",
                     "network_use_fee_normal": "Netwerkkosten, normaal tarief",
                     "network_use_fee_low": "Netwerkkosten, laag/nachttarief",
-                    "entsoe_price_entity": "ENTSO-E entity",
-                    "frank_energie_price_entity": "Frank Energie entity",
-                    "price_source_primary": "Volgorde prijsbron (2 = reserve als 1 geen prijzen heeft)"
+                    "price_entities": "Prijsbronnen (in volgorde; sleep om te wijzigen)"
                 }
             },
             "solar_forecast": {
