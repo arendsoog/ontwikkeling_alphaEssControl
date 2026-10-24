@@ -26,8 +26,8 @@
                     "installation": "Installation",
                     "prices": "Prices",
                     "solar_forecast": "Solar forecast",
-                    "extra_pv": "Additional PV installation",
-                    "ev_charger": "EV charger",
+                    "extra_pv": "Additional energy sources",
+                    "ev_charger": "Excluded consumption",
                     "meter": "Smart meter",
                     "control": "Control"
                 }
@@ -67,13 +67,13 @@
                 }
             },
             "extra_pv": {
-                "title": "Additional PV installation",
-                "description": "A second PV installation and its optional Modbus control that switches it off at negative prices.",
+                "title": "Additional energy sources",
+                "description": "An energy source next to the AlphaESS, such as a second solar installation, and its optional Modbus control that switches it off at negative prices. Its power counts in the energy flow, the house load and learning the solar forecast.",
                 "data": {
-                    "extra_pv_power_entity": "Additional PV installation: power sensor",
-                    "extra_pv_string_entities": "Additional PV installation: power per string/MPPT (display only)",
-                    "extra_pv_panel_wp": "Additional PV installation: Wp per panel",
-                    "extra_pv_panel_count": "Additional PV installation: number of panels",
+                    "extra_pv_power_entity": "Power (sensor)",
+                    "extra_pv_string_entities": "Power per string/MPPT (panel display only)",
+                    "extra_pv_panel_wp": "Wp per panel",
+                    "extra_pv_panel_count": "Number of panels",
                     "extra_pv_control_enabled": "Extra PV: enable negative-price control",
                     "extra_pv_modbus_hub": "Extra PV: Modbus hub name (empty = disabled)",
                     "extra_pv_modbus_slave": "Extra PV: Modbus slave ID",
@@ -83,11 +83,12 @@
                 }
             },
             "ev_charger": {
-                "title": "EV charger",
-                "description": "Sensors of your EV charger, shown in the panel's energy flow. Display only, not used for control.",
+                "title": "Excluded consumption",
+                "description": "Consumers kept out of the learned house load because they're big and irregular (an EV charger, a heat pump, ...). Their power is taken off the measured house load before the load per hour is learned. Not used for control.",
                 "data": {
-                    "ev_charger_power_entity": "EV charger: power sensor (W)",
-                    "ev_charger_energy_entity": "EV charger: total energy sensor (kWh)"
+                    "ev_charger_power_entity": "EV charger: power (W) -- also in the panel's energy flow",
+                    "ev_charger_energy_entity": "EV charger: total energy (kWh) -- for the panel's daily totals",
+                    "excluded_load_entities": "Other consumers: power (W)"
                 }
             },
             "meter": {

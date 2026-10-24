@@ -26,8 +26,8 @@
                     "installation": "Installatie",
                     "prices": "Prijzen",
                     "solar_forecast": "Zonnevoorspelling",
-                    "extra_pv": "Extra PV-installatie",
-                    "ev_charger": "EV-lader",
+                    "extra_pv": "Extra energiebronnen",
+                    "ev_charger": "Niet-meegeteld verbruik",
                     "meter": "Slimme meter",
                     "control": "Sturing"
                 }
@@ -67,13 +67,13 @@
                 }
             },
             "extra_pv": {
-                "title": "Extra PV-installatie",
-                "description": "Een tweede PV-installatie en de optionele Modbus-sturing die haar uitschakelt bij negatieve prijzen.",
+                "title": "Extra energiebronnen",
+                "description": "Een energiebron naast de AlphaESS, zoals een tweede zonne-installatie, en de optionele Modbus-sturing die haar uitschakelt bij negatieve prijzen. Het vermogen telt mee in de energiestroom, het huisverbruik en het leren van de zonnevoorspelling.",
                 "data": {
-                    "extra_pv_power_entity": "Extra PV-installatie: vermogensensor",
-                    "extra_pv_string_entities": "Extra PV-installatie: vermogen per string/MPPT (alleen voor weergave)",
-                    "extra_pv_panel_wp": "Extra PV-installatie: Wp per paneel",
-                    "extra_pv_panel_count": "Extra PV-installatie: aantal panelen",
+                    "extra_pv_power_entity": "Vermogen (sensor)",
+                    "extra_pv_string_entities": "Vermogen per string/MPPT (alleen voor weergave in het paneel)",
+                    "extra_pv_panel_wp": "Wp per paneel",
+                    "extra_pv_panel_count": "Aantal panelen",
                     "extra_pv_control_enabled": "Extra PV: sturing bij negatieve prijzen inschakelen",
                     "extra_pv_modbus_hub": "Extra PV: Modbus hub-naam (leeg = uitgeschakeld)",
                     "extra_pv_modbus_slave": "Extra PV: Modbus slave-ID",
@@ -83,11 +83,12 @@
                 }
             },
             "ev_charger": {
-                "title": "EV-lader",
-                "description": "Sensoren van je laadpaal, voor de energiestroom in het paneel. Alleen weergave, niet gebruikt voor de sturing.",
+                "title": "Niet-meegeteld verbruik",
+                "description": "Verbruikers die buiten het geleerde huisverbruik blijven, omdat ze groot en onregelmatig zijn (een laadpaal, een warmtepomp, ...). Hun vermogen wordt van het gemeten huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd. Niet gebruikt voor de sturing.",
                 "data": {
-                    "ev_charger_power_entity": "EV-lader: vermogensensor (W)",
-                    "ev_charger_energy_entity": "EV-lader: energiesensor totaal (kWh)"
+                    "ev_charger_power_entity": "Laadpaal: vermogen (W) -- ook in de energiestroom van het paneel",
+                    "ev_charger_energy_entity": "Laadpaal: energie totaal (kWh) -- voor de dagtotalen in het paneel",
+                    "excluded_load_entities": "Overige verbruikers: vermogen (W)"
                 }
             },
             "meter": {
