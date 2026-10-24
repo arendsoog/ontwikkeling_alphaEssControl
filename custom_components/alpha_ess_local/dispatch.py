@@ -144,12 +144,17 @@ def decide_dispatch(
                 else DispatchMode.ONLY_CHARGE_FROM_PV
             )
         else:
-            # State-of-charge control also once the target is reached (at
-            # 0 W, below): the battery holds the energy just bought instead
-            # of feeding the house with it, and the mode doesn't flip back
-            # and forth around the target (No-charge let the house drain it
-            # just below, which started the charge again).
-            mode = DispatchMode.STATE_OF_CHARGE_CONTROL
+            # Once the target is reached: only charge from PV. The battery
+            # holds the energy just bought (no discharge into the house, so
+            # the mode doesn't flip back and forth around the target as it
+            # did with No-charge), while a solar surplus still goes into it
+            # rather than to the grid (holding at 0 W in state-of-charge
+            # control fed it in).
+            mode = (
+                DispatchMode.STATE_OF_CHARGE_CONTROL
+                if below_cutoff
+                else DispatchMode.ONLY_CHARGE_FROM_PV
+            )
 
     else:  # Charge.NO_DISCHARGING
         mode = DispatchMode.ONLY_CHARGE_FROM_PV if below_cutoff else DispatchMode.NO_BATTERY_CHARGE
@@ -165,7 +170,11 @@ def decide_dispatch(
         param_cutoff_soc = 0
         pv_on = True
     elif mode in (DispatchMode.NORMAL, DispatchMode.ONLY_CHARGE_FROM_PV):
-        power = full_power if below_cutoff else 0
+        # A grid-charge hour at its target: the sun may still fill it up.
+        solar_after_target = (
+            hour.charge == Charge.CHARGING_ON_GRID and hour.earning != Earning.EARNING_ON_USE
+        )
+        power = full_power if below_cutoff or solar_after_target else 0
         param_cutoff_soc = 0
         pv_on = True
     elif mode == DispatchMode.STATE_OF_CHARGE_CONTROL:
@@ -179,11 +188,7 @@ def decide_dispatch(
             # min() with full_power (already int) before casting to int
             # keeps this safe even when max_grid_load is unconstrained
             # (float("inf") would overflow an int() cast on its own).
-            power = (
-                int(min(full_power, max(0.0, config.max_grid_load - house_load_w)))
-                if below_cutoff
-                else 0  # target reached: hold
-            )
+            power = int(min(full_power, max(0.0, config.max_grid_load - house_load_w)))
         param_cutoff_soc = cutoff_soc
         pv_on = True
     elif mode == DispatchMode.MAXIMISE_CONSUMPTION:
