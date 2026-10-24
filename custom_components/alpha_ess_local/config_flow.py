@@ -25,6 +25,7 @@ from .const import (
     CONF_ENTSOE_PRICE_ENTITY,
     CONF_EV_CHARGER_ENERGY_ENTITY,
     CONF_EV_CHARGER_POWER_ENTITY,
+    CONF_EXCLUDED_LOAD_ENTITIES,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_EXTRA_PV_MODBUS_ADDRESS,
     CONF_EXTRA_PV_MODBUS_HUB,
@@ -603,7 +604,8 @@ def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sectio
 
 
 def _ev_charger_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """EV charger sensors -- display only (the panel), not used for control."""
+    """Consumption left out of the learned house load: the EV charger (also
+    shown in the panel) and any other big, irregular consumers."""
     return [
         (
             vol.Optional(
@@ -621,6 +623,15 @@ def _ev_charger_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sect
             ),
             selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor", device_class="energy")
+            ),
+        ),
+        (
+            vol.Optional(
+                CONF_EXCLUDED_LOAD_ENTITIES,
+                description={"suggested_value": options.get(CONF_EXCLUDED_LOAD_ENTITIES)},
+            ),
+            selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="power", multiple=True)
             ),
         ),
     ], []
@@ -712,9 +723,9 @@ OPTIONS_SECTIONS = {
     "installation": _installation_fields,
     "prices": _prices_fields,
     "solar_forecast": _solar_forecast_fields,
+    "meter": _meter_fields,
     "extra_pv": _extra_pv_fields,
     "ev_charger": _ev_charger_fields,
-    "meter": _meter_fields,
     "control": _control_fields,
 }
 

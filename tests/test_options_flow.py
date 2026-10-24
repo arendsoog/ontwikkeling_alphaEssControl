@@ -636,6 +636,7 @@ async def test_options_flow_ev_charger_section_saves_both_sensors(
     assert [str(key) for key in result["data_schema"].schema] == [
         "ev_charger_power_entity",
         "ev_charger_energy_entity",
+        "excluded_load_entities",
     ]
 
     await _save_section(
@@ -645,8 +646,10 @@ async def test_options_flow_ev_charger_section_saves_both_sensors(
         {
             "ev_charger_power_entity": "sensor.laadpaal_vermogen",
             "ev_charger_energy_entity": "sensor.laadpaal_energie_totaal",
+            "excluded_load_entities": ["sensor.warmtepomp_vermogen"],
         },
     )
 
     assert entry.options["ev_charger_power_entity"] == "sensor.laadpaal_vermogen"
     assert entry.options["ev_charger_energy_entity"] == "sensor.laadpaal_energie_totaal"
+    assert entry.options["excluded_load_entities"] == ["sensor.warmtepomp_vermogen"]

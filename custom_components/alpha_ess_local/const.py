@@ -124,6 +124,9 @@ CONF_EXTRA_PV_STRING_ENTITIES = "extra_pv_string_entities"
 
 CONF_EV_CHARGER_POWER_ENTITY = "ev_charger_power_entity"
 CONF_EV_CHARGER_ENERGY_ENTITY = "ev_charger_energy_entity"
+# Other consumers left out of the learned house load (a heat pump, ...):
+# power sensors, like the EV charger's.
+CONF_EXCLUDED_LOAD_ENTITIES = "excluded_load_entities"
 
 # Options flow: scheduler tuning (config.ini [Daily])
 CONF_ALLOW_PROVIDER_CONTROL_HOURS = "allow_provider_control_hours"

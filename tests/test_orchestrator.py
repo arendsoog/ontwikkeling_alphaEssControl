@@ -1456,6 +1456,36 @@ async def test_real_data_coordinator_flags_an_hour_with_an_unknown_ev_charger(
     assert hour.estimated is True
 
 
+async def test_real_data_coordinator_leaves_all_excluded_consumers_out_of_the_house_load(
+    hass: HomeAssistant, freezer
+):
+    """The EV charger and other configured consumers (a heat pump) are
+    summed into the consumption kept out of the learned house load."""
+    freezer.move_to("2024-01-15 10:03:00")
+    hass.states.async_set("sensor.ev_power", "3000", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.heat_pump", "1.5", {"unit_of_measurement": "kW"})
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            "ev_charger_power_entity": "sensor.ev_power",
+            "excluded_load_entities": ["sensor.heat_pump"],
+        },
+    )
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 0, "battery_power": 0, "grid_power": 5000}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    data = await coordinator._async_update_data()
+
+    sample = data.day.hour[dt_util.now().hour].five_min[0]
+    assert sample.ev_power == 4500.0
+    assert data.day.hour[dt_util.now().hour].estimated is False
+
+
 async def test_real_data_coordinator_takes_no_sample_while_the_inverter_is_down(
     hass: HomeAssistant, freezer
 ):

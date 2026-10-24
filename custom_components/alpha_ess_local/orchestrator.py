@@ -43,6 +43,7 @@ from .const import (
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
     CONF_EV_CHARGER_POWER_ENTITY,
+    CONF_EXCLUDED_LOAD_ENTITIES,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_EXTRA_PV_MODBUS_ADDRESS,
     CONF_EXTRA_PV_MODBUS_HUB,
@@ -1057,17 +1058,30 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         if tariff is not None:
             hour.real_tariff = tariff
 
-        ev_entity = self.config_entry.options.get(CONF_EV_CHARGER_POWER_ENTITY)
-        ev_power = _entity_power(self.hass, ev_entity)
-        ev_missing = bool(ev_entity) and ev_power is None
+        # Consumption left out of the learned house load: the EV charger and
+        # any other configured consumers (a heat pump, ...), summed -- kept
+        # in ev_power.
+        options = self.config_entry.options
+        excluded_entities = [
+            entity
+            for entity in (
+                options.get(CONF_EV_CHARGER_POWER_ENTITY),
+                *(options.get(CONF_EXCLUDED_LOAD_ENTITIES) or []),
+            )
+            if entity
+        ]
+        readings = [_entity_power(self.hass, entity) for entity in excluded_entities]
+        ev_power = sum(reading for reading in readings if reading is not None)
+        ev_missing = any(reading is None for reading in readings)
         if ev_missing:
-            estimated = True  # an EV charge would be counted as house load
+            estimated = True  # its consumption would be counted as house load
         if ev_missing and not self._ev_missing:
             LOGGER.error(
-                "orchestrator: no EV charger reading -- its hours are left out of the learning"
+                "orchestrator: no reading from an excluded consumer (EV charger, ...) -- "
+                "its hours are left out of the learning"
             )
         elif not ev_missing and self._ev_missing:
-            LOGGER.info("orchestrator: EV charger reading back")
+            LOGGER.info("orchestrator: excluded consumers' readings back")
         self._ev_missing = ev_missing
 
         samples_before = hour.five_min_count
