@@ -617,6 +617,25 @@ def _extra_pv_power(hass: HomeAssistant, value: str | None) -> float | None:
     return _entity_power(hass, value)
 
 
+def extra_pv_source_entities(hass: HomeAssistant, value: str | None) -> list[str]:
+    """The entity_id(s) behind the configured extra-PV source (see above)."""
+    if not value:
+        return []
+    if not value.startswith("sma:"):
+        return [value]
+    registry = er.async_get(hass)
+    return [
+        reg_entry.entity_id
+        for reg_entry in er.async_entries_for_config_entry(registry, value.removeprefix("sma:"))
+        if f"-{SMA_PV_POWER_STRING_KEY}_" in reg_entry.unique_id
+    ]
+
+
+def live_extra_pv_power(hass: HomeAssistant, value: str | None) -> float | None:
+    """The extra-PV source's power right now (None without a reading)."""
+    return _extra_pv_power(hass, value)
+
+
 @dataclass
 class RealPowerData:
     """One 5-minute sampling cycle's result.

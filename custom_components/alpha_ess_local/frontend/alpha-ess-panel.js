@@ -615,6 +615,11 @@ class AlphaEssPanel extends HTMLElement {
       ),
     ];
     const now = new Date();
+    // Loads can overlap (the panel opens, then the options arrive with the
+    // EV chargers' counters): only the latest one's results are kept, so an
+    // older load finishing last can't overwrite them.
+    const seq = (this._historySeq = (this._historySeq || 0) + 1);
+    const stale = () => seq !== this._historySeq;
 
     try {
       const raw = await this._hass.callWS({
@@ -626,6 +631,7 @@ class AlphaEssPanel extends HTMLElement {
         no_attributes: true,
         significant_changes_only: false,
       });
+      if (stale()) return;
       const history = {};
       for (const [id, entries] of Object.entries(raw || {})) {
         history[id] = entries
@@ -639,6 +645,7 @@ class AlphaEssPanel extends HTMLElement {
 
     try {
       const today = await this._hass.callWS({ type: `${DOMAIN}/today_power` });
+      if (stale()) return;
       this._todayPower = today && Array.isArray(today.samples) ? today : null;
     } catch (err) {
       // Older backend without the command: fall back to recorder history only.
@@ -656,6 +663,7 @@ class AlphaEssPanel extends HTMLElement {
           types: ["change"],
           units: { energy: "kWh" },
         });
+        if (stale()) return;
         this._stats = week || {};
       } catch (err) {
         this._stats = this._stats || {};

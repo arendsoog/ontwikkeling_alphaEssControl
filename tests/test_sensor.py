@@ -235,6 +235,23 @@ def test_extra_pv_power_sensor_returns_configured_reading():
     assert sensor.native_value == 321.0
 
 
+def test_extra_pv_power_sensor_follows_the_source_live(hass):
+    """The source's reading right now, not the 5-minute cycle's older one --
+    and the cycle's value again when the source gives nothing."""
+    coordinator = _fake_coordinator(RealPowerData(day=Day(), extra_pv_power=1068.0))
+    coordinator.config_entry.options = {"extra_pv_power_entity": "sensor.sma_ac_power"}
+    hass.states.async_set("sensor.sma_ac_power", "3064", {"unit_of_measurement": "W"})
+    extra = AlphaEssLocalExtraPvPowerSensor(coordinator)
+    total = AlphaEssLocalTotalPvPowerSensor(coordinator, SimpleNamespace(data={"pv_power": 1000}))
+    extra.hass = total.hass = hass
+
+    assert extra.native_value == 3064.0
+    assert total.native_value == 4064
+
+    hass.states.async_set("sensor.sma_ac_power", "unavailable")
+    assert extra.native_value == 1068.0
+
+
 def test_extra_pv_power_sensor_none_when_unconfigured():
     coordinator = _fake_coordinator(RealPowerData(day=Day(), extra_pv_power=None))
     sensor = AlphaEssLocalExtraPvPowerSensor(coordinator)

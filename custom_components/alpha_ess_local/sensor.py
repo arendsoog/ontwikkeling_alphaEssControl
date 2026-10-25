@@ -29,13 +29,15 @@ from homeassistant.const import (
     UnitOfPower,
     UnitOfTemperature,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from . import AlphaEssLocalConfigEntry
 from .const import (
+    CONF_EXTRA_PV_POWER_ENTITY,
     CONF_PROVIDER_USE_FEE,
     CONF_VAT_PERCENTAGE,
     DEFAULT_PROVIDER_USE_FEE,
@@ -44,6 +46,7 @@ from .const import (
 from .data import MAX_HOURS, Day
 from .dispatch import set_dispatch_msg
 from .entity import AlphaEssLocalEntity
+from .orchestrator import extra_pv_source_entities, live_extra_pv_power
 from .prices import mk_use_price
 from .schedule import set_charging_msg
 
@@ -594,7 +597,41 @@ class AlphaEssLocalDaySensor(AlphaEssLocalEntity, SensorEntity):
         return self.entity_description.attributes_fn(day, self.coordinator.config_entry.options)
 
 
-class AlphaEssLocalExtraPvPowerSensor(AlphaEssLocalEntity, SensorEntity):
+class _LiveExtraPvMixin(SensorEntity):
+    """Follows the extra-PV source live: updated on each of its readings,
+    not only on the 5-minute sampling cycle -- so the panel's energy flow
+    (house load = PV + grid - battery) doesn't mix a minutes-old extra-PV
+    value with live roof/battery/grid values."""
+
+    coordinator: DataUpdateCoordinator
+
+    def _extra_pv_source(self) -> str | None:
+        entry = getattr(self.coordinator, "config_entry", None)
+        return entry.options.get(CONF_EXTRA_PV_POWER_ENTITY) if entry else None
+
+    def _live_extra_pv(self) -> float | None:
+        """The source's reading right now; else the cycle's value (which
+        may be the estimate from the roof when the source gives nothing)."""
+        source = self._extra_pv_source()
+        live = live_extra_pv_power(self.hass, source) if source else None
+        if live is not None:
+            return live
+        return self.coordinator.data.extra_pv_power if self.coordinator.data else None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        sources = extra_pv_source_entities(self.hass, self._extra_pv_source())
+        if sources:
+            self.async_on_remove(
+                async_track_state_change_event(self.hass, sources, self._source_changed)
+            )
+
+    @callback
+    def _source_changed(self, _event: Event[EventStateChangedData]) -> None:
+        self.async_write_ha_state()
+
+
+class AlphaEssLocalExtraPvPowerSensor(_LiveExtraPvMixin, AlphaEssLocalEntity, SensorEntity):
     """The second/separate PV installation's real-time power, mirroring `pv_power`.
 
     `None` (unavailable) when no `extra_pv_power_entity`/SMA source is
@@ -614,13 +651,11 @@ class AlphaEssLocalExtraPvPowerSensor(AlphaEssLocalEntity, SensorEntity):
 
     @property
     def native_value(self) -> float | None:
-        """Return this cycle's raw extra-PV reading."""
-        if self.coordinator.data is None:
-            return None
-        return self.coordinator.data.extra_pv_power
+        """Return the extra-PV source's reading right now."""
+        return self._live_extra_pv()
 
 
-class AlphaEssLocalTotalPvPowerSensor(AlphaEssLocalEntity, SensorEntity):
+class AlphaEssLocalTotalPvPowerSensor(_LiveExtraPvMixin, AlphaEssLocalEntity, SensorEntity):
     """Combined real-time PV power: the AlphaESS's own panels + the extra
     installation, if one is configured (else equal to `pv_power` alone)."""
 
@@ -646,7 +681,7 @@ class AlphaEssLocalTotalPvPowerSensor(AlphaEssLocalEntity, SensorEntity):
         pv_power = (self._modbus_coordinator.data or {}).get("pv_power")
         if pv_power is None:
             return None
-        extra_pv_power = self.coordinator.data.extra_pv_power if self.coordinator.data else None
+        extra_pv_power = self._live_extra_pv()
         return round(pv_power + (extra_pv_power or 0.0))
 
 
