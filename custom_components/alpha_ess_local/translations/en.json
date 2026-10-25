@@ -80,11 +80,18 @@
             },
             "ev_charger": {
                 "title": "Excluded consumption",
-                "description": "Consumers kept out of the learned house load because they're big and irregular (an EV charger, a heat pump, ...). Their power is taken off the measured house load before the load per hour is learned. Not used for control.",
+                "description": "Consumers kept out of the learned house load because they're big and irregular. Their power is taken off the measured house load before the load per hour is learned. Not used for control. Add as many as you have with 'Add entity'.",
                 "data": {
-                    "ev_charger_power_entity": "EV charger: power (W) -- also in the panel's energy flow",
-                    "ev_charger_energy_entity": "EV charger: total energy (kWh) -- for the panel's daily totals",
-                    "excluded_load_entities": "Other consumers: power (W)"
+                    "ev_charger_power_entities": "EV chargers: power",
+                    "ev_charger_energy_entities": "EV chargers: total energy",
+                    "ev_charger_current_entities": "EV chargers: current per phase",
+                    "excluded_load_entities": "Other consumers: power"
+                },
+                "data_description": {
+                    "ev_charger_power_entities": "Each EV charger's charging power. Shown together in the panel's energy flow.",
+                    "ev_charger_energy_entities": "Each EV charger's total charged energy (an increasing kWh counter). Shown per charger in the panel's daily totals. Optional.",
+                    "ev_charger_current_entities": "Each EV charger's current per phase (L1, L2, L3), for its card on the Inverters tab. Optional.",
+                    "excluded_load_entities": "The power of other big consumers, such as a heat pump. For the learning only, not in the panel."
                 }
             },
             "meter": {

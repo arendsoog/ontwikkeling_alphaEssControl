@@ -723,15 +723,18 @@ async def test_options_flow_extra_pv_field_is_checklist_when_detected(
     assert options == [{"value": entry_reg.entity_id, "label": "SMA Sunny Boy"}]
 
 
-async def test_options_flow_ev_charger_section_saves_both_sensors(
+async def test_options_flow_ev_charger_section_saves_the_lists(
     hass: HomeAssistant, mock_api_client
 ):
+    """EV chargers' power, energy and phase-current sensors, and other
+    consumers' power sensors -- any number of each."""
     entry = await _create_entry(hass, mock_api_client)
 
     result = await _open_section(hass, entry, "ev_charger")
     assert [str(key) for key in result["data_schema"].schema] == [
-        "ev_charger_power_entity",
-        "ev_charger_energy_entity",
+        "ev_charger_power_entities",
+        "ev_charger_energy_entities",
+        "ev_charger_current_entities",
         "excluded_load_entities",
     ]
 
@@ -740,12 +743,49 @@ async def test_options_flow_ev_charger_section_saves_both_sensors(
         entry,
         "ev_charger",
         {
-            "ev_charger_power_entity": "sensor.laadpaal_vermogen",
-            "ev_charger_energy_entity": "sensor.laadpaal_energie_totaal",
+            "ev_charger_power_entities": ["sensor.laadpaal_vermogen"],
+            "ev_charger_energy_entities": ["sensor.laadpaal_energie_totaal"],
+            "ev_charger_current_entities": ["sensor.laadpaal_stroom_l1"],
             "excluded_load_entities": ["sensor.warmtepomp_vermogen"],
         },
     )
 
-    assert entry.options["ev_charger_power_entity"] == "sensor.laadpaal_vermogen"
-    assert entry.options["ev_charger_energy_entity"] == "sensor.laadpaal_energie_totaal"
+    assert entry.options["ev_charger_power_entities"] == ["sensor.laadpaal_vermogen"]
+    assert entry.options["ev_charger_energy_entities"] == ["sensor.laadpaal_energie_totaal"]
+    assert entry.options["ev_charger_current_entities"] == ["sensor.laadpaal_stroom_l1"]
     assert entry.options["excluded_load_entities"] == ["sensor.warmtepomp_vermogen"]
+
+
+async def test_options_flow_ev_charger_section_takes_over_the_single_charger(
+    hass: HomeAssistant, mock_api_client
+):
+    """Saved before the lists: the one charger's sensors pre-fill the lists,
+    and saving drops the old keys."""
+    entry = await _create_entry(hass, mock_api_client)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            "ev_charger_power_entity": "sensor.laadpaal_vermogen",
+            "ev_charger_energy_entity": "sensor.laadpaal_energie_totaal",
+        },
+    )
+
+    result = await _open_section(hass, entry, "ev_charger")
+    schema = result["data_schema"]
+    assert _suggested_value_for(schema, "ev_charger_power_entities") == ["sensor.laadpaal_vermogen"]
+    assert _suggested_value_for(schema, "ev_charger_energy_entities") == [
+        "sensor.laadpaal_energie_totaal"
+    ]
+
+    await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "ev_charger_power_entities": ["sensor.laadpaal_vermogen"],
+            "ev_charger_energy_entities": ["sensor.laadpaal_energie_totaal"],
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert "ev_charger_power_entity" not in entry.options
+    assert "ev_charger_energy_entity" not in entry.options
+    assert entry.options["ev_charger_power_entities"] == ["sensor.laadpaal_vermogen"]

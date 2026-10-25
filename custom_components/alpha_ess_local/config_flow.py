@@ -23,7 +23,10 @@ from .const import (
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
     CONF_ENTSOE_PRICE_ENTITY,
+    CONF_EV_CHARGER_CURRENT_ENTITIES,
+    CONF_EV_CHARGER_ENERGY_ENTITIES,
     CONF_EV_CHARGER_ENERGY_ENTITY,
+    CONF_EV_CHARGER_POWER_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXCLUDED_LOAD_ENTITIES,
     CONF_EXTRA_PV_CONTROL_ENABLED,
@@ -76,6 +79,11 @@ from .const import (
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
+)
+from .consumers import (
+    ev_charger_current_entities,
+    ev_charger_energy_entities,
+    ev_charger_power_entities,
 )
 from .meter import configured_grid_meter, detected_meter_sensors, detected_peak_sensor
 from .prices import configured_price_entities, is_price_entity
@@ -508,35 +516,32 @@ def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sectio
 
 
 def _ev_charger_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """Consumption left out of the learned house load: the EV charger (also
-    shown in the panel) and any other big, irregular consumers."""
+    """Consumers left out of the learned house load: EV chargers (also shown
+    in the panel) and other consumers (a heat pump, ...), any number of
+    each, picked one by one -- see consumers.py."""
+
+    def entities_field(key: str, suggested: list[str], device_class: str) -> tuple[Any, Any]:
+        return (
+            vol.Optional(key, description={"suggested_value": suggested}),
+            selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain="sensor", device_class=device_class, multiple=True
+                )
+            ),
+        )
+
     return [
-        (
-            vol.Optional(
-                CONF_EV_CHARGER_POWER_ENTITY,
-                description={"suggested_value": options.get(CONF_EV_CHARGER_POWER_ENTITY)},
-            ),
-            selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor", device_class="power")
-            ),
+        entities_field(CONF_EV_CHARGER_POWER_ENTITIES, ev_charger_power_entities(options), "power"),
+        entities_field(
+            CONF_EV_CHARGER_ENERGY_ENTITIES, ev_charger_energy_entities(options), "energy"
         ),
-        (
-            vol.Optional(
-                CONF_EV_CHARGER_ENERGY_ENTITY,
-                description={"suggested_value": options.get(CONF_EV_CHARGER_ENERGY_ENTITY)},
-            ),
-            selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor", device_class="energy")
-            ),
+        entities_field(
+            CONF_EV_CHARGER_CURRENT_ENTITIES, ev_charger_current_entities(options), "current"
         ),
-        (
-            vol.Optional(
-                CONF_EXCLUDED_LOAD_ENTITIES,
-                description={"suggested_value": options.get(CONF_EXCLUDED_LOAD_ENTITIES)},
-            ),
-            selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor", device_class="power", multiple=True)
-            ),
+        entities_field(
+            CONF_EXCLUDED_LOAD_ENTITIES,
+            list(options.get(CONF_EXCLUDED_LOAD_ENTITIES) or []),
+            "power",
         ),
     ], []
 
@@ -653,6 +658,7 @@ _SUPERSEDED_KEYS = {
         CONF_PRICE_SOURCE_PRIMARY,
     },
     "meter": {CONF_HOUSE_LOAD_POWER_ENTITY},
+    "ev_charger": {CONF_EV_CHARGER_POWER_ENTITY, CONF_EV_CHARGER_ENERGY_ENTITY},
     "solar_forecast": {
         CONF_FORECAST_SOLAR_ENTRIES,
         CONF_SOLCAST_ENTRIES,

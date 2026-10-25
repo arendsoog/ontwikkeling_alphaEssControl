@@ -135,10 +135,16 @@ DEFAULT_SOLAR_SOURCE_PRIMARY = SOLAR_SOURCE_FORECAST_SOLAR
 # integration's own per-string sensors.
 CONF_EXTRA_PV_STRING_ENTITIES = "extra_pv_string_entities"
 
+# One EV charger's sensors -- replaced by the lists below, still read until
+# the section is saved (see consumers.py).
 CONF_EV_CHARGER_POWER_ENTITY = "ev_charger_power_entity"
 CONF_EV_CHARGER_ENERGY_ENTITY = "ev_charger_energy_entity"
-# Other consumers left out of the learned house load (a heat pump, ...):
-# power sensors, like the EV charger's.
+# Consumers left out of the learned house load: the EV chargers' power
+# sensors and total-energy counters (also shown in the panel), and other
+# consumers' power sensors (a heat pump, ...).
+CONF_EV_CHARGER_POWER_ENTITIES = "ev_charger_power_entities"
+CONF_EV_CHARGER_ENERGY_ENTITIES = "ev_charger_energy_entities"
+CONF_EV_CHARGER_CURRENT_ENTITIES = "ev_charger_current_entities"
 CONF_EXCLUDED_LOAD_ENTITIES = "excluded_load_entities"
 
 # Options flow: scheduler tuning (config.ini [Daily])

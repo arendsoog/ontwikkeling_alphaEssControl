@@ -27,8 +27,6 @@ from ..config_flow import SMA_PV_POWER_STRING_KEY
 from ..const import (
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
-    CONF_EV_CHARGER_ENERGY_ENTITY,
-    CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_EXTRA_PV_MODBUS_HUB,
     CONF_EXTRA_PV_POWER_CAPACITY,
@@ -53,6 +51,11 @@ from ..const import (
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
+)
+from ..consumers import (
+    ev_charger_energy_entities,
+    ev_charger_groups,
+    ev_charger_power_entities,
 )
 from ..data import MAX_FIVE_MINS, Charge, Day
 from ..orchestrator import get_db_path, grid_meter_status
@@ -127,8 +130,9 @@ def _ws_panel_status(
                 CONF_NETWORK_USE_FEE_NORMAL, DEFAULT_NETWORK_USE_FEE
             ),
             "network_use_fee_low": options.get(CONF_NETWORK_USE_FEE_LOW, DEFAULT_NETWORK_USE_FEE),
-            "ev_charger_power_entity": options.get(CONF_EV_CHARGER_POWER_ENTITY) or None,
-            "ev_charger_energy_entity": options.get(CONF_EV_CHARGER_ENERGY_ENTITY) or None,
+            "ev_charger_power_entities": ev_charger_power_entities(options),
+            "ev_charger_energy_entities": ev_charger_energy_entities(options),
+            "ev_chargers": ev_charger_groups(hass, options),
             "extra_pv_configured": bool(options.get(CONF_EXTRA_PV_POWER_ENTITY)),
             "extra_pv_string_entities": extra_pv_string_entities(hass, options),
             "extra_pv_power_capacity": options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0),

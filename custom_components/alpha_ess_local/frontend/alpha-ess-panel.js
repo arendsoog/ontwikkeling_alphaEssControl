@@ -584,7 +584,7 @@ class AlphaEssPanel extends HTMLElement {
       // option toggles and settings don't vanish until the next refresh.
       console.debug("alpha-ess-panel: panel_status failed", err);
     }
-    const evEnergy = this._evEnergyId();
+    const evEnergy = this._evEnergyIds().join(",");
     if (evEnergy !== this._loadedEvEnergy) {
       this._loadedEvEnergy = evEnergy;
       if (evEnergy) this._loadHistory();
@@ -592,8 +592,13 @@ class AlphaEssPanel extends HTMLElement {
     this._renderAll();
   }
 
-  _evEnergyId() {
-    return (this._status && this._status.ev_charger_energy_entity) || null;
+  // The EV chargers' sensors chosen in the options (any number of each).
+  _evPowerIds() {
+    return (this._status && this._status.ev_charger_power_entities) || [];
+  }
+
+  _evEnergyIds() {
+    return (this._status && this._status.ev_charger_energy_entities) || [];
   }
 
   async _loadHistory() {
@@ -604,7 +609,7 @@ class AlphaEssPanel extends HTMLElement {
     ];
     const counterIds = [
       ...new Set(
-        [...this._devices.flatMap((d) => Object.values(COUNTERS).map((k) => d.entities[k])), this._evEnergyId()].filter(
+        [...this._devices.flatMap((d) => Object.values(COUNTERS).map((k) => d.entities[k])), ...this._evEnergyIds()].filter(
           Boolean
         )
       ),
@@ -704,10 +709,15 @@ class AlphaEssPanel extends HTMLElement {
     return this._dailyTotals(key, entities)[startOfDay().getTime()] ?? null;
   }
 
-  // kWh the EV charger delivered today, from its total-energy counter.
-  _evTodayKwh() {
-    const id = this._evEnergyId();
-    return id ? this._dailyTotalsById(id)[startOfDay().getTime()] ?? null : null;
+  // kWh an EV charger delivered today, from its total-energy counter.
+  _evTodayKwh(id) {
+    return this._dailyTotalsById(id)[startOfDay().getTime()] ?? null;
+  }
+
+  // kWh all EV chargers delivered today (null when none is known).
+  _evTodayTotalKwh() {
+    const values = this._evEnergyIds().map((id) => this._evTodayKwh(id)).filter((v) => v !== null);
+    return values.length ? values.reduce((sum, v) => sum + v, 0) : null;
   }
 
   _plan() {
@@ -892,13 +902,17 @@ class AlphaEssPanel extends HTMLElement {
     ).join("")}</div>`;
   }
 
-  // EV charger power in W from the sensor chosen in the options (W or kW).
+  // The EV chargers' power in W, summed, from the sensors chosen in the
+  // options (W or kW); null when none gives a reading.
   _evPower() {
-    const id = this._status && this._status.ev_charger_power_entity;
-    const state = id && this._hass.states[id];
-    const value = state ? num(state.state) : null;
-    if (value === null) return null;
-    return state.attributes.unit_of_measurement === "kW" ? value * 1000 : value;
+    let total = null;
+    for (const id of this._evPowerIds()) {
+      const state = this._hass.states[id];
+      const value = state ? num(state.state) : null;
+      if (value === null) continue;
+      total = (total || 0) + (state.attributes.unit_of_measurement === "kW" ? value * 1000 : value);
+    }
+    return total;
   }
 
   // Time-weighted mean of a sensor over the last `windowMs`, from the live
@@ -938,7 +952,7 @@ class AlphaEssPanel extends HTMLElement {
     const hasExtraPv =
       Boolean(this._entities.extra_pv_power) &&
       (extraPv !== null || Boolean(this._status && this._status.extra_pv_configured));
-    const hasEv = Boolean(this._status && this._status.ev_charger_power_entity);
+    const hasEv = this._evPowerIds().length > 0;
     const ev = hasEv ? this._evPower() : null;
     // The rooms get the house load minus what the car takes.
     const rooms = house !== null && ev !== null ? Math.max(0, house - ev) : house;
@@ -999,9 +1013,9 @@ class AlphaEssPanel extends HTMLElement {
         key: "ev",
         color: SCENE_COLOR.ev,
         value: fmtW(ev),
-        name: "EV-LADER",
-        entity: this._status.ev_charger_power_entity,
-        sub: this._evTodayKwh() === null ? "" : `${fmtNum(this._evTodayKwh(), 2)} kWh vandaag`,
+        name: this._evPowerIds().length > 1 ? "LAADPALEN" : "LAADPAAL",
+        entity: this._evPowerIds()[0],
+        sub: this._evTodayTotalKwh() === null ? "" : `${fmtNum(this._evTodayTotalKwh(), 2)} kWh vandaag`,
       },
     ].filter(Boolean);
 
@@ -1066,15 +1080,24 @@ class AlphaEssPanel extends HTMLElement {
       { label: "Net ingevoerd", value: this._todayTotal("imported"), color: COLOR.import, entity: COUNTERS.imported },
       { label: "Net teruggeleverd", value: this._todayTotal("exported"), color: COLOR.export, entity: COUNTERS.exported },
     ];
-    if (this._evEnergyId()) {
-      rows.push({ label: "EV geladen", value: this._evTodayKwh(), color: SCENE_COLOR.ev, entityId: this._evEnergyId() });
+    // One row per EV charger, by its energy counter's name when there's more than one.
+    const evIds = this._evEnergyIds();
+    for (const id of evIds) {
+      const state = this._hass.states[id];
+      const name = state && state.attributes.friendly_name;
+      rows.push({
+        label: evIds.length > 1 ? `Geladen: ${name || id}` : "Laadpaal geladen",
+        value: this._evTodayKwh(id),
+        color: SCENE_COLOR.ev,
+        entityId: id,
+      });
     }
     const max = Math.max(1, ...rows.map((r) => r.value || 0));
     const bars = rows
       .map(
         (r) => `
         <div class="energy-row" data-entity="${esc(r.entityId || this._entities[r.entity] || "")}">
-          <div class="energy-top"><span>${r.label}</span><span class="energy-value">${fmtNum(r.value, 2)}<small> kWh</small></span></div>
+          <div class="energy-top"><span>${esc(r.label)}</span><span class="energy-value">${fmtNum(r.value, 2)}<small> kWh</small></span></div>
           <div class="energy-bar"><div style="width:${((r.value || 0) / max) * 60}%;background:${r.color}"></div></div>
         </div>`
       )
@@ -1494,7 +1517,67 @@ class AlphaEssPanel extends HTMLElement {
       const extra = this._extraPvCard(device);
       if (extra) cards.push(extra);
     }
+    const chargers = (this._status && this._status.ev_chargers) || [];
+    chargers.forEach((group, i) => cards.push(this._evChargerCard(group, i, chargers.length)));
     return cards.join("");
+  }
+
+  // One card per EV charger (consumers.py's ev_charger_groups: its sensors
+  // grouped per HA device): power, kWh today and the current per phase.
+  _evChargerCard(group, index, count) {
+    let power = null;
+    for (const id of group.power) {
+      const s = this._hass.states[id];
+      const v = s ? num(s.state) : null;
+      if (v !== null) power = (power || 0) + (s.attributes.unit_of_measurement === "kW" ? v * 1000 : v);
+    }
+    const charging = power !== null && power > 50;
+    const name = group.name || (count > 1 ? `Laadpaal ${index + 1}` : "Laadpaal");
+    const energy = group.energy.map((id) => ({
+      label: group.energy.length > 1 ? (this._hass.states[id] || {}).attributes?.friendly_name || id : "Geladen",
+      value: this._evTodayKwh(id),
+      color: SCENE_COLOR.ev,
+      entity: id,
+    }));
+    // Phase label from the sensor's name ("... L2", "... fase 2"), else by
+    // its place in the list.
+    const phases = group.current.map((id, i) => {
+      const s = this._hass.states[id];
+      const label = s && s.attributes.friendly_name;
+      const match = label && /(?:\bL|fase\s*)([123])\b/i.exec(label);
+      return { id, label: match ? `L${match[1]}` : `L${i + 1}`, value: s ? num(s.state) : null };
+    });
+
+    return `
+      <section class="card device">
+        <div class="device-head">
+          <ha-icon icon="mdi:ev-station"></ha-icon>
+          <div class="device-name">${esc(name)}</div>
+          <div class="spacer"></div>
+          <span class="${charging ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : charging ? "Laadt" : "Laadt niet"}</span>
+        </div>
+        ${
+          group.power.length
+            ? `<div class="device-main wide" data-entity="${esc(group.power[0])}">
+          <div class="big ${charging ? "accent" : "muted"}">${fmtW(power)}</div>
+          <div class="muted">Laadvermogen</div>
+        </div>`
+            : ""
+        }
+        ${
+          phases.length
+            ? `<div class="section-title">Stroom per fase</div>
+        <div class="phase-grid" style="grid-template-columns:repeat(${phases.length}, 1fr)">
+          ${phases
+            .map(
+              (p) => `<div class="phase" data-entity="${esc(p.id)}"><span class="muted">${esc(p.label)}</span><span class="phase-value">${p.value === null ? "–" : `${fmtNum(p.value, 1)} A`}</span></div>`
+            )
+            .join("")}
+        </div>`
+            : ""
+        }
+        ${energy.length ? `<div class="section-title">Energie vandaag</div>${this._energyRows(energy)}` : ""}
+      </section>`;
   }
 
   _stateOf(entities, key) {
@@ -1517,7 +1600,7 @@ class AlphaEssPanel extends HTMLElement {
       .map(
         (r) => `
         <div class="energy-row" ${r.entity ? `data-entity="${esc(r.entity)}"` : ""}>
-          <div class="energy-top"><span>${r.label}</span><span class="energy-value">${fmtNum(r.value, 2)}<small> kWh</small></span></div>
+          <div class="energy-top"><span>${esc(r.label)}</span><span class="energy-value">${fmtNum(r.value, 2)}<small> kWh</small></span></div>
           <div class="energy-bar"><div style="width:${((r.value || 0) / max) * 100}%;background:${r.color}"></div></div>
         </div>`
       )
@@ -2936,6 +3019,9 @@ const STYLE = `
   .source { color: var(--muted); }
   .source.in-use { color: var(--accent); }
   .mppt-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .phase-grid { display: grid; gap: 8px; }
+  .phase { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0; border-radius: 12px; background: var(--secondary-background-color, rgba(127,127,127,0.12)); cursor: pointer; }
+  .phase-value { font-size: 18px; font-variant-numeric: tabular-nums; }
   .mppt { padding: 6px 12px; border-radius: 999px; background: var(--secondary-background-color, rgba(127,127,127,0.12)); color: var(--muted); font-size: 13px; cursor: pointer; }
   .mppt.active { color: var(--primary-text-color); box-shadow: inset 0 0 0 1px ${COLOR.solar}; }
   details { margin-top: 14px; }

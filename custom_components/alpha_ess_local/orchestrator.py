@@ -42,8 +42,6 @@ from .const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
-    CONF_EV_CHARGER_POWER_ENTITY,
-    CONF_EXCLUDED_LOAD_ENTITIES,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_EXTRA_PV_MODBUS_ADDRESS,
     CONF_EXTRA_PV_MODBUS_HUB,
@@ -83,6 +81,7 @@ from .const import (
     DOMAIN,
     LOGGER,
 )
+from .consumers import excluded_power_entities
 from .data import (
     MAX_FIVE_MINS,
     MAX_HOURS,
@@ -1004,19 +1003,13 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         if tariff is not None:
             hour.real_tariff = tariff
 
-        # Consumption left out of the learned house load: the EV charger and
-        # any other configured consumers (a heat pump, ...), summed -- kept
-        # in ev_power.
-        options = self.config_entry.options
-        excluded_entities = [
-            entity
-            for entity in (
-                options.get(CONF_EV_CHARGER_POWER_ENTITY),
-                *(options.get(CONF_EXCLUDED_LOAD_ENTITIES) or []),
-            )
-            if entity
+        # Consumption left out of the learned house load: the configured
+        # consumers (EV chargers, a heat pump, ...), summed -- kept in
+        # ev_power.
+        readings = [
+            _entity_power(self.hass, entity)
+            for entity in excluded_power_entities(self.config_entry.options)
         ]
-        readings = [_entity_power(self.hass, entity) for entity in excluded_entities]
         ev_power = sum(reading for reading in readings if reading is not None)
         ev_missing = any(reading is None for reading in readings)
         if ev_missing:
