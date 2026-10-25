@@ -1567,13 +1567,14 @@ class AlphaEssPanel extends HTMLElement {
         ${
           phases.length
             ? `<div class="section-title">Stroom per fase</div>
-        <div class="phase-grid" style="grid-template-columns:repeat(${phases.length}, 1fr)">
-          ${phases
-            .map(
-              (p) => `<div class="phase" data-entity="${esc(p.id)}"><span class="muted">${esc(p.label)}</span><span class="phase-value">${p.value === null ? "–" : `${fmtNum(p.value, 1)} A`}</span></div>`
-            )
-            .join("")}
-        </div>`
+        <div class="mppt-row">${phases
+          .map(
+            (p) =>
+              `<span class="mppt ${p.value ? "active" : ""}" data-entity="${esc(p.id)}">${esc(p.label)} · ${
+                p.value === null ? "–" : `${fmtNum(p.value, 1)} A`
+              }</span>`
+          )
+          .join("")}</div>`
             : ""
         }
         ${energy.length ? `<div class="section-title">Energie vandaag</div>${this._energyRows(energy)}` : ""}
@@ -3019,9 +3020,6 @@ const STYLE = `
   .source { color: var(--muted); }
   .source.in-use { color: var(--accent); }
   .mppt-row { display: flex; flex-wrap: wrap; gap: 8px; }
-  .phase-grid { display: grid; gap: 8px; }
-  .phase { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0; border-radius: 12px; background: var(--secondary-background-color, rgba(127,127,127,0.12)); cursor: pointer; }
-  .phase-value { font-size: 18px; font-variant-numeric: tabular-nums; }
   .mppt { padding: 6px 12px; border-radius: 999px; background: var(--secondary-background-color, rgba(127,127,127,0.12)); color: var(--muted); font-size: 13px; cursor: pointer; }
   .mppt.active { color: var(--primary-text-color); box-shadow: inset 0 0 0 1px ${COLOR.solar}; }
   details { margin-top: 14px; }
