@@ -89,10 +89,12 @@
             },
             "meter": {
                 "title": "Slimme meter",
-                "description": "P1-/slimme-metersensoren voor actueel huisverbruik en de maandpiek.",
+                "description": "De sensoren van je slimme meter (P1), elk apart te kiezen, zodat elke P1-integratie werkt. Daarmee berekent de app het huisverbruik en regelt hij het laden van het net. Geeft je meter het netto vermogen in één sensor (plus bij afname, min bij teruglevering), laat teruglevering dan leeg. Zonder meter gebruikt de app de netmeting van de omvormer.",
                 "data": {
-                    "house_load_power_entity": "Huisverbruik vermogensensor (P1)",
-                    "peak_load_this_month_entity": "Piekbelasting deze maand-sensor (capaciteitstarief)"
+                    "grid_import_power_entity": "Afname van het net: vermogen (of het netto vermogen)",
+                    "grid_export_power_entity": "Teruglevering aan het net: vermogen",
+                    "grid_tariff_entity": "Actief tarief (dag/nacht, voor de netkosten)",
+                    "peak_load_this_month_entity": "Piekbelasting deze maand (capaciteitstarief)"
                 }
             },
             "control": {

@@ -52,7 +52,6 @@ from .const import (
     CONF_EXTRA_PV_MODBUS_SLAVE,
     CONF_EXTRA_PV_POWER_CAPACITY,
     CONF_EXTRA_PV_POWER_ENTITY,
-    CONF_HOUSE_LOAD_POWER_ENTITY,
     CONF_INVERTER_NOMINAL_POWER,
     CONF_NETWORK_USE_FEE_LOW,
     CONF_NETWORK_USE_FEE_NORMAL,
@@ -95,6 +94,7 @@ from .data import (
     FiveMin,
     Hour,
 )
+from .meter import GridMeter, configured_grid_meter, tariff_from_state
 from .prices import mk_return_price, mk_use_price
 from .protocol import DispatchMode, DispatchParam
 from .schedule import (
@@ -515,56 +515,32 @@ def _effective_max_grid_load_wh(hass: HomeAssistant, entry: ConfigEntry) -> floa
     return max_grid_load_wh
 
 
-def _dsmr_net_power(hass: HomeAssistant, config_entry_id: str) -> float | None:
-    """Net power (positive=use, negative=feed) from DSMR's usage/delivery pair.
-
-    Neither DSMR sensor alone is signed (both are always >= 0) — unlike
-    HomeWizard P1's single signed `active_power_w`, this is the difference
-    of the two sibling entities on the same config entry.
-    """
-    registry = er.async_get(hass)
-    usage_id = delivery_id = None
-    for reg_entry in er.async_entries_for_config_entry(registry, config_entry_id):
-        if reg_entry.unique_id.endswith("_current_electricity_usage"):
-            usage_id = reg_entry.entity_id
-        elif reg_entry.unique_id.endswith("_current_electricity_delivery"):
-            delivery_id = reg_entry.entity_id
-
-    usage = _entity_power(hass, usage_id)
-    delivery = _entity_power(hass, delivery_id)
-    if usage is None or delivery is None:
+def grid_meter_power(hass: HomeAssistant, meter: GridMeter | None) -> float | None:
+    """The meter's net grid power (positive = import, negative = export):
+    import minus export for a meter giving them apart, else the import
+    sensor's own signed value. None when a sensor has no reading."""
+    if meter is None:
         return None
-    return usage - delivery
+    imported = _entity_power(hass, meter.import_entity)
+    if imported is None:
+        return None
+    if meter.export_entity is None:
+        return imported
+    exported = _entity_power(hass, meter.export_entity)
+    return None if exported is None else imported - exported
 
 
-def _house_load_entity_ids(hass: HomeAssistant, value: str) -> list[str]:
-    """The entity_id(s) behind a configured house-load source (see below)."""
-    if not value.startswith("dsmr:"):
-        return [value]
-    registry = er.async_get(hass)
-    return [
-        reg_entry.entity_id
-        for reg_entry in er.async_entries_for_config_entry(registry, value.removeprefix("dsmr:"))
-        if reg_entry.unique_id.endswith(
-            ("_current_electricity_usage", "_current_electricity_delivery")
-        )
-    ]
-
-
-def _house_load_reading_time(hass: HomeAssistant, value: str) -> datetime | None:
-    """When the sensor(s) behind the source last reported (the oldest of
-    them for DSMR's pair), or None if any is missing.
+def _grid_meter_reading_time(hass: HomeAssistant, meter: GridMeter) -> datetime | None:
+    """When the meter's power sensor(s) last reported (the oldest of them),
+    or None if one is missing.
 
     Uses `last_reported` (bumped on every report, even an unchanged value)
     where available, else `last_updated` -- a meter that drops off the
     network often leaves its last value standing rather than going
     unavailable, so the caller checks this for staleness.
     """
-    entity_ids = _house_load_entity_ids(hass, value)
-    if not entity_ids:
-        return None
     times = []
-    for entity_id in entity_ids:
+    for entity_id in meter.power_entities:
         state = hass.states.get(entity_id)
         if state is None:
             return None
@@ -572,46 +548,15 @@ def _house_load_reading_time(hass: HomeAssistant, value: str) -> datetime | None
     return min(times)
 
 
-def _house_load_power(hass: HomeAssistant, value: str | None) -> float | None:
-    """Resolve the configured house-load source to a signed net power value.
-
-    `value` is either a plain entity_id (HomeWizard P1-style, already
-    signed) or a "dsmr:<config_entry_id>" reference from the auto-detect
-    checklist (config_flow.py's `_house_load_candidates`), resolved to
-    DSMR's usage/delivery pair here.
-    """
-    if not value:
+def grid_meter_tariff(hass: HomeAssistant, meter: GridMeter | None) -> str | None:
+    """The meter's active tariff ("normal"/"low") for the day/night network
+    fee, or None without a (readable) tariff sensor -- no network fee then."""
+    if meter is None or meter.tariff_entity is None:
         return None
-    if value.startswith("dsmr:"):
-        return _dsmr_net_power(hass, value.removeprefix("dsmr:"))
-    return _entity_power(hass, value)
-
-
-def _dsmr_tariff_indicator(hass: HomeAssistant, config_entry_id: str) -> str | None:
-    """DSMR's active-tariff indicator ("normal"/"low") for the day/night
-    network fee -- same sibling-entity lookup pattern as `_dsmr_net_power`,
-    matched by HA core's stable `dsmr` unique_id suffix.
-    """
-    registry = er.async_get(hass)
-    for reg_entry in er.async_entries_for_config_entry(registry, config_entry_id):
-        if reg_entry.unique_id.endswith("_electricity_active_tariff"):
-            state = hass.states.get(reg_entry.entity_id)
-            if state is not None and state.state not in ("unknown", "unavailable"):
-                return state.state
-    return None
-
-
-def _house_load_tariff(hass: HomeAssistant, value: str | None) -> str | None:
-    """Resolve the configured house-load source to a DSMR tariff indicator.
-
-    Only DSMR ("dsmr:<config_entry_id>") is supported -- HomeWizard P1/plain
-    -entity house-load sources have no known tariff-indicator convention in
-    this codebase, so this returns None for those (no day/night network fee
-    applied, same as an installation that hasn't configured one).
-    """
-    if value and value.startswith("dsmr:"):
-        return _dsmr_tariff_indicator(hass, value.removeprefix("dsmr:"))
-    return None
+    state = hass.states.get(meter.tariff_entity)
+    if state is None or state.state in ("unknown", "unavailable"):
+        return None
+    return tariff_from_state(state.state, hass.config.country)
 
 
 def _sma_pv_power(hass: HomeAssistant, config_entry_id: str) -> float | None:
@@ -1049,12 +994,13 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
             LOGGER.info("orchestrator: extra PV reading back")
         self._extra_pv_estimating = estimated
 
-        house_load_power = _house_load_power(self.hass, self._house_load_entity_id())
+        meter = configured_grid_meter(self.hass, self.config_entry.options)
+        house_load_power = grid_meter_power(self.hass, meter)
         total_active_power = (
             house_load_power if house_load_power is not None else modbus_data.get("grid_power", 0)
         )
 
-        tariff = _house_load_tariff(self.hass, self._house_load_entity_id())
+        tariff = grid_meter_tariff(self.hass, meter)
         if tariff is not None:
             hour.real_tariff = tariff
 
@@ -1227,9 +1173,6 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
 
     def _extra_pv_entity_id(self) -> str | None:
         return self.config_entry.options.get(CONF_EXTRA_PV_POWER_ENTITY)
-
-    def _house_load_entity_id(self) -> str | None:
-        return self.config_entry.options.get(CONF_HOUSE_LOAD_POWER_ENTITY)
 
 
 class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
@@ -1553,15 +1496,15 @@ GRID_READING_MAX_AGE_S = 60
 
 
 def fresh_p1_power(
-    hass: HomeAssistant, source: str, now: datetime
+    hass: HomeAssistant, meter: GridMeter, now: datetime
 ) -> tuple[float | None, datetime | None]:
-    """The P1/smart-meter source's net grid power (W) and when it was
-    measured -- power None when it has no reading or one older than
+    """The smart meter's net grid power (W) and when it was measured --
+    power None when it has no reading or one older than
     GRID_READING_MAX_AGE_S (meter offline)."""
-    measured_at = _house_load_reading_time(hass, source)
+    measured_at = _grid_meter_reading_time(hass, meter)
     if measured_at is None or (now - measured_at).total_seconds() > GRID_READING_MAX_AGE_S:
         return None, measured_at
-    return _house_load_power(hass, source), measured_at
+    return grid_meter_power(hass, meter), measured_at
 
 
 def grid_meter_status(hass: HomeAssistant, entry: ConfigEntry, now: datetime) -> dict[str, Any]:
@@ -1577,16 +1520,12 @@ def grid_meter_status(hass: HomeAssistant, entry: ConfigEntry, now: datetime) ->
     """
     options = entry.options
     meters: list[dict[str, Any]] = []
-    source = options.get(CONF_HOUSE_LOAD_POWER_ENTITY)
+    meter = configured_grid_meter(hass, options)
     p1_ok = False
-    if source:
-        if source.startswith("dsmr:"):
-            dsmr_entry = hass.config_entries.async_get_entry(source.removeprefix("dsmr:"))
-            name = f"P1-meter (DSMR {dsmr_entry.title if dsmr_entry else '?'})"
-        else:
-            state = hass.states.get(source)
-            name = f"P1-meter ({state.name if state else source})"
-        p1_ok = fresh_p1_power(hass, source, now)[0] is not None
+    if meter is not None:
+        state = hass.states.get(meter.import_entity)
+        name = f"P1-meter ({state.name if state else meter.import_entity})"
+        p1_ok = fresh_p1_power(hass, meter, now)[0] is not None
         meters.append({"name": name, "active": p1_ok, "error": not p1_ok})
     runtime = getattr(entry, "runtime_data", None)
     modbus_data = (runtime.modbus_coordinator.data if runtime else None) or {}
@@ -1691,9 +1630,9 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         month-peak sensor is gone too, so the cap falls back to the slider
         (see _effective_max_grid_load_wh).
         """
-        source = self.config_entry.options.get(CONF_HOUSE_LOAD_POWER_ENTITY)
-        if source:
-            power, measured_at = fresh_p1_power(self.hass, source, now)
+        meter = configured_grid_meter(self.hass, self.config_entry.options)
+        if meter is not None:
+            power, measured_at = fresh_p1_power(self.hass, meter, now)
             if power is not None:
                 if self._p1_fallback:
                     LOGGER.info("dispatch: P1 meter reading back -- regulating on it again")

@@ -89,10 +89,12 @@
             },
             "meter": {
                 "title": "Smart meter",
-                "description": "P1/smart-meter sensors for live house load and the monthly peak.",
+                "description": "Your smart (P1) meter's sensors, each picked on its own so any P1 integration works. They give the house load and the grid import the grid charge is regulated on. If your meter gives the net power in one sensor (positive when importing, negative when exporting), leave export empty. Without a meter the inverter's own grid reading is used.",
                 "data": {
-                    "house_load_power_entity": "House load power sensor (P1)",
-                    "peak_load_this_month_entity": "Peak load this month sensor (capaciteitstarief)"
+                    "grid_import_power_entity": "Grid import: power (or the net power)",
+                    "grid_export_power_entity": "Grid export: power",
+                    "grid_tariff_entity": "Active tariff (day/night, for the network fee)",
+                    "peak_load_this_month_entity": "Peak load this month (capacity tariff)"
                 }
             },
             "control": {

@@ -111,6 +111,11 @@ DEFAULT_EXTRA_PV_MODBUS_ON_VALUE = 100
 DEFAULT_EXTRA_PV_MODBUS_OFF_VALUE = 0
 
 CONF_HOUSE_LOAD_POWER_ENTITY = "house_load_power_entity"
+# The smart meter's sensors, each picked on its own (see meter.py) --
+# replace CONF_HOUSE_LOAD_POWER_ENTITY, which is still read until saved.
+CONF_GRID_IMPORT_POWER_ENTITY = "grid_import_power_entity"
+CONF_GRID_EXPORT_POWER_ENTITY = "grid_export_power_entity"
+CONF_GRID_TARIFF_ENTITY = "grid_tariff_entity"
 # Optional EV charger sensors -- display only, not used for control: live
 # power (the panel's energy-flow scene splits the house load into rooms and
 # charger) and the cumulative energy counter (per-day totals in the panel).

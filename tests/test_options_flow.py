@@ -11,8 +11,6 @@ from custom_components.alpha_ess_local.config_flow import (
     SMA_PV_POWER_AGGREGATE_KEY,
     SMA_PV_POWER_STRING_KEY,
     _extra_pv_candidates,
-    _house_load_candidates,
-    _peak_load_candidates,
 )
 from custom_components.alpha_ess_local.const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
@@ -24,6 +22,9 @@ from custom_components.alpha_ess_local.const import (
     CONF_EXTRA_PV_POWER_ENTITY,
     CONF_FORECAST_SOLAR_ENTRIES,
     CONF_FRANK_ENERGIE_PRICE_ENTITY,
+    CONF_GRID_EXPORT_POWER_ENTITY,
+    CONF_GRID_IMPORT_POWER_ENTITY,
+    CONF_GRID_TARIFF_ENTITY,
     CONF_HOUSE_LOAD_POWER_ENTITY,
     CONF_NETWORK_USE_FEE_LOW,
     CONF_NETWORK_USE_FEE_NORMAL,
@@ -455,133 +456,105 @@ async def test_options_flow_solar_note_shows_the_summed_locations(
     assert result["description_placeholders"]["sources_note"] == ""
 
 
-# --- house-load auto-detect (HomeWizard P1 / DSMR) --------------------------
+# --- smart meter --------------------------------------------------------------
 
 
-def test_house_load_candidates_empty_when_nothing_installed(hass: HomeAssistant):
-    assert _house_load_candidates(hass) == []
-
-
-def test_house_load_candidates_detects_homewizard_active_power(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="homewizard", title="P1 meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    entry = registry.async_get_or_create(
-        "sensor",
-        "homewizard",
-        "abc123_active_power_w",
-        config_entry=config_entry,
-        suggested_object_id="p1_meter_active_power",
-    )
-
-    candidates = _house_load_candidates(hass)
-
-    assert candidates == [(entry.entity_id, "P1 meter")]
-
-
-def test_house_load_candidates_ignores_other_homewizard_sensors(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="homewizard", title="Socket")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    registry.async_get_or_create(
-        "sensor",
-        "homewizard",
-        "abc123_total_power_import_kwh",
-        config_entry=config_entry,
-    )
-
-    assert _house_load_candidates(hass) == []
-
-
-def test_house_load_candidates_detects_dsmr_pair(hass: HomeAssistant):
+def _register_dsmr(hass: HomeAssistant) -> tuple[str, dict[str, str]]:
+    """A DSMR config entry with its usage/delivery/tariff sensors."""
     config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
     config_entry.add_to_hass(hass)
     registry = er.async_get(hass)
-    registry.async_get_or_create(
-        "sensor",
-        "dsmr",
-        "serial123_current_electricity_usage",
-        config_entry=config_entry,
-    )
-    registry.async_get_or_create(
-        "sensor",
-        "dsmr",
-        "serial123_current_electricity_delivery",
-        config_entry=config_entry,
-    )
-
-    candidates = _house_load_candidates(hass)
-
-    assert candidates == [(f"dsmr:{config_entry.entry_id}", "Slimme meter")]
+    return config_entry.entry_id, {
+        name: registry.async_get_or_create(
+            "sensor", "dsmr", f"serial123_{suffix}", config_entry=config_entry
+        ).entity_id
+        for name, suffix in (
+            ("usage", "current_electricity_usage"),
+            ("delivery", "current_electricity_delivery"),
+            ("tariff", "electricity_active_tariff"),
+        )
+    }
 
 
-async def test_options_flow_house_load_field_is_checklist_when_detected(
+async def test_options_flow_meter_fields_are_free_entity_pickers(
     hass: HomeAssistant, mock_api_client
 ):
-    dsmr_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    dsmr_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_current_electricity_usage", config_entry=dsmr_entry
-    )
-    registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_current_electricity_delivery", config_entry=dsmr_entry
-    )
     entry = await _create_entry(hass, mock_api_client)
 
     result = await _open_section(hass, entry, "meter")
 
-    marker = next(k for k in result["data_schema"].schema if k == CONF_HOUSE_LOAD_POWER_ENTITY)
-    field_selector = result["data_schema"].schema[marker]
-    options = field_selector.config["options"]
-    assert options == [{"value": f"dsmr:{dsmr_entry.entry_id}", "label": "Slimme meter"}]
+    assert [str(key) for key in result["data_schema"].schema] == [
+        CONF_GRID_IMPORT_POWER_ENTITY,
+        CONF_GRID_EXPORT_POWER_ENTITY,
+        CONF_GRID_TARIFF_ENTITY,
+        CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
+    ]
+    for marker, field_selector in result["data_schema"].schema.items():
+        assert "options" not in field_selector.config, marker
+        assert _suggested_value_for(result["data_schema"], str(marker)) is None
 
 
-async def test_options_flow_house_load_field_falls_back_to_entity_selector(
+async def test_options_flow_meter_prefills_a_detected_dsmr_meter(
     hass: HomeAssistant, mock_api_client
 ):
-    """With nothing auto-detected, the field stays a manual pick-any-sensor selector."""
+    _, sensors = _register_dsmr(hass)
     entry = await _create_entry(hass, mock_api_client)
 
     result = await _open_section(hass, entry, "meter")
 
-    marker = next(k for k in result["data_schema"].schema if k == CONF_HOUSE_LOAD_POWER_ENTITY)
-    field_selector = result["data_schema"].schema[marker]
-    assert "options" not in field_selector.config
+    schema = result["data_schema"]
+    assert _suggested_value_for(schema, CONF_GRID_IMPORT_POWER_ENTITY) == sensors["usage"]
+    assert _suggested_value_for(schema, CONF_GRID_EXPORT_POWER_ENTITY) == sensors["delivery"]
+    assert _suggested_value_for(schema, CONF_GRID_TARIFF_ENTITY) == sensors["tariff"]
 
 
-# --- peak-load-this-month auto-detect (DSMR Belgian 5B meters) --------------
-
-
-def test_peak_load_candidates_empty_when_nothing_installed(hass: HomeAssistant):
-    assert _peak_load_candidates(hass) == []
-
-
-def test_peak_load_candidates_detects_belgian_maximum_demand_sensor(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    entry_reg = registry.async_get_or_create(
-        "sensor",
-        "dsmr",
-        "serial123_belgium_maximum_demand_current_month",
-        config_entry=config_entry,
+async def test_options_flow_meter_prefills_and_replaces_the_old_dsmr_source(
+    hass: HomeAssistant, mock_api_client
+):
+    """Saved the old way (one DSMR source): the form shows its sensors, and
+    saving stores them apart and drops the old key."""
+    dsmr_id, sensors = _register_dsmr(hass)
+    entry = await _create_entry(hass, mock_api_client)
+    hass.config_entries.async_update_entry(
+        entry, options={CONF_HOUSE_LOAD_POWER_ENTITY: f"dsmr:{dsmr_id}"}
     )
 
-    candidates = _peak_load_candidates(hass)
-
-    assert candidates == [(entry_reg.entity_id, "Slimme meter")]
-
-
-def test_peak_load_candidates_ignores_unrelated_dsmr_sensors(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_current_electricity_usage", config_entry=config_entry
+    result = await _open_section(hass, entry, "meter")
+    assert (
+        _suggested_value_for(result["data_schema"], CONF_GRID_EXPORT_POWER_ENTITY)
+        == (sensors["delivery"])
     )
 
-    assert _peak_load_candidates(hass) == []
+    await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_GRID_IMPORT_POWER_ENTITY: sensors["usage"],
+            CONF_GRID_EXPORT_POWER_ENTITY: sensors["delivery"],
+            CONF_GRID_TARIFF_ENTITY: sensors["tariff"],
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert entry.options[CONF_GRID_IMPORT_POWER_ENTITY] == sensors["usage"]
+    assert entry.options[CONF_GRID_EXPORT_POWER_ENTITY] == sensors["delivery"]
+    assert entry.options[CONF_GRID_TARIFF_ENTITY] == sensors["tariff"]
+    assert CONF_HOUSE_LOAD_POWER_ENTITY not in entry.options
+
+
+async def test_options_flow_meter_saved_empty_isnt_prefilled_again(
+    hass: HomeAssistant, mock_api_client
+):
+    """Cleared on purpose: reopening doesn't bring the detected meter back."""
+    _register_dsmr(hass)
+    entry = await _create_entry(hass, mock_api_client)
+    await _save_section(hass, entry, "meter", {})
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, CONF_GRID_IMPORT_POWER_ENTITY: None}
+    )
+
+    result = await _open_section(hass, entry, "meter")
+
+    assert _suggested_value_for(result["data_schema"], CONF_GRID_IMPORT_POWER_ENTITY) is None
 
 
 async def test_options_flow_peak_load_field_stays_a_free_entity_picker(

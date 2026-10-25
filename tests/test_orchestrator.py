@@ -49,16 +49,12 @@ from custom_components.alpha_ess_local.orchestrator import (
     AlphaEssLocalDispatchCoordinator,
     AlphaEssLocalRealDataCoordinator,
     AlphaEssLocalScheduleCoordinator,
-    _dsmr_net_power,
-    _dsmr_tariff_indicator,
     _effective_max_grid_load_wh,
     _effective_use_fee,
     _entity_power,
     _extra_pv_power,
     _forecast_rows,
     _grid_to_battery,
-    _house_load_power,
-    _house_load_tariff,
     _inverter_down,
     _keep_past_hours,
     _number_entity_value,
@@ -3001,107 +2997,6 @@ def test_switch_entity_value_falls_back_when_unavailable(hass: HomeAssistant):
     hass.states.async_set(entity_id, "unavailable")
 
     assert _switch_entity_value(hass, entry, "discharge_enabled", True) is True
-
-
-def test_dsmr_net_power_subtracts_delivery_from_usage(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    usage = registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_current_electricity_usage", config_entry=config_entry
-    )
-    delivery = registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_current_electricity_delivery", config_entry=config_entry
-    )
-    hass.states.async_set(usage.entity_id, "0.5", {"unit_of_measurement": "kW"})
-    hass.states.async_set(delivery.entity_id, "0.1", {"unit_of_measurement": "kW"})
-
-    assert _dsmr_net_power(hass, config_entry.entry_id) == 400.0  # 500W use - 100W feed-in
-
-
-def test_dsmr_net_power_none_when_siblings_missing(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-
-    assert _dsmr_net_power(hass, config_entry.entry_id) is None
-
-
-def test_house_load_power_resolves_plain_entity_id(hass: HomeAssistant):
-    hass.states.async_set("sensor.p1_power", "250", {"unit_of_measurement": "W"})
-    assert _house_load_power(hass, "sensor.p1_power") == 250.0
-
-
-def test_house_load_power_resolves_dsmr_reference(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    usage = registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_current_electricity_usage", config_entry=config_entry
-    )
-    delivery = registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_current_electricity_delivery", config_entry=config_entry
-    )
-    hass.states.async_set(usage.entity_id, "0.5", {"unit_of_measurement": "kW"})
-    hass.states.async_set(delivery.entity_id, "0.0", {"unit_of_measurement": "kW"})
-
-    assert _house_load_power(hass, f"dsmr:{config_entry.entry_id}") == 500.0
-
-
-def test_house_load_power_none_when_unset():
-    assert _house_load_power(None, None) is None
-
-
-def test_dsmr_tariff_indicator_reads_active_tariff_state(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    tariff = registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_electricity_active_tariff", config_entry=config_entry
-    )
-    hass.states.async_set(tariff.entity_id, "low")
-
-    assert _dsmr_tariff_indicator(hass, config_entry.entry_id) == "low"
-
-
-def test_dsmr_tariff_indicator_none_when_unavailable(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    tariff = registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_electricity_active_tariff", config_entry=config_entry
-    )
-    hass.states.async_set(tariff.entity_id, "unavailable")
-
-    assert _dsmr_tariff_indicator(hass, config_entry.entry_id) is None
-
-
-def test_dsmr_tariff_indicator_none_when_sibling_missing(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-
-    assert _dsmr_tariff_indicator(hass, config_entry.entry_id) is None
-
-
-def test_house_load_tariff_resolves_dsmr_reference(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    tariff = registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_electricity_active_tariff", config_entry=config_entry
-    )
-    hass.states.async_set(tariff.entity_id, "normal")
-
-    assert _house_load_tariff(hass, f"dsmr:{config_entry.entry_id}") == "normal"
-
-
-def test_house_load_tariff_none_for_plain_entity_id(hass: HomeAssistant):
-    # HomeWizard P1/plain-entity house-load sources have no known
-    # tariff-indicator convention here -- explicitly out of scope.
-    assert _house_load_tariff(hass, "sensor.p1_power") is None
-
-
-def test_house_load_tariff_none_when_unset():
-    assert _house_load_tariff(None, None) is None
 
 
 def test_effective_use_fee_adds_normal_network_fee_for_normal_tariff():

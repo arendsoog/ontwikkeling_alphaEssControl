@@ -39,6 +39,9 @@ from .const import (
     CONF_EXTRA_PV_STRING_ENTITIES,
     CONF_FORECAST_SOLAR_ENTRIES,
     CONF_FRANK_ENERGIE_PRICE_ENTITY,
+    CONF_GRID_EXPORT_POWER_ENTITY,
+    CONF_GRID_IMPORT_POWER_ENTITY,
+    CONF_GRID_TARIFF_ENTITY,
     CONF_HOUSE_LOAD_POWER_ENTITY,
     CONF_INVERTER_NOMINAL_POWER,
     CONF_NETWORK_USE_FEE_LOW,
@@ -74,6 +77,7 @@ from .const import (
     DOMAIN,
     LOGGER,
 )
+from .meter import configured_grid_meter, detected_meter_sensors, detected_peak_sensor
 from .prices import configured_price_entities, is_price_entity
 from .solar import SOLAR_SOURCES, configured_solar_sources, solar_source_name
 
@@ -97,58 +101,6 @@ def _count_selector() -> selector.NumberSelector:
     return selector.NumberSelector(
         selector.NumberSelectorConfig(mode=selector.NumberSelectorMode.BOX, min=0, step=1)
     )
-
-
-def _house_load_candidates(hass: HomeAssistant) -> list[tuple[str, str]]:
-    """Auto-detect P1/smart-meter sources usable for real-time house load.
-
-    Two shapes, both matched by their entities' unique_id suffix (stable
-    across locales, unlike entity_id/friendly_name):
-    - HomeWizard P1 (`homewizard` integration): a single `*_active_power_w`
-      sensor already reports signed net power (positive=use, negative=feed)
-      — usable directly, so the candidate value is that entity_id.
-    - DSMR (`dsmr` integration): usage/delivery are two separate, always-
-      positive sensors (`*_current_electricity_usage`/`..._delivery`) — the
-      candidate value is the config entry ("dsmr:<entry_id>"), resolved to
-      both sibling entities and netted (usage - delivery) at read time —
-      see orchestrator.py's house-load reader.
-    """
-    registry = er.async_get(hass)
-    candidates: list[tuple[str, str]] = []
-
-    for entry in hass.config_entries.async_entries("homewizard"):
-        for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
-            if reg_entry.domain == "sensor" and reg_entry.unique_id.endswith("_active_power_w"):
-                candidates.append((reg_entry.entity_id, entry.title))
-
-    for entry in hass.config_entries.async_entries("dsmr"):
-        reg_entries = er.async_entries_for_config_entry(registry, entry.entry_id)
-        if any(e.unique_id.endswith("_current_electricity_usage") for e in reg_entries):
-            candidates.append((f"dsmr:{entry.entry_id}", entry.title))
-
-    return candidates
-
-
-# DSMR's own "belgium_maximum_demand_current_month" sensor -- the highest
-# monthly 15-minute-average peak, published only by Belgian "5B" meters
-# (verified against homeassistant/components/dsmr/sensor.py). Exactly what
-# CONF_PEAK_LOAD_THIS_MONTH_ENTITY wants (the capaciteitstarief floor), so
-# it's worth auto-detecting like the other DSMR-derived fields above,
-# instead of leaving that field a plain pick-any-sensor selector.
-_DSMR_PEAK_LOAD_KEY = "belgium_maximum_demand_current_month"
-
-
-def _peak_load_candidates(hass: HomeAssistant) -> list[tuple[str, str]]:
-    """Auto-detect DSMR's own peak-load-this-month sensor (Belgian 5B meters)."""
-    registry = er.async_get(hass)
-    candidates: list[tuple[str, str]] = []
-    for entry in hass.config_entries.async_entries("dsmr"):
-        for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
-            if reg_entry.domain == "sensor" and reg_entry.unique_id.endswith(
-                f"_{_DSMR_PEAK_LOAD_KEY}"
-            ):
-                candidates.append((reg_entry.entity_id, entry.title))
-    return candidates
 
 
 # pysma's internal register keys for its PV-power sensors, verified directly
@@ -590,39 +542,50 @@ def _ev_charger_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sect
 
 
 def _meter_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """Smart-meter (P1/DSMR) sources: live house load and monthly peak."""
-    house_load_candidates = _house_load_candidates(hass)
-    peak_load_candidates = _peak_load_candidates(hass)
+    """The smart (P1) meter's sensors, each picked on its own so any P1
+    integration works -- see meter.py.
+
+    Pre-filled with the saved meter (also one saved the old way, as a single
+    house-load source); with none saved yet, with a detected DSMR/HomeWizard
+    meter's sensors. The month's peak is pre-filled with a detected sensor
+    whenever none is saved (as before).
+    """
+    meter = configured_grid_meter(hass, options)
+    if meter is not None:
+        suggested = {
+            CONF_GRID_IMPORT_POWER_ENTITY: meter.import_entity,
+            CONF_GRID_EXPORT_POWER_ENTITY: meter.export_entity,
+            CONF_GRID_TARIFF_ENTITY: meter.tariff_entity,
+        }
+    elif CONF_GRID_IMPORT_POWER_ENTITY in options or CONF_HOUSE_LOAD_POWER_ENTITY in options:
+        suggested = {}
+    else:
+        suggested = detected_meter_sensors(hass)
+
+    def power_field(key: str) -> tuple[Any, Any]:
+        return (
+            vol.Optional(key, description={"suggested_value": suggested.get(key)}),
+            selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="power")
+            ),
+        )
+
     return [
+        power_field(CONF_GRID_IMPORT_POWER_ENTITY),
+        power_field(CONF_GRID_EXPORT_POWER_ENTITY),
         (
             vol.Optional(
-                CONF_HOUSE_LOAD_POWER_ENTITY,
-                description={"suggested_value": options.get(CONF_HOUSE_LOAD_POWER_ENTITY)},
+                CONF_GRID_TARIFF_ENTITY,
+                description={"suggested_value": suggested.get(CONF_GRID_TARIFF_ENTITY)},
             ),
-            # Tick a detected P1/smart-meter source (HomeWizard P1, DSMR) when
-            # any exist; otherwise fall back to a manual pick-any-sensor
-            # selector — unlike the price/solar sources, "no match" here
-            # just means an undetected meter brand, not a missing integration,
-            # so this field is never simply omitted.
-            _value_label_checklist(house_load_candidates)
-            if house_load_candidates
-            else selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
+            selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
         ),
         (
             vol.Optional(
                 CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
-                # Pre-fills with the previously saved value if there is one;
-                # otherwise with DSMR's own "belgium_maximum_demand_current_
-                # month" sensor when detected (Belgian 5B meters). Always a
-                # plain pick-any-sensor selector (not a locked checklist like
-                # house-load/extra-PV) -- unlike those, this field has
-                # no "wrong" alternative to guard against, so it should
-                # always be free to point at any sensor, auto-detected or
-                # not, shown by its own friendly name rather than the DSMR
-                # hub's host:port title.
                 description={
                     "suggested_value": options.get(CONF_PEAK_LOAD_THIS_MONTH_ENTITY)
-                    or (peak_load_candidates[0][0] if peak_load_candidates else None)
+                    or detected_peak_sensor(hass)
                 },
             ),
             selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
@@ -689,6 +652,7 @@ _SUPERSEDED_KEYS = {
         CONF_FRANK_ENERGIE_PRICE_ENTITY,
         CONF_PRICE_SOURCE_PRIMARY,
     },
+    "meter": {CONF_HOUSE_LOAD_POWER_ENTITY},
     "solar_forecast": {
         CONF_FORECAST_SOLAR_ENTRIES,
         CONF_SOLCAST_ENTRIES,
