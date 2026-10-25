@@ -75,7 +75,7 @@ from .const import (
     LOGGER,
 )
 from .prices import configured_price_entities, is_price_entity
-from .solar import SOLAR_SOURCES, configured_solar_sources
+from .solar import SOLAR_SOURCES, configured_solar_sources, solar_source_name
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -208,6 +208,37 @@ def _missing_source_note(hass: HomeAssistant, missing: list[str]) -> str:
     if hass.config.language.startswith("nl"):
         return f"\n\nGeen {sources} integratie gevonden — installeer er één voor deze functie."
     return f"\n\nNo {sources} integration found — install one to enable this feature."
+
+
+def _solar_sources_note(hass: HomeAssistant, options: Mapping[str, Any]) -> str:
+    """How the saved location list is read: per source, its summed locations.
+
+    The entity list itself can't show the grouping, so the form states it --
+    the same sources in the same order as solar.py tries them.
+    """
+    sources = configured_solar_sources(hass, options)
+    if not sources:
+        return ""
+    dutch = hass.config.language.startswith("nl")
+    parts = []
+    for index, (source, entry_ids) in enumerate(sources, start=1):
+        titles = [
+            entry.title
+            for entry_id in entry_ids
+            if (entry := hass.config_entries.async_get_entry(entry_id)) is not None
+        ]
+        part = f"{index}. {solar_source_name(source)}: {' + '.join(titles)}"
+        if len(titles) > 1:
+            part += " (opgeteld)" if dutch else " (summed)"
+        if index > 1:
+            part += " (reserve)" if dutch else " (backup)"
+        parts.append(part)
+    label = "Nu gebruikt" if dutch else "In use now"
+    return f"\n\n**{label}:** " + " · ".join(parts)
+
+
+# Notes a section's description shows besides the missing-source note.
+_SECTION_NOTES = {"solar_forecast": _solar_sources_note}
 
 
 def _eur_per_kwh_selector(*, min_value: float | None = None) -> selector.NumberSelector:
@@ -806,6 +837,11 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
             step_id=section,
             data_schema=schema,
             description_placeholders={
-                "missing_source_note": _missing_source_note(self.hass, missing)
+                "missing_source_note": _missing_source_note(self.hass, missing),
+                "sources_note": (
+                    note(self.hass, self.config_entry.options)
+                    if (note := _SECTION_NOTES.get(section))
+                    else ""
+                ),
             },
         )

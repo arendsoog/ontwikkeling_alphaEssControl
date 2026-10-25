@@ -57,7 +57,7 @@
             },
             "solar_forecast": {
                 "title": "Solar forecast",
-                "description": "The solar forecast locations (e.g. Forecast.Solar or Solcast): pick one of each location's sensors and add more with 'Add entity'. Locations of the same service are summed (e.g. the front and back of the roof); the service on top is used, another service only as a backup.{missing_source_note}",
+                "description": "The solar forecast locations (e.g. Forecast.Solar or Solcast): pick one of each location's sensors and add more with 'Add entity'. Locations of the same service are summed (e.g. the front and back of the roof); the service on top is used, another service only as a backup. Locations of the same service stay together, wherever they are in the list.{sources_note}{missing_source_note}",
                 "data": {
                     "solar_forecast_entities": "Locations (in order; drag to change)"
                 }

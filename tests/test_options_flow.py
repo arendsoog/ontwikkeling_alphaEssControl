@@ -431,6 +431,30 @@ async def test_options_flow_solar_prefills_and_replaces_the_old_lists(
         assert key not in entry.options
 
 
+async def test_options_flow_solar_note_shows_the_summed_locations(
+    hass: HomeAssistant, mock_api_client
+):
+    """The form states how the list is read: one service's locations stay
+    summed together wherever they are in the list."""
+    _, back = _register_location(hass, "forecast_solar", "Achterkant")
+    _, front = _register_location(hass, "forecast_solar", "Voorkant")
+    _, home = _register_location(hass, "solcast_solar", "Home")
+    entry = await _create_entry(hass, mock_api_client)
+    hass.config_entries.async_update_entry(
+        entry, options={CONF_SOLAR_FORECAST_ENTITIES: [back, home, front]}
+    )
+
+    result = await _open_section(hass, entry, "solar_forecast")
+
+    assert result["description_placeholders"]["sources_note"] == (
+        "\n\n**In use now:** 1. Forecast.Solar: Achterkant + Voorkant (summed)"
+        " · 2. Solcast: Home (backup)"
+    )
+
+    result = await _open_section(hass, entry, "prices")
+    assert result["description_placeholders"]["sources_note"] == ""
+
+
 # --- house-load auto-detect (HomeWizard P1 / DSMR) --------------------------
 
 

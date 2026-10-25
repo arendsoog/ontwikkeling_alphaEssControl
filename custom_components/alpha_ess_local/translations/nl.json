@@ -57,7 +57,7 @@
             },
             "solar_forecast": {
                 "title": "Zonnevoorspelling",
-                "description": "De locaties voor de zonnevoorspelling (bijvoorbeeld Forecast.Solar of Solcast): kies per locatie een sensor ervan en voeg er met 'Entiteit toevoegen' meer toe. Locaties van dezelfde dienst worden opgeteld (bijvoorbeeld voor- en achterkant van het dak); de dienst die bovenaan staat wordt gebruikt, een andere dienst alleen als reserve.{missing_source_note}",
+                "description": "De locaties voor de zonnevoorspelling (bijvoorbeeld Forecast.Solar of Solcast): kies per locatie een sensor ervan en voeg er met 'Entiteit toevoegen' meer toe. Locaties van dezelfde dienst worden opgeteld (bijvoorbeeld voor- en achterkant van het dak); de dienst die bovenaan staat wordt gebruikt, een andere dienst alleen als reserve. Locaties van dezelfde dienst blijven samen, waar ze ook in de lijst staan.{sources_note}{missing_source_note}",
                 "data": {
                     "solar_forecast_entities": "Locaties (in volgorde; sleep om te wijzigen)"
                 }
