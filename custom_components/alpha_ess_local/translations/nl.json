@@ -89,12 +89,18 @@
             },
             "meter": {
                 "title": "Slimme meter",
-                "description": "De sensoren van je slimme meter (P1), elk apart te kiezen, zodat elke P1-integratie werkt. Daarmee berekent de app het huisverbruik en regelt hij het laden van het net. Geeft je meter het netto vermogen in één sensor (plus bij afname, min bij teruglevering), laat teruglevering dan leeg. Zonder meter gebruikt de app de netmeting van de omvormer.",
+                "description": "Kies hier de sensoren van je slimme meter (P1). Daarmee berekent de app het huisverbruik en regelt hij het laden van het net. Zonder meter gebruikt de app de netmeting van de omvormer.",
                 "data": {
-                    "grid_import_power_entity": "Afname van het net: vermogen (of het netto vermogen)",
-                    "grid_export_power_entity": "Teruglevering aan het net: vermogen",
-                    "grid_tariff_entity": "Actief tarief (dag/nacht, voor de netkosten)",
+                    "grid_import_power_entity": "Vermogen afname van het net",
+                    "grid_export_power_entity": "Vermogen teruglevering aan het net",
+                    "grid_tariff_entity": "Actief tarief (dag/nacht)",
                     "peak_load_this_month_entity": "Piekbelasting deze maand (capaciteitstarief)"
+                },
+                "data_description": {
+                    "grid_import_power_entity": "Het vermogen dat je nu van het net haalt, bijvoorbeeld 'Energieverbruik' van DSMR. Geeft je meter één sensor met plus bij afname en min bij teruglevering (zoals HomeWizard 'Vermogen'), kies die hier en laat teruglevering leeg.",
+                    "grid_export_power_entity": "Het vermogen dat je nu aan het net levert, bijvoorbeeld 'Energieproductie' van DSMR. Leeg laten als de sensor hierboven al plus en min geeft.",
+                    "grid_tariff_entity": "Het tarief van dit moment, bijvoorbeeld 'Actief tarief'. Daarmee rekent de app de netkosten voor dag of nacht. Optioneel.",
+                    "peak_load_this_month_entity": "De hoogste kwartierpiek van deze maand, bijvoorbeeld 'Maximale vraag huidige maand' (alleen Belgische meters). Het laden van het net mag tot deze piek gaan. Optioneel."
                 }
             },
             "control": {

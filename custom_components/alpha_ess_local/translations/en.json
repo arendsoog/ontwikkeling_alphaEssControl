@@ -89,12 +89,18 @@
             },
             "meter": {
                 "title": "Smart meter",
-                "description": "Your smart (P1) meter's sensors, each picked on its own so any P1 integration works. They give the house load and the grid import the grid charge is regulated on. If your meter gives the net power in one sensor (positive when importing, negative when exporting), leave export empty. Without a meter the inverter's own grid reading is used.",
+                "description": "Pick your smart (P1) meter's sensors here. They give the house load and the grid import the grid charge is regulated on. Without a meter the inverter's own grid reading is used.",
                 "data": {
-                    "grid_import_power_entity": "Grid import: power (or the net power)",
-                    "grid_export_power_entity": "Grid export: power",
-                    "grid_tariff_entity": "Active tariff (day/night, for the network fee)",
+                    "grid_import_power_entity": "Grid import power",
+                    "grid_export_power_entity": "Grid export power",
+                    "grid_tariff_entity": "Active tariff (day/night)",
                     "peak_load_this_month_entity": "Peak load this month (capacity tariff)"
+                },
+                "data_description": {
+                    "grid_import_power_entity": "The power drawn from the grid right now, e.g. DSMR's 'Power consumption'. If your meter has one sensor that is positive when importing and negative when exporting (like HomeWizard's 'Power'), pick it here and leave export empty.",
+                    "grid_export_power_entity": "The power fed into the grid right now, e.g. DSMR's 'Power production'. Leave empty when the sensor above is already positive and negative.",
+                    "grid_tariff_entity": "The current tariff, e.g. 'Active tariff', for the day or night network fee. Optional.",
+                    "peak_load_this_month_entity": "This month's highest 15-minute peak, e.g. 'Maximum demand current month' (Belgian meters only). The grid charge may go up to this peak. Optional."
                 }
             },
             "control": {
