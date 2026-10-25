@@ -57,11 +57,9 @@
             },
             "solar_forecast": {
                 "title": "Solar forecast",
-                "description": "Solar forecast locations. Per source the ticked locations are summed; one source is used, the second only when the first has no forecast.{missing_source_note}",
+                "description": "The solar forecast locations (e.g. Forecast.Solar or Solcast): pick one of each location's sensors and add more with 'Add entity'. Locations of the same service are summed (e.g. the front and back of the roof); the service on top is used, another service only as a backup.{missing_source_note}",
                 "data": {
-                    "forecast_solar_entries": "Forecast.Solar locations",
-                    "solcast_entries": "Solcast locations",
-                    "solar_source_primary": "Forecast order (2 = fallback when 1 has no forecast)"
+                    "solar_forecast_entities": "Locations (in order; drag to change)"
                 }
             },
             "extra_pv": {

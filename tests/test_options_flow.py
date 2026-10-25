@@ -34,6 +34,7 @@ from custom_components.alpha_ess_local.const import (
     CONF_PV_PANEL_COUNT,
     CONF_PV_PANEL_WP,
     CONF_PV_POWER,
+    CONF_SOLAR_FORECAST_ENTITIES,
     CONF_SOLAR_SOURCE_PRIMARY,
     CONF_SOLCAST_ENTRIES,
     DEFAULT_APPLY_VAT_ON_RETURN,
@@ -249,46 +250,60 @@ async def test_options_flow_computes_extra_pv_capacity_from_panel_fields(
     assert entry.options[CONF_EXTRA_PV_POWER_CAPACITY] == 4860
 
 
-async def test_options_flow_omits_solar_checklists_when_no_source_integrations(
+async def test_options_flow_solar_note_when_no_forecast_integration(
     hass: HomeAssistant, mock_api_client
 ):
-    """No Forecast.Solar/Solcast entries -> those fields aren't shown at all."""
+    """No Forecast.Solar/Solcast locations: the note says so."""
     entry = await _create_entry(hass, mock_api_client)
 
     result = await _open_section(hass, entry, "solar_forecast")
 
-    keys = list(result["data_schema"].schema)
-    assert not any(key == CONF_FORECAST_SOLAR_ENTRIES for key in keys)
-    assert not any(key == CONF_SOLCAST_ENTRIES for key in keys)
     assert "Forecast.Solar" in result["description_placeholders"]["missing_source_note"]
     assert "Solcast" in result["description_placeholders"]["missing_source_note"]
 
 
-async def test_options_flow_shows_forecast_solar_checklist_with_real_entries(
+def _register_location(hass: HomeAssistant, domain: str, title: str) -> tuple[str, str]:
+    """A solar forecast location (config entry) with a couple of sensors;
+    returns its entry id and its "energy production today" sensor."""
+    config_entry = MockConfigEntry(domain=domain, title=title)
+    config_entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    registry.async_get_or_create(
+        "sensor", domain, f"{config_entry.entry_id}_power_production_now", config_entry=config_entry
+    )
+    today = registry.async_get_or_create(
+        "sensor",
+        domain,
+        f"{config_entry.entry_id}_energy_production_today",
+        config_entry=config_entry,
+    )
+    return config_entry.entry_id, today.entity_id
+
+
+async def test_options_flow_solar_offers_one_sensor_per_location(
     hass: HomeAssistant, mock_api_client
 ):
-    """A configured Forecast.Solar entry appears as a checklist option, by its title."""
-    forecast_solar_entry = MockConfigEntry(domain="forecast_solar", title="Achterkant")
-    forecast_solar_entry.add_to_hass(hass)
+    """Each location is offered by its "energy production today" sensor."""
+    _, back = _register_location(hass, "forecast_solar", "Achterkant")
+    _, home = _register_location(hass, "solcast_solar", "Home")
     entry = await _create_entry(hass, mock_api_client)
 
     result = await _open_section(hass, entry, "solar_forecast")
 
-    marker = next(k for k in result["data_schema"].schema if k == CONF_FORECAST_SOLAR_ENTRIES)
-    field_selector = result["data_schema"].schema[marker]
-    options = field_selector.config["options"]
-    assert options == [{"value": forecast_solar_entry.entry_id, "label": "Achterkant"}]
-    # Forecast.Solar is now configured, so only the Solcast half of the note remains.
-    assert "Forecast.Solar" not in result["description_placeholders"]["missing_source_note"]
-    assert "Solcast" in result["description_placeholders"]["missing_source_note"]
+    marker = next(k for k in result["data_schema"].schema if k == CONF_SOLAR_FORECAST_ENTITIES)
+    config = result["data_schema"].schema[marker].config
+    assert config["include_entities"] == [back, home]
+    assert config["multiple"] is True
+    assert config["reorder"] is True
+    assert result["description_placeholders"]["missing_source_note"] == ""
 
 
 async def test_options_flow_note_empty_when_both_sources_configured(
     hass: HomeAssistant, mock_api_client
 ):
     """No missing-source note once both Forecast.Solar and Solcast are configured."""
-    MockConfigEntry(domain="forecast_solar", title="Achterkant").add_to_hass(hass)
-    MockConfigEntry(domain="solcast_solar", title="Home").add_to_hass(hass)
+    _register_location(hass, "forecast_solar", "Achterkant")
+    _register_location(hass, "solcast_solar", "Home")
     _register_price_entity(hass, "entsoe", "entsoe_average_electricity_price_today", "prices_today")
     _register_price_entity(hass, "frank_energie", "frank_energie_prices", "prices")
     entry = await _create_entry(hass, mock_api_client)
@@ -381,18 +396,39 @@ async def test_options_flow_prices_note_when_no_price_sensor_exists(
     assert "Solcast" not in note
 
 
-async def test_options_flow_solar_fields_in_forecast_solar_then_solcast_order(
+async def test_options_flow_solar_prefills_and_replaces_the_old_lists(
     hass: HomeAssistant, mock_api_client
 ):
-    MockConfigEntry(domain="forecast_solar", title="Achterkant").add_to_hass(hass)
-    MockConfigEntry(domain="solcast_solar", title="Home").add_to_hass(hass)
+    """Saved before the list existed: the form shows the old locations in
+    the old order, and saving stores the list and drops the old keys."""
+    back_id, back = _register_location(hass, "forecast_solar", "Achterkant")
+    front_id, front = _register_location(hass, "forecast_solar", "Voorkant")
+    home_id, home = _register_location(hass, "solcast_solar", "Home")
     entry = await _create_entry(hass, mock_api_client)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            CONF_FORECAST_SOLAR_ENTRIES: [back_id, front_id],
+            CONF_SOLCAST_ENTRIES: [home_id],
+            CONF_SOLAR_SOURCE_PRIMARY: "solcast",
+        },
+    )
 
     result = await _open_section(hass, entry, "solar_forecast")
+    assert _suggested_value_for(result["data_schema"], CONF_SOLAR_FORECAST_ENTITIES) == [
+        home,
+        back,
+        front,
+    ]
 
-    keys = [str(key) for key in result["data_schema"].schema]
-    # With both sources installed, their order (which is used first) too.
-    assert keys == [CONF_FORECAST_SOLAR_ENTRIES, CONF_SOLCAST_ENTRIES, CONF_SOLAR_SOURCE_PRIMARY]
+    await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_SOLAR_FORECAST_ENTITIES: [back, front, home]}
+    )
+    await hass.async_block_till_done()
+
+    assert entry.options[CONF_SOLAR_FORECAST_ENTITIES] == [back, front, home]
+    for key in (CONF_FORECAST_SOLAR_ENTRIES, CONF_SOLCAST_ENTRIES, CONF_SOLAR_SOURCE_PRIMARY):
+        assert key not in entry.options
 
 
 # --- house-load auto-detect (HomeWizard P1 / DSMR) --------------------------

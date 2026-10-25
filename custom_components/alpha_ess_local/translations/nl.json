@@ -57,11 +57,9 @@
             },
             "solar_forecast": {
                 "title": "Zonnevoorspelling",
-                "description": "Locaties voor de zonnevoorspelling. Per bron worden de aangevinkte locaties opgeteld; er wordt één bron gebruikt, de tweede alleen als de eerste geen voorspelling heeft.{missing_source_note}",
+                "description": "De locaties voor de zonnevoorspelling (bijvoorbeeld Forecast.Solar of Solcast): kies per locatie een sensor ervan en voeg er met 'Entiteit toevoegen' meer toe. Locaties van dezelfde dienst worden opgeteld (bijvoorbeeld voor- en achterkant van het dak); de dienst die bovenaan staat wordt gebruikt, een andere dienst alleen als reserve.{missing_source_note}",
                 "data": {
-                    "forecast_solar_entries": "Forecast.Solar locaties",
-                    "solcast_entries": "Solcast locaties",
-                    "solar_source_primary": "Volgorde voorspelling (2 = reserve als 1 geen voorspelling heeft)"
+                    "solar_forecast_entities": "Locaties (in volgorde; sleep om te wijzigen)"
                 }
             },
             "extra_pv": {

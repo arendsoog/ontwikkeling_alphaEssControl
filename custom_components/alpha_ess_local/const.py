@@ -71,6 +71,10 @@ CONF_FORECAST_SOLAR_ENTRIES = "forecast_solar_entries"
 CONF_SOLCAST_ENTRIES = "solcast_entries"
 DEFAULT_FORECAST_SOLAR_ENTRIES: list[str] = []
 DEFAULT_SOLCAST_ENTRIES: list[str] = []
+# One sensor per solar forecast location, standing for its config entry, in
+# the order the sources are tried -- replaces the two lists above and
+# CONF_SOLAR_SOURCE_PRIMARY, which are still read until it's saved.
+CONF_SOLAR_FORECAST_ENTITIES = "solar_forecast_entities"
 
 # Options flow: optional local sensors (config.ini [General])
 # "extra" = a second, separately-metered PV installation besides the main

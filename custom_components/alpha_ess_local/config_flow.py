@@ -52,6 +52,7 @@ from .const import (
     CONF_PV_PANEL_COUNT,
     CONF_PV_PANEL_WP,
     CONF_PV_POWER,
+    CONF_SOLAR_FORECAST_ENTITIES,
     CONF_SOLAR_SOURCE_PRIMARY,
     CONF_SOLCAST_ENTRIES,
     CONF_USABLE_BATTERY_CAPACITY,
@@ -64,20 +65,17 @@ from .const import (
     DEFAULT_EXTRA_PV_MODBUS_OFF_VALUE,
     DEFAULT_EXTRA_PV_MODBUS_ON_VALUE,
     DEFAULT_EXTRA_PV_MODBUS_SLAVE,
-    DEFAULT_FORECAST_SOLAR_ENTRIES,
     DEFAULT_NETWORK_USE_FEE,
     DEFAULT_PERSIST_DAILY_CHARGE_LIMIT,
     DEFAULT_PORT,
     DEFAULT_PROVIDER_RETURN_FEE,
     DEFAULT_PROVIDER_USE_FEE,
-    DEFAULT_SOLAR_SOURCE_PRIMARY,
-    DEFAULT_SOLCAST_ENTRIES,
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
 )
 from .prices import configured_price_entities, is_price_entity
-from .solar import SOLAR_SOURCES
+from .solar import SOLAR_SOURCES, configured_solar_sources
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -98,20 +96,6 @@ def _power_selector(unit: str) -> selector.NumberSelector:
 def _count_selector() -> selector.NumberSelector:
     return selector.NumberSelector(
         selector.NumberSelectorConfig(mode=selector.NumberSelectorMode.BOX, min=0, step=1)
-    )
-
-
-def _config_entry_checklist(entries: list[config_entries.ConfigEntry]) -> selector.SelectSelector:
-    """A checkbox list of config entries (e.g. one per roof plane/location)."""
-    return selector.SelectSelector(
-        selector.SelectSelectorConfig(
-            options=[
-                selector.SelectOptionDict(value=entry.entry_id, label=entry.title)
-                for entry in entries
-            ],
-            multiple=True,
-            mode=selector.SelectSelectorMode.LIST,
-        )
     )
 
 
@@ -271,21 +255,6 @@ def _installation_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Se
     ], []
 
 
-def _source_order_selector(sources: Mapping[str, str]) -> selector.SelectSelector:
-    """Pick which of two sources is used first (the other is the fallback)."""
-    return selector.SelectSelector(
-        selector.SelectSelectorConfig(
-            options=[
-                selector.SelectOptionDict(value=key, label=f"1. {name}  ·  2. {other}")
-                for key, name in sources.items()
-                for other_key, other in sources.items()
-                if other_key != key
-            ],
-            mode=selector.SelectSelectorMode.LIST,
-        )
-    )
-
-
 def _price_entity_candidates(hass: HomeAssistant) -> list[str]:
     """Sensors carrying day-ahead prices prices.py can read (ENTSO-e,
     Frank Energie, Nord Pool, ...), for the price-entity picker.
@@ -397,61 +366,60 @@ def _prices_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionF
     return fields, missing
 
 
+def _location_sensor(hass: HomeAssistant, entry_id: str) -> str | None:
+    """The sensor that stands for a solar forecast location (config entry)
+    in the options: its "energy production today", else its first sensor."""
+    sensors = [
+        reg_entry
+        for reg_entry in er.async_entries_for_config_entry(er.async_get(hass), entry_id)
+        if reg_entry.domain == "sensor" and not reg_entry.disabled_by
+    ]
+    preferred = next(
+        (
+            reg_entry
+            for reg_entry in sensors
+            if reg_entry.unique_id.endswith(("energy_production_today", "forecast_today"))
+        ),
+        sensors[0] if sensors else None,
+    )
+    return preferred.entity_id if preferred else None
+
+
 def _solar_forecast_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
     """Solar forecast sources.
 
-    A checklist of config entries (not entities) — Forecast.Solar/Solcast
-    only expose their full hourly forecast via HA's "energy platform" hook
-    (async_get_solar_forecast), keyed by config_entry_id. Any number of
-    entries can be ticked (e.g. one Forecast.Solar entry per roof
-    plane/location); their forecasts get summed together in solar.py.
-    Omitted entirely when there are no entries to pick from.
+    Forecast.Solar/Solcast expose their full hourly forecast only via HA's
+    "energy platform" hook (async_get_solar_forecast), keyed by config
+    entry -- so each location is picked by one of its sensors, standing for
+    its config entry. Picked one by one and dragged in order like the price
+    entities; the locations of one integration are summed (e.g. one
+    Forecast.Solar entry per roof plane), see solar.py.
     """
-    forecast_solar_entries = hass.config_entries.async_entries("forecast_solar")
-    solcast_entries = hass.config_entries.async_entries("solcast_solar")
-
-    fields: list[tuple[Any, Any]] = []
-    if forecast_solar_entries:
-        fields.append(
-            (
-                vol.Optional(
-                    CONF_FORECAST_SOLAR_ENTRIES,
-                    default=options.get(
-                        CONF_FORECAST_SOLAR_ENTRIES, DEFAULT_FORECAST_SOLAR_ENTRIES
-                    ),
-                ),
-                _config_entry_checklist(forecast_solar_entries),
-            )
-        )
-    if solcast_entries:
-        fields.append(
-            (
-                vol.Optional(
-                    CONF_SOLCAST_ENTRIES,
-                    default=options.get(CONF_SOLCAST_ENTRIES, DEFAULT_SOLCAST_ENTRIES),
-                ),
-                _config_entry_checklist(solcast_entries),
-            )
-        )
-    if forecast_solar_entries and solcast_entries:
-        fields.append(
-            (
-                vol.Optional(
-                    CONF_SOLAR_SOURCE_PRIMARY,
-                    default=options.get(CONF_SOLAR_SOURCE_PRIMARY, DEFAULT_SOLAR_SOURCE_PRIMARY),
-                ),
-                _source_order_selector(SOLAR_SOURCES),
-            )
-        )
-
-    missing = [
-        name
-        for name, found in (
-            ("Forecast.Solar", forecast_solar_entries),
-            ("Solcast", solcast_entries),
-        )
-        if not found
+    candidates = [
+        entity_id
+        for domain in SOLAR_SOURCES
+        for entry in hass.config_entries.async_entries(domain)
+        if (entity_id := _location_sensor(hass, entry.entry_id))
     ]
+    if CONF_SOLAR_FORECAST_ENTITIES in options:
+        configured = list(options[CONF_SOLAR_FORECAST_ENTITIES] or [])
+    else:
+        configured = [
+            entity_id
+            for _, entry_ids in configured_solar_sources(hass, options)
+            for entry_id in entry_ids
+            if (entity_id := _location_sensor(hass, entry_id))
+        ]
+
+    fields: list[tuple[Any, Any]] = [
+        (
+            vol.Optional(CONF_SOLAR_FORECAST_ENTITIES, description={"suggested_value": configured}),
+            _ordered_entities_selector(
+                [*candidates, *(entity for entity in configured if entity not in candidates)]
+            ),
+        )
+    ]
+    missing = [] if candidates or configured else ["Forecast.Solar / Solcast"]
     return fields, missing
 
 
@@ -689,6 +657,11 @@ _SUPERSEDED_KEYS = {
         CONF_ENTSOE_PRICE_ENTITY,
         CONF_FRANK_ENERGIE_PRICE_ENTITY,
         CONF_PRICE_SOURCE_PRIMARY,
+    },
+    "solar_forecast": {
+        CONF_FORECAST_SOLAR_ENTRIES,
+        CONF_SOLCAST_ENTRIES,
+        CONF_SOLAR_SOURCE_PRIMARY,
     },
 }
 

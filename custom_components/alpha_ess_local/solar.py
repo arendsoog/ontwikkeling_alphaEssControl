@@ -7,27 +7,89 @@ cross-integration hook, which already returns absolute Wh estimates,
 corrected for the panels' own configured orientation/tilt and local weather
 — see homeassistant.components.energy.types.SolarForecastType. Each source
 may have multiple config entries (e.g. one per roof orientation); those are
-summed together before the Forecast.Solar-vs-Solcast fallback is applied.
+summed together before falling back to the next source.
+
+The options flow's solar_forecast_entities is an ordered list of sensors,
+one per location, each standing for its config entry: a source is an
+integration (the locations of the same integration summed), tried in the
+order its first location appears.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date
+from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.loader import IntegrationNotFound, async_get_integration
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_FORECAST_SOLAR_ENTRIES,
+    CONF_SOLAR_FORECAST_ENTITIES,
+    CONF_SOLAR_SOURCE_PRIMARY,
+    CONF_SOLCAST_ENTRIES,
     DEFAULT_SOLAR_SOURCE_PRIMARY,
     LOGGER,
-    SOLAR_SOURCE_FORECAST_SOLAR,
     SOLAR_SOURCE_SOLCAST,
 )
 from .data import Day
 
-# Display names, in the default order of preference.
-SOLAR_SOURCES = {SOLAR_SOURCE_FORECAST_SOLAR: "Forecast.Solar", SOLAR_SOURCE_SOLCAST: "Solcast"}
+# The integrations with a solar forecast (an energy platform's
+# async_get_solar_forecast) offered in the options, by domain, with their
+# display names.
+SOLAR_SOURCES = {
+    "forecast_solar": "Forecast.Solar",
+    "solcast_solar": "Solcast",
+    "open_meteo_solar_forecast": "Open-Meteo Solar Forecast",
+}
+
+# A source: its integration's domain and the config entries (locations)
+# summed for it.
+SolarSource = tuple[str, list[str]]
+
+
+def solar_source_name(source: str) -> str:
+    """A source's display name."""
+    return SOLAR_SOURCES.get(source, source)
+
+
+def configured_solar_sources(hass: HomeAssistant, options: Mapping[str, Any]) -> list[SolarSource]:
+    """The solar forecast sources in the order they're tried.
+
+    Installations set up before solar_forecast_entities existed still have
+    the Forecast.Solar and Solcast location lists plus which goes first;
+    those are read the same way until the solar forecast is saved again.
+    """
+    if CONF_SOLAR_FORECAST_ENTITIES not in options:
+        legacy = [
+            ("forecast_solar", list(options.get(CONF_FORECAST_SOLAR_ENTRIES) or [])),
+            ("solcast_solar", list(options.get(CONF_SOLCAST_ENTRIES) or [])),
+        ]
+        if options.get(CONF_SOLAR_SOURCE_PRIMARY, DEFAULT_SOLAR_SOURCE_PRIMARY) == (
+            SOLAR_SOURCE_SOLCAST
+        ):
+            legacy.reverse()
+        return [(source, entry_ids) for source, entry_ids in legacy if entry_ids]
+
+    registry = er.async_get(hass)
+    sources: dict[str, list[str]] = {}
+    for entity_id in options[CONF_SOLAR_FORECAST_ENTITIES] or []:
+        reg_entry = registry.async_get(entity_id)
+        entry = (
+            hass.config_entries.async_get_entry(reg_entry.config_entry_id)
+            if reg_entry is not None and reg_entry.config_entry_id
+            else None
+        )
+        if entry is None:
+            LOGGER.debug("Solar forecast: %s belongs to no location (any more)", entity_id)
+            continue
+        entry_ids = sources.setdefault(entry.domain, [])
+        if entry.entry_id not in entry_ids:
+            entry_ids.append(entry.entry_id)
+    return list(sources.items())
 
 
 async def get_solar_forecast(hass: HomeAssistant, config_entry_id: str) -> dict | None:
@@ -109,45 +171,32 @@ async def get_combined_solar_forecast(
 
 
 async def read_solar_forecast(
-    hass: HomeAssistant,
-    forecast_solar_entry_ids: list[str],
-    solcast_entry_ids: list[str],
-    target_date: date,
+    hass: HomeAssistant, sources: list[SolarSource], target_date: date
 ) -> dict[int, float] | None:
-    """Port of ReadEstimatedSolarPower: try Forecast.Solar planes, fall back to Solcast."""
-    return (
-        await read_solar_forecast_with_source(
-            hass, forecast_solar_entry_ids, solcast_entry_ids, target_date
-        )
-    )[0]
+    """Port of ReadEstimatedSolarPower: the first source's forecast, else the next."""
+    return (await read_solar_forecast_with_source(hass, sources, target_date))[0]
 
 
 async def read_solar_forecast_with_source(
-    hass: HomeAssistant,
-    forecast_solar_entry_ids: list[str],
-    solcast_entry_ids: list[str],
-    target_date: date,
-    primary: str = DEFAULT_SOLAR_SOURCE_PRIMARY,
+    hass: HomeAssistant, sources: list[SolarSource], target_date: date
 ) -> tuple[dict[int, float] | None, str]:
-    """The forecast from `primary` if it has one, else from the other source.
+    """The forecast of the first source in `sources` that has one.
 
     Each source's locations are summed. Also returns which source the
-    forecast came from ("" if neither had one).
+    forecast came from ("" if none had one).
     """
-    entries = {
-        SOLAR_SOURCE_FORECAST_SOLAR: forecast_solar_entry_ids,
-        SOLAR_SOURCE_SOLCAST: solcast_entry_ids,
-    }
-    for source in sorted(entries, key=lambda s: s != primary):
-        if not entries[source]:
+    for source, entry_ids in sources:
+        if not entry_ids:
             continue
-        hours = await get_combined_solar_forecast(hass, entries[source], target_date)
+        hours = await get_combined_solar_forecast(hass, entry_ids, target_date)
         if hours:
             LOGGER.debug(
-                "Found estimated solar power for %s (using %s)", target_date, SOLAR_SOURCES[source]
+                "Found estimated solar power for %s (using %s)",
+                target_date,
+                solar_source_name(source),
             )
             return hours, source
-        LOGGER.debug("No %s estimate for %s", SOLAR_SOURCES[source], target_date)
+        LOGGER.debug("No %s estimate for %s", solar_source_name(source), target_date)
 
     return None, ""
 
@@ -155,10 +204,8 @@ async def read_solar_forecast_with_source(
 async def build_day(
     hass: HomeAssistant,
     target_date: date,
-    forecast_solar_entry_ids: list[str],
-    solcast_entry_ids: list[str],
+    sources: list[SolarSource],
     hour_correction: dict[int, tuple[float, float]] | None = None,
-    primary: str = DEFAULT_SOLAR_SOURCE_PRIMARY,
 ) -> Day:
     """Build a Day of solar estimates for target_date from the configured sources.
 
@@ -171,9 +218,7 @@ async def build_day(
     """
     day = Day(year=target_date.year, mon=target_date.month, day=target_date.day)
 
-    hours, day.source = await read_solar_forecast_with_source(
-        hass, forecast_solar_entry_ids, solcast_entry_ids, target_date, primary
-    )
+    hours, day.source = await read_solar_forecast_with_source(hass, sources, target_date)
     if not hours:
         return day
 

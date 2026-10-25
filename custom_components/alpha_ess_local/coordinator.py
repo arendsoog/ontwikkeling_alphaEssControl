@@ -18,18 +18,12 @@ from .api import (
 )
 from .const import (
     CONF_APPLY_VAT_ON_RETURN,
-    CONF_FORECAST_SOLAR_ENTRIES,
     CONF_PROVIDER_RETURN_FEE,
     CONF_PROVIDER_USE_FEE,
-    CONF_SOLAR_SOURCE_PRIMARY,
-    CONF_SOLCAST_ENTRIES,
     CONF_VAT_PERCENTAGE,
     DEFAULT_APPLY_VAT_ON_RETURN,
-    DEFAULT_FORECAST_SOLAR_ENTRIES,
     DEFAULT_PROVIDER_RETURN_FEE,
     DEFAULT_PROVIDER_USE_FEE,
-    DEFAULT_SOLAR_SOURCE_PRIMARY,
-    DEFAULT_SOLCAST_ENTRIES,
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
@@ -40,6 +34,7 @@ from .orchestrator import get_db_path, hour_correction_from_mean
 from .prices import apply_earning_classification, configured_price_entities
 from .prices import build_day as build_price_day
 from .solar import build_day as build_solar_day
+from .solar import configured_solar_sources
 
 DAY_DATA_SCAN_INTERVAL = timedelta(minutes=30)
 
@@ -296,10 +291,7 @@ class AlphaEssLocalSolarCoordinator(DataUpdateCoordinator[dict[str, Day]]):
     async def _async_update_data(self) -> dict[str, Day]:
         """Rebuild today's and tomorrow's solar forecast from the configured entries."""
         options = self.config_entry.options
-        forecast_solar_entry_ids = options.get(
-            CONF_FORECAST_SOLAR_ENTRIES, DEFAULT_FORECAST_SOLAR_ENTRIES
-        )
-        solcast_entry_ids = options.get(CONF_SOLCAST_ENTRIES, DEFAULT_SOLCAST_ENTRIES)
+        sources = configured_solar_sources(self.hass, options)
 
         today = dt_util.now().date()
         tomorrow = today + timedelta(days=1)
@@ -310,21 +302,11 @@ class AlphaEssLocalSolarCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         )
         hour_correction = hour_correction_from_mean(mean)
 
-        primary = options.get(CONF_SOLAR_SOURCE_PRIMARY, DEFAULT_SOLAR_SOURCE_PRIMARY)
-        today_day = await build_solar_day(
-            self.hass, today, forecast_solar_entry_ids, solcast_entry_ids, hour_correction, primary
-        )
-        tomorrow_day = await build_solar_day(
-            self.hass,
-            tomorrow,
-            forecast_solar_entry_ids,
-            solcast_entry_ids,
-            hour_correction,
-            primary,
-        )
+        today_day = await build_solar_day(self.hass, today, sources, hour_correction)
+        tomorrow_day = await build_solar_day(self.hass, tomorrow, sources, hour_correction)
 
         self._retry_helper.note_result(
-            configured=bool(forecast_solar_entry_ids or solcast_entry_ids),
+            configured=bool(sources),
             found_data=today_day.valid,
             what="solar forecast",
         )

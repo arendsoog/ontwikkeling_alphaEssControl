@@ -34,7 +34,6 @@ from ..const import (
     CONF_EXTRA_PV_POWER_CAPACITY,
     CONF_EXTRA_PV_POWER_ENTITY,
     CONF_EXTRA_PV_STRING_ENTITIES,
-    CONF_FORECAST_SOLAR_ENTRIES,
     CONF_INVERTER_NOMINAL_POWER,
     CONF_NETWORK_USE_FEE_LOW,
     CONF_NETWORK_USE_FEE_NORMAL,
@@ -42,8 +41,6 @@ from ..const import (
     CONF_PROVIDER_RETURN_FEE,
     CONF_PROVIDER_USE_FEE,
     CONF_PV_POWER,
-    CONF_SOLAR_SOURCE_PRIMARY,
-    CONF_SOLCAST_ENTRIES,
     CONF_USABLE_BATTERY_CAPACITY,
     CONF_VAT_PERCENTAGE,
     DEFAULT_APPLY_VAT_ON_RETURN,
@@ -53,18 +50,15 @@ from ..const import (
     DEFAULT_PERSIST_DAILY_CHARGE_LIMIT,
     DEFAULT_PROVIDER_RETURN_FEE,
     DEFAULT_PROVIDER_USE_FEE,
-    DEFAULT_SOLAR_SOURCE_PRIMARY,
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
-    SOLAR_SOURCE_FORECAST_SOLAR,
-    SOLAR_SOURCE_SOLCAST,
 )
 from ..data import MAX_FIVE_MINS, Charge, Day
 from ..orchestrator import get_db_path, grid_meter_status
 from ..prices import configured_price_entities
 from ..schedule import set_charging_msg
-from ..solar import SOLAR_SOURCES
+from ..solar import configured_solar_sources, solar_source_name
 
 # Specific enough not to collide with a user's own dashboard: a Lovelace
 # dashboard named "AlphaESS" readily gets "alpha-ess" as its URL, which made
@@ -100,15 +94,11 @@ def _ws_panel_status(
         price_entities[0] if price_entities else "",
         _today_source(runtime.prices_coordinator),
     )
+    solar = configured_solar_sources(hass, options)
     solar_sources = source_list(
-        SOLAR_SOURCES,
-        {
-            SOLAR_SOURCE_FORECAST_SOLAR: _entry_titles(
-                hass, options.get(CONF_FORECAST_SOLAR_ENTRIES)
-            ),
-            SOLAR_SOURCE_SOLCAST: _entry_titles(hass, options.get(CONF_SOLCAST_ENTRIES)),
-        },
-        options.get(CONF_SOLAR_SOURCE_PRIMARY, DEFAULT_SOLAR_SOURCE_PRIMARY),
+        {source: solar_source_name(source) for source, _ in solar},
+        {source: _entry_titles(hass, entry_ids) for source, entry_ids in solar},
+        solar[0][0] if solar else "",
         _today_source(runtime.solar_coordinator),
     )
 
