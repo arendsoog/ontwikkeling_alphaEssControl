@@ -37,7 +37,6 @@ from homeassistant.util import dt as dt_util
 
 from . import AlphaEssLocalConfigEntry
 from .const import (
-    CONF_EXTRA_PV_POWER_ENTITY,
     CONF_PROVIDER_USE_FEE,
     CONF_VAT_PERCENTAGE,
     DEFAULT_PROVIDER_USE_FEE,
@@ -46,7 +45,8 @@ from .const import (
 from .data import MAX_HOURS, Day
 from .dispatch import set_dispatch_msg
 from .entity import AlphaEssLocalEntity
-from .orchestrator import extra_pv_source_entities, live_extra_pv_power
+from .extra_pv import extra_pv_power_entities
+from .orchestrator import read_extra_pv_power
 from .prices import mk_use_price
 from .schedule import set_charging_msg
 
@@ -605,22 +605,26 @@ class _LiveExtraPvMixin(SensorEntity):
 
     coordinator: DataUpdateCoordinator
 
-    def _extra_pv_source(self) -> str | None:
+    def _options(self) -> Mapping[str, Any]:
         entry = getattr(self.coordinator, "config_entry", None)
-        return entry.options.get(CONF_EXTRA_PV_POWER_ENTITY) if entry else None
+        return entry.options if entry else {}
 
     def _live_extra_pv(self) -> float | None:
         """The source's reading right now; else the cycle's value (which
         may be the estimate from the roof when the source gives nothing)."""
-        source = self._extra_pv_source()
-        live = live_extra_pv_power(self.hass, source) if source else None
+        options = self._options()
+        live = (
+            read_extra_pv_power(self.hass, options)
+            if extra_pv_power_entities(self.hass, options)
+            else None
+        )
         if live is not None:
             return live
         return self.coordinator.data.extra_pv_power if self.coordinator.data else None
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        sources = extra_pv_source_entities(self.hass, self._extra_pv_source())
+        sources = extra_pv_power_entities(self.hass, self._options())
         if sources:
             self.async_on_remove(
                 async_track_state_change_event(self.hass, sources, self._source_changed)

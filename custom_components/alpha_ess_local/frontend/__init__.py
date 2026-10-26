@@ -19,19 +19,15 @@ from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from .. import storage
-from ..config_flow import SMA_PV_POWER_STRING_KEY
 from ..const import (
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_EXTRA_PV_MODBUS_HUB,
     CONF_EXTRA_PV_POWER_CAPACITY,
-    CONF_EXTRA_PV_POWER_ENTITY,
-    CONF_EXTRA_PV_STRING_ENTITIES,
     CONF_INVERTER_NOMINAL_POWER,
     CONF_NETWORK_USE_FEE_LOW,
     CONF_NETWORK_USE_FEE_NORMAL,
@@ -58,6 +54,7 @@ from ..consumers import (
     ev_charger_power_entities,
 )
 from ..data import MAX_FIVE_MINS, Charge, Day
+from ..extra_pv import extra_pv_power_entities, extra_pv_string_entities, extra_pv_switch
 from ..orchestrator import get_db_path, grid_meter_status
 from ..prices import configured_price_entities
 from ..schedule import set_charging_msg
@@ -133,9 +130,10 @@ def _ws_panel_status(
             "ev_charger_power_entities": ev_charger_power_entities(options),
             "ev_charger_energy_entities": ev_charger_energy_entities(options),
             "ev_chargers": ev_charger_groups(hass, options),
-            "extra_pv_configured": bool(options.get(CONF_EXTRA_PV_POWER_ENTITY)),
+            "extra_pv_configured": bool(extra_pv_power_entities(hass, options)),
             "extra_pv_string_entities": extra_pv_string_entities(hass, options),
             "extra_pv_power_capacity": options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0),
+            "extra_pv_switch": extra_pv_switch(options),
             "extra_pv_modbus_hub": options.get(CONF_EXTRA_PV_MODBUS_HUB) or None,
             "extra_pv_unreachable": runtime.dispatch_coordinator.extra_pv_unreachable,
             "manual_override": None if override is None else set_charging_msg(override),
@@ -193,35 +191,6 @@ def _entry_titles(hass: HomeAssistant, entry_ids: list[str] | None) -> list[str]
         if entry is not None:
             titles.append(entry.title)
     return titles
-
-
-def extra_pv_string_entities(hass: HomeAssistant, options: Mapping[str, Any]) -> list[str]:
-    """The extra PV installation's power-per-string sensors, for the panel.
-
-    The ones picked in the options, else -- when the extra PV comes from the
-    SMA integration (its "sma:<entry>" sum, or one of its own sensors) --
-    that integration's enabled per-string power sensors (A, B, ...).
-    """
-    configured = options.get(CONF_EXTRA_PV_STRING_ENTITIES)
-    if configured:
-        return list(configured)
-    source = options.get(CONF_EXTRA_PV_POWER_ENTITY)
-    if not source:
-        return []
-    registry = er.async_get(hass)
-    if source.startswith("sma:"):
-        sma_entry_id = source.removeprefix("sma:")
-    else:
-        reg_entry = registry.async_get(source)
-        if reg_entry is None or reg_entry.platform != "sma":
-            return []
-        sma_entry_id = reg_entry.config_entry_id
-    strings = [
-        reg_entry
-        for reg_entry in er.async_entries_for_config_entry(registry, sma_entry_id)
-        if f"-{SMA_PV_POWER_STRING_KEY}_" in reg_entry.unique_id and not reg_entry.disabled
-    ]
-    return [reg_entry.entity_id for reg_entry in sorted(strings, key=lambda e: e.unique_id)]
 
 
 def today_power_payload(day: Day, now: datetime) -> dict[str, Any] | None:

@@ -37,7 +37,6 @@ from homeassistant.util import dt as dt_util
 
 from . import dispatch, storage
 from .api import AlphaEssLocalApiClientAuthenticationError, AlphaEssLocalApiClientError
-from .config_flow import SMA_PV_POWER_STRING_KEY
 from .const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_APPLY_VAT_ON_RETURN,
@@ -49,7 +48,6 @@ from .const import (
     CONF_EXTRA_PV_MODBUS_ON_VALUE,
     CONF_EXTRA_PV_MODBUS_SLAVE,
     CONF_EXTRA_PV_POWER_CAPACITY,
-    CONF_EXTRA_PV_POWER_ENTITY,
     CONF_INVERTER_NOMINAL_POWER,
     CONF_NETWORK_USE_FEE_LOW,
     CONF_NETWORK_USE_FEE_NORMAL,
@@ -93,6 +91,7 @@ from .data import (
     FiveMin,
     Hour,
 )
+from .extra_pv import extra_pv_power_entities, extra_pv_switch
 from .meter import GridMeter, configured_grid_meter, tariff_from_state
 from .prices import mk_return_price, mk_use_price
 from .protocol import DispatchMode, DispatchParam
@@ -558,25 +557,6 @@ def grid_meter_tariff(hass: HomeAssistant, meter: GridMeter | None) -> str | Non
     return tariff_from_state(state.state, hass.config.country)
 
 
-def _sma_pv_power(hass: HomeAssistant, config_entry_id: str) -> float | None:
-    """Sum pysma's per-MPPT-string power entities for one SMA inverter.
-
-    Used when the aggregate "pv_power" entity isn't available (it's disabled
-    by default in pysma) — see config_flow.py's SMA_PV_POWER_*_KEY for where
-    these register-key constants come from.
-    """
-    registry = er.async_get(hass)
-    total = 0.0
-    found = False
-    for reg_entry in er.async_entries_for_config_entry(registry, config_entry_id):
-        if f"-{SMA_PV_POWER_STRING_KEY}_" in reg_entry.unique_id:
-            power = _entity_power(hass, reg_entry.entity_id)
-            if power is not None:
-                total += power
-                found = True
-    return total if found else None
-
-
 # The inverter counts as down -- its data a frozen old copy -- only when it
 # hasn't answered any poll for this long: a dropped poll now and then (two
 # Modbus clients sharing the inverter, a busy proxy) is no outage.
@@ -603,37 +583,15 @@ def _estimated_extra_pv(pv_roof: float, options: Mapping[str, Any]) -> float | N
     return max(0.0, pv_roof) * extra_wp / roof_wp
 
 
-def _extra_pv_power(hass: HomeAssistant, value: str | None) -> float | None:
-    """Resolve the configured extra-PV source to a power value.
-
-    `value` is either a plain entity_id or a "sma:<config_entry_id>"
-    reference from the auto-detect checklist (config_flow.py's
-    `_extra_pv_candidates`), resolved by summing SMA's per-string entities.
-    """
-    if not value:
-        return None
-    if value.startswith("sma:"):
-        return _sma_pv_power(hass, value.removeprefix("sma:"))
-    return _entity_power(hass, value)
-
-
-def extra_pv_source_entities(hass: HomeAssistant, value: str | None) -> list[str]:
-    """The entity_id(s) behind the configured extra-PV source (see above)."""
-    if not value:
-        return []
-    if not value.startswith("sma:"):
-        return [value]
-    registry = er.async_get(hass)
-    return [
-        reg_entry.entity_id
-        for reg_entry in er.async_entries_for_config_entry(registry, value.removeprefix("sma:"))
-        if f"-{SMA_PV_POWER_STRING_KEY}_" in reg_entry.unique_id
+def read_extra_pv_power(hass: HomeAssistant, options: Mapping[str, Any]) -> float | None:
+    """The extra source's power right now: its power sensors summed, None
+    when none of them gives a reading (see extra_pv.py)."""
+    readings = [
+        power
+        for entity_id in extra_pv_power_entities(hass, options)
+        if (power := _entity_power(hass, entity_id)) is not None
     ]
-
-
-def live_extra_pv_power(hass: HomeAssistant, value: str | None) -> float | None:
-    """The extra-PV source's power right now (None without a reading)."""
-    return _extra_pv_power(hass, value)
+    return sum(readings) if readings else None
 
 
 @dataclass
@@ -995,9 +953,9 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         self._modbus_down = not modbus_ok
         pv_roof = modbus_data.get("pv_power", 0)
         battery_power = modbus_data.get("battery_power", 0)
-        extra_pv_power = _extra_pv_power(self.hass, self._extra_pv_entity_id())
+        extra_pv_power = read_extra_pv_power(self.hass, self.config_entry.options)
         estimated = False
-        if extra_pv_power is None and self._extra_pv_entity_id():
+        if extra_pv_power is None and extra_pv_power_entities(self.hass, self.config_entry.options):
             # The extra installation's reading is gone (unreachable, or an
             # SMA asleep at night): it sees the same sun as the roof, so
             # scale the roof's production by the two installations' peaks.
@@ -1182,9 +1140,6 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         return RealPowerData(
             day=self._today, extra_pv_power=extra_pv_power, yesterday_savings=yesterday_savings
         )
-
-    def _extra_pv_entity_id(self) -> str | None:
-        return self.config_entry.options.get(CONF_EXTRA_PV_POWER_ENTITY)
 
 
 class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
@@ -1836,47 +1791,55 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         # hub/register config be entered once and paused/resumed without
         # clearing it. Even when both are on, an actual write still only
         # happens when CONF_CONTROL_ENABLED is also on (logged either way).
+        extra_pv_switch_entity = extra_pv_switch(options)
         extra_pv_hub = options.get(CONF_EXTRA_PV_MODBUS_HUB)
         extra_pv_control_enabled = options.get(
             CONF_EXTRA_PV_CONTROL_ENABLED, DEFAULT_EXTRA_PV_CONTROL_ENABLED
         )
-        if extra_pv_hub and extra_pv_control_enabled:
+        if (extra_pv_switch_entity or extra_pv_hub) and extra_pv_control_enabled:
             extra_pv_state = dispatch.decide_extra_pv_state(hour, cur_soc)
             if extra_pv_state != self._last_extra_pv_state:
-                value = int(
-                    options.get(CONF_EXTRA_PV_MODBUS_ON_VALUE, DEFAULT_EXTRA_PV_MODBUS_ON_VALUE)
-                    if extra_pv_state == dispatch.ExtraPvState.ON
-                    else options.get(
-                        CONF_EXTRA_PV_MODBUS_OFF_VALUE, DEFAULT_EXTRA_PV_MODBUS_OFF_VALUE
+                turn_on = extra_pv_state == dispatch.ExtraPvState.ON
+                if extra_pv_switch_entity:
+                    # A switch (on = producing): homeassistant.turn_on/off
+                    # works for a switch and an input_boolean alike.
+                    target = extra_pv_switch_entity
+                    service: tuple[str, str, dict[str, Any]] = (
+                        "homeassistant",
+                        "turn_on" if turn_on else "turn_off",
+                        {"entity_id": extra_pv_switch_entity},
                     )
-                )
-                slave = int(options.get(CONF_EXTRA_PV_MODBUS_SLAVE, DEFAULT_EXTRA_PV_MODBUS_SLAVE))
-                address = int(
-                    options.get(CONF_EXTRA_PV_MODBUS_ADDRESS, DEFAULT_EXTRA_PV_MODBUS_ADDRESS)
-                )
+                else:
+                    # Set up before the switch: the Modbus hub settings.
+                    value = int(
+                        options.get(CONF_EXTRA_PV_MODBUS_ON_VALUE, DEFAULT_EXTRA_PV_MODBUS_ON_VALUE)
+                        if turn_on
+                        else options.get(
+                            CONF_EXTRA_PV_MODBUS_OFF_VALUE, DEFAULT_EXTRA_PV_MODBUS_OFF_VALUE
+                        )
+                    )
+                    slave = int(
+                        options.get(CONF_EXTRA_PV_MODBUS_SLAVE, DEFAULT_EXTRA_PV_MODBUS_SLAVE)
+                    )
+                    address = int(
+                        options.get(CONF_EXTRA_PV_MODBUS_ADDRESS, DEFAULT_EXTRA_PV_MODBUS_ADDRESS)
+                    )
+                    target = f"hub {extra_pv_hub}, slave {slave}, register {address} = {value}"
+                    service = (
+                        "modbus",
+                        "write_register",
+                        {"hub": extra_pv_hub, "slave": slave, "address": address, "value": value},
+                    )
                 LOGGER.info(
-                    "dispatch: extra PV -> %s (hub %s, slave %d, register %d = %d) — %s",
+                    "dispatch: extra PV -> %s (%s) — %s",
                     extra_pv_state.name,
-                    extra_pv_hub,
-                    slave,
-                    address,
-                    value,
-                    "writing" if control_enabled else "control disabled, not writing",
+                    target,
+                    "switching" if control_enabled else "control disabled, not switching",
                 )
                 written = True
                 if control_enabled:
                     try:
-                        await self.hass.services.async_call(
-                            "modbus",
-                            "write_register",
-                            {
-                                "hub": extra_pv_hub,
-                                "slave": slave,
-                                "address": address,
-                                "value": value,
-                            },
-                            blocking=True,
-                        )
+                        await self.hass.services.async_call(*service, blocking=True)
                     except Exception as err:  # noqa: BLE001 -- any failure: retry, keep the battery going
                         # The extra PV installation is unreachable: try again
                         # next cycle, but never let it stop the battery's own

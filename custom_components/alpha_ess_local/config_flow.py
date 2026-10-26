@@ -9,6 +9,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import section
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
 
@@ -38,8 +39,10 @@ from .const import (
     CONF_EXTRA_PV_PANEL_COUNT,
     CONF_EXTRA_PV_PANEL_WP,
     CONF_EXTRA_PV_POWER_CAPACITY,
+    CONF_EXTRA_PV_POWER_ENTITIES,
     CONF_EXTRA_PV_POWER_ENTITY,
     CONF_EXTRA_PV_STRING_ENTITIES,
+    CONF_EXTRA_PV_SWITCH_ENTITY,
     CONF_FORECAST_SOLAR_ENTRIES,
     CONF_FRANK_ENERGIE_PRICE_ENTITY,
     CONF_GRID_EXPORT_POWER_ENTITY,
@@ -67,10 +70,6 @@ from .const import (
     DEFAULT_APPLY_VAT_ON_RETURN,
     DEFAULT_CONTROL_ENABLED,
     DEFAULT_EXTRA_PV_CONTROL_ENABLED,
-    DEFAULT_EXTRA_PV_MODBUS_ADDRESS,
-    DEFAULT_EXTRA_PV_MODBUS_OFF_VALUE,
-    DEFAULT_EXTRA_PV_MODBUS_ON_VALUE,
-    DEFAULT_EXTRA_PV_MODBUS_SLAVE,
     DEFAULT_NETWORK_USE_FEE,
     DEFAULT_PERSIST_DAILY_CHARGE_LIMIT,
     DEFAULT_PORT,
@@ -84,6 +83,12 @@ from .consumers import (
     ev_charger_current_entities,
     ev_charger_energy_entities,
     ev_charger_power_entities,
+)
+from .extra_pv import (  # noqa: F401 -- SMA_* re-exported
+    SMA_PV_POWER_AGGREGATE_KEY,
+    SMA_PV_POWER_STRING_KEY,
+    detected_extra_pv_power_entities,
+    extra_pv_power_entities,
 )
 from .meter import configured_grid_meter, detected_meter_sensors, detected_peak_sensor
 from .prices import configured_price_entities, is_price_entity
@@ -108,55 +113,6 @@ def _power_selector(unit: str) -> selector.NumberSelector:
 def _count_selector() -> selector.NumberSelector:
     return selector.NumberSelector(
         selector.NumberSelectorConfig(mode=selector.NumberSelectorMode.BOX, min=0, step=1)
-    )
-
-
-# pysma's internal register keys for its PV-power sensors, verified directly
-# from pysma/definitions/webconnect.py — pysma doesn't give these entities a
-# readable unique_id suffix the way HomeWizard/DSMR do, so there's nothing
-# more semantic to match on:
-# - "6100_0046C200" ("pv_power"): the *total* PV power — disabled by default
-#   in pysma, so often doesn't exist as a live entity at all.
-# - "6380_40251E00" ("pv_power_a"/"_b"/"_c"): per-MPPT-string power —
-#   enabled by default (a/b; c is off). Summed at read time when the total
-#   isn't available — see orchestrator.py.
-SMA_PV_POWER_AGGREGATE_KEY = "6100_0046C200"
-SMA_PV_POWER_STRING_KEY = "6380_40251E00"
-
-
-def _extra_pv_candidates(hass: HomeAssistant) -> list[tuple[str, str]]:
-    """Auto-detect a second/separate PV installation's power source.
-
-    Currently only SMA Solar (`sma` integration) is recognized — prefers the
-    total-power entity if enabled, otherwise falls back to summing the
-    per-string entities (see SMA_PV_POWER_*_KEY above).
-    """
-    registry = er.async_get(hass)
-    candidates: list[tuple[str, str]] = []
-
-    for entry in hass.config_entries.async_entries("sma"):
-        reg_entries = er.async_entries_for_config_entry(registry, entry.entry_id)
-        aggregate = next(
-            (e for e in reg_entries if e.unique_id.endswith(f"-{SMA_PV_POWER_AGGREGATE_KEY}_0")),
-            None,
-        )
-        if aggregate:
-            candidates.append((aggregate.entity_id, entry.title))
-        elif any(f"-{SMA_PV_POWER_STRING_KEY}_" in e.unique_id for e in reg_entries):
-            candidates.append((f"sma:{entry.entry_id}", entry.title))
-
-    return candidates
-
-
-def _value_label_checklist(candidates: list[tuple[str, str]]) -> selector.SelectSelector:
-    """A single-pick list built from explicit (value, label) pairs."""
-    return selector.SelectSelector(
-        selector.SelectSelectorConfig(
-            options=[
-                selector.SelectOptionDict(value=value, label=label) for value, label in candidates
-            ],
-            mode=selector.SelectSelectorMode.LIST,
-        )
     )
 
 
@@ -415,30 +371,35 @@ def _solar_forecast_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _
 
 
 def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """A second/separate PV installation and its Modbus price control."""
-    extra_pv_candidates = _extra_pv_candidates(hass)
-    return [
-        (
-            vol.Optional(
-                CONF_EXTRA_PV_POWER_ENTITY,
-                description={"suggested_value": options.get(CONF_EXTRA_PV_POWER_ENTITY)},
-            ),
-            # Same tick-if-detected pattern as house-load: prefers an
-            # auto-detected source (currently SMA Solar), falls back to a
-            # manual pick-any-sensor selector when nothing is detected.
-            _value_label_checklist(extra_pv_candidates)
-            if extra_pv_candidates
-            else selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-        ),
-        (
-            vol.Optional(
-                CONF_EXTRA_PV_STRING_ENTITIES,
-                description={"suggested_value": options.get(CONF_EXTRA_PV_STRING_ENTITIES)},
-            ),
+    """The extra energy source (a second solar installation, ...) in three
+    blocks: its measurement, its panels, and the switch that turns it off at
+    negative prices (collapsed) -- see extra_pv.py.
+
+    The power is pre-filled with the saved sensors (also the old single
+    source), or with a detected SMA integration's when nothing is saved.
+    """
+    if CONF_EXTRA_PV_POWER_ENTITIES in options or options.get(CONF_EXTRA_PV_POWER_ENTITY):
+        power = extra_pv_power_entities(hass, options)
+    else:
+        power = detected_extra_pv_power_entities(hass)
+
+    def entities(key: str, value: Any, device_class: str) -> tuple[Any, Any]:
+        return (
+            vol.Optional(key, description={"suggested_value": value}),
             selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor", device_class="power", multiple=True)
+                selector.EntitySelectorConfig(
+                    domain="sensor", device_class=device_class, multiple=True
+                )
             ),
+        )
+
+    measurement = [
+        entities(CONF_EXTRA_PV_POWER_ENTITIES, power, "power"),
+        entities(
+            CONF_EXTRA_PV_STRING_ENTITIES, options.get(CONF_EXTRA_PV_STRING_ENTITIES), "power"
         ),
+    ]
+    installation = [
         (
             vol.Optional(CONF_EXTRA_PV_PANEL_WP, default=options.get(CONF_EXTRA_PV_PANEL_WP, 0)),
             _power_selector("Wp"),
@@ -449,11 +410,11 @@ def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sectio
             ),
             _count_selector(),
         ),
+    ]
+    control = [
         (
-            # Dedicated feature toggle for the extra-PV price control below —
-            # separate from CONF_CONTROL_ENABLED, so the hub/register config
-            # can be entered once and paused/resumed without clearing it.
-            # Defaults off.
+            # Its own toggle, separate from CONF_CONTROL_ENABLED, so the
+            # switch can be picked once and paused/resumed. Defaults off.
             vol.Optional(
                 CONF_EXTRA_PV_CONTROL_ENABLED,
                 default=options.get(
@@ -463,54 +424,21 @@ def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sectio
             selector.BooleanSelector(),
         ),
         (
-            # Register layout isn't the same for every SMA installation, so
-            # all of hub/slave/address/values are configurable rather than
-            # hardcoded — see dispatch.decide_extra_pv_state.
             vol.Optional(
-                CONF_EXTRA_PV_MODBUS_HUB,
-                description={"suggested_value": options.get(CONF_EXTRA_PV_MODBUS_HUB)},
+                CONF_EXTRA_PV_SWITCH_ENTITY,
+                description={"suggested_value": options.get(CONF_EXTRA_PV_SWITCH_ENTITY)},
             ),
-            selector.TextSelector(),
-        ),
-        (
-            vol.Optional(
-                CONF_EXTRA_PV_MODBUS_SLAVE,
-                default=options.get(CONF_EXTRA_PV_MODBUS_SLAVE, DEFAULT_EXTRA_PV_MODBUS_SLAVE),
-            ),
-            selector.NumberSelector(
-                selector.NumberSelectorConfig(mode=selector.NumberSelectorMode.BOX, min=0, step=1)
+            selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["switch", "input_boolean"])
             ),
         ),
+    ]
+    return [
+        (vol.Required("measurement"), section(vol.Schema(dict(measurement)))),
+        (vol.Required("installation"), section(vol.Schema(dict(installation)))),
         (
-            vol.Optional(
-                CONF_EXTRA_PV_MODBUS_ADDRESS,
-                default=options.get(CONF_EXTRA_PV_MODBUS_ADDRESS, DEFAULT_EXTRA_PV_MODBUS_ADDRESS),
-            ),
-            selector.NumberSelector(
-                selector.NumberSelectorConfig(mode=selector.NumberSelectorMode.BOX, min=0, step=1)
-            ),
-        ),
-        (
-            vol.Optional(
-                CONF_EXTRA_PV_MODBUS_ON_VALUE,
-                default=options.get(
-                    CONF_EXTRA_PV_MODBUS_ON_VALUE, DEFAULT_EXTRA_PV_MODBUS_ON_VALUE
-                ),
-            ),
-            selector.NumberSelector(
-                selector.NumberSelectorConfig(mode=selector.NumberSelectorMode.BOX, step=1)
-            ),
-        ),
-        (
-            vol.Optional(
-                CONF_EXTRA_PV_MODBUS_OFF_VALUE,
-                default=options.get(
-                    CONF_EXTRA_PV_MODBUS_OFF_VALUE, DEFAULT_EXTRA_PV_MODBUS_OFF_VALUE
-                ),
-            ),
-            selector.NumberSelector(
-                selector.NumberSelectorConfig(mode=selector.NumberSelectorMode.BOX, step=1)
-            ),
+            vol.Required("control"),
+            section(vol.Schema(dict(control)), {"collapsed": True}),
         ),
     ], []
 
@@ -659,12 +587,46 @@ _SUPERSEDED_KEYS = {
     },
     "meter": {CONF_HOUSE_LOAD_POWER_ENTITY},
     "ev_charger": {CONF_EV_CHARGER_POWER_ENTITY, CONF_EV_CHARGER_ENERGY_ENTITY},
+    "extra_pv": {CONF_EXTRA_PV_POWER_ENTITY},
     "solar_forecast": {
         CONF_FORECAST_SOLAR_ENTRIES,
         CONF_SOLCAST_ENTRIES,
         CONF_SOLAR_SOURCE_PRIMARY,
     },
 }
+
+
+# The old Modbus switching of the extra source, dropped once a switch is picked.
+_EXTRA_PV_MODBUS_KEYS = (
+    CONF_EXTRA_PV_MODBUS_HUB,
+    CONF_EXTRA_PV_MODBUS_SLAVE,
+    CONF_EXTRA_PV_MODBUS_ADDRESS,
+    CONF_EXTRA_PV_MODBUS_ON_VALUE,
+    CONF_EXTRA_PV_MODBUS_OFF_VALUE,
+)
+
+
+def _field_keys(schema: vol.Schema) -> set[str]:
+    """A form's option keys, also those inside its blocks (sections)."""
+    keys: set[str] = set()
+    for marker, value in schema.schema.items():
+        if isinstance(value, section):
+            keys |= _field_keys(value.schema)
+        else:
+            keys.add(str(marker))
+    return keys
+
+
+def _flatten_blocks(schema: vol.Schema, user_input: Mapping[str, Any]) -> dict[str, Any]:
+    """The submitted values with the blocks' (sections') fields lifted out."""
+    flat: dict[str, Any] = {}
+    for key, value in user_input.items():
+        marker = next((m for m in schema.schema if str(m) == key), None)
+        if marker is not None and isinstance(schema.schema[marker], section):
+            flat.update(value or {})
+        else:
+            flat[key] = value
+    return flat
 
 
 def _section_schema(
@@ -789,14 +751,18 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
         schema, missing = _section_schema(self.hass, section, self.config_entry.options)
 
         if user_input is not None:
-            section_keys = {str(marker) for marker in schema.schema}
-            section_keys |= _SUPERSEDED_KEYS.get(section, set())
+            user_input = _flatten_blocks(schema, user_input)
+            section_keys = _field_keys(schema) | _SUPERSEDED_KEYS.get(section, set())
             data = {
                 key: value
                 for key, value in self.config_entry.options.items()
                 if key not in section_keys
             }
             data.update(user_input)
+            if data.get(CONF_EXTRA_PV_SWITCH_ENTITY):
+                # The switch replaces the old Modbus hub settings.
+                for key in _EXTRA_PV_MODBUS_KEYS:
+                    data.pop(key, None)
             data[CONF_PV_POWER] = data.get(CONF_PV_PANEL_WP, 0) * data.get(CONF_PV_PANEL_COUNT, 0)
             data[CONF_EXTRA_PV_POWER_CAPACITY] = data.get(CONF_EXTRA_PV_PANEL_WP, 0) * data.get(
                 CONF_EXTRA_PV_PANEL_COUNT, 0

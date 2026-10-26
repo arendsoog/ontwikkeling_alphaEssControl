@@ -81,6 +81,11 @@ CONF_SOLAR_FORECAST_ENTITIES = "solar_forecast_entities"
 # roof array (config.ini's ShellyPMPVPower/ShellyPMNetworkName) — not
 # necessarily garage-located, just wherever the extra array/meter is.
 CONF_EXTRA_PV_POWER_ENTITY = "extra_pv_power_entity"
+# Its power sensors, summed, and the switch that turns it off at negative
+# prices -- replace CONF_EXTRA_PV_POWER_ENTITY and the Modbus hub settings
+# below, still read until saved (see extra_pv.py).
+CONF_EXTRA_PV_POWER_ENTITIES = "extra_pv_power_entities"
+CONF_EXTRA_PV_SWITCH_ENTITY = "extra_pv_switch_entity"
 # Same Wp-per-panel * panel-count split as CONF_PV_POWER above -- see its
 # comment.
 CONF_EXTRA_PV_POWER_CAPACITY = "extra_pv_power_capacity"

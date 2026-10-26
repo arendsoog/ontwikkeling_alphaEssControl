@@ -105,6 +105,12 @@ const LIFETIME = [
 
 // ---------------------------------------------------------------- helpers
 
+// The phase in a sensor's name ("... L2", "... fase 2") as "L2", else null.
+function phaseOf(name) {
+  const match = /(?:\bL|fase\s*)([123])\b/i.exec(name);
+  return match ? `L${match[1]}` : null;
+}
+
 const esc = (value) =>
   String(value ?? "").replace(
     /[&<>"']/g,
@@ -1552,8 +1558,7 @@ class AlphaEssPanel extends HTMLElement {
     const phases = group.current.map((id, i) => {
       const s = this._hass.states[id];
       const label = s && s.attributes.friendly_name;
-      const match = label && /(?:\bL|fase\s*)([123])\b/i.exec(label);
-      return { id, label: match ? `L${match[1]}` : `L${i + 1}`, value: s ? num(s.state) : null };
+      return { id, label: (label && phaseOf(label)) || `L${i + 1}`, value: s ? num(s.state) : null };
     });
 
     return `
@@ -1735,18 +1740,26 @@ class AlphaEssPanel extends HTMLElement {
   }
 
   // Power per PV input (MPPT), one chip per power sensor entity_id.
+  // Power per MPPT/string -- or per phase, when the sensors are named so
+  // ("... L2"): then labelled L1/L2/L3 instead of MPPT1/2/3.
   _mpptSection(ids) {
-    const chips = ids
-      .filter(Boolean)
-      .map((id, i) => {
-        const s = this._hass.states[id];
-        const w = s ? num(s.state) : null;
-        return `<span class="mppt ${w ? "active" : ""}" data-entity="${esc(id)}">MPPT${i + 1} · ${fmtW(w)}</span>`;
-      })
+    const items = ids.filter(Boolean).map((id) => {
+      const s = this._hass.states[id];
+      const name = s && s.attributes.friendly_name;
+      return { id, w: s ? num(s.state) : null, phase: name ? phaseOf(name) : null };
+    });
+    if (!items.length) return "";
+    const phases = items.every((item) => item.phase);
+    const chips = items
+      .map(
+        (item, i) =>
+          `<span class="mppt ${item.w ? "active" : ""}" data-entity="${esc(item.id)}">${
+            phases ? item.phase : `MPPT${i + 1}`
+          } · ${fmtW(item.w)}</span>`
+      )
       .join("");
-    if (!chips) return "";
     return `
-      <div class="section-title">Zon (MPPT)</div>
+      <div class="section-title">${phases ? "Zon (per fase)" : "Zon (MPPT)"}</div>
       <div class="mppt-row">${chips}</div>`;
   }
 
@@ -1823,9 +1836,24 @@ class AlphaEssPanel extends HTMLElement {
           <div class="kv"><span>Status</span><span class="${st.extra_pv_control_enabled ? "accent" : "muted"}">${
             st.extra_pv_control_enabled ? "Actief" : "Uit"
           }</span></div>
-          <div class="kv"><span>Modbus hub</span><span>${esc(st.extra_pv_modbus_hub || "Niet ingesteld")}</span></div>
+          ${this._extraPvSwitchRow(st)}
         </div>
       </section>`;
+  }
+
+  // The switch that turns the extra source off at negative prices, with
+  // its state -- or, set up before the switch, the Modbus hub.
+  _extraPvSwitchRow(st) {
+    if (st.extra_pv_switch) {
+      const s = this._hass.states[st.extra_pv_switch];
+      const state = !s ? "Niet gevonden" : s.state === "on" ? "Aan" : s.state === "off" ? "Uit" : "Niet beschikbaar";
+      return `<div class="kv" data-entity="${esc(st.extra_pv_switch)}"><span>${esc(
+        (s && s.attributes.friendly_name) || st.extra_pv_switch
+      )}</span><span class="${s && s.state === "on" ? "accent" : "muted"}">${state}</span></div>`;
+    }
+    return `<div class="kv"><span>Schakelaar</span><span>${esc(
+      st.extra_pv_modbus_hub ? `Modbus hub ${st.extra_pv_modbus_hub}` : "Niet ingesteld"
+    )}</span></div>`;
   }
 
   // Control tab: settings grouped in columns, operated in place -- toggles
