@@ -70,11 +70,11 @@
                         "name": "Measurement",
                         "data": {
                             "extra_pv_power_entities": "Power",
-                            "extra_pv_string_entities": "Power per string, MPPT or phase"
+                            "extra_pv_string_entities": "Power per MPPT (string)"
                         },
                         "data_description": {
                             "extra_pv_power_entities": "The power the source delivers right now, e.g. the inverter's 'AC power'. Several sensors are summed (a second inverter, micro inverters, or the power per string).",
-                            "extra_pv_string_entities": "Panel display only. When the sensors are named '... L1', '... L2', ..., the panel shows them per phase. Empty with the SMA integration: its own strings."
+                            "extra_pv_string_entities": "Panel display only: the power per MPPT input of the inverter, i.e. per line of panels (string), e.g. 'DC power string 1' and 'string 2'. Empty with the SMA integration: its own strings."
                         }
                     },
                     "installation": {

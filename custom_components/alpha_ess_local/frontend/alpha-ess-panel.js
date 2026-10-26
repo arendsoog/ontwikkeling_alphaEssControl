@@ -1740,8 +1740,9 @@ class AlphaEssPanel extends HTMLElement {
   }
 
   // Power per PV input (MPPT), one chip per power sensor entity_id.
-  // Power per MPPT/string -- or per phase, when the sensors are named so
-  // ("... L2"): then labelled L1/L2/L3 instead of MPPT1/2/3.
+  // Power per MPPT (Maximum Power Point Tracker: an inverter input, one
+  // line of panels -- a string -- each) -- or per phase, when the sensors
+  // are named so ("... L2"): then labelled L1/L2/L3 instead of MPPT1/2/3.
   _mpptSection(ids) {
     const items = ids.filter(Boolean).map((id) => {
       const s = this._hass.states[id];

@@ -70,11 +70,11 @@
                         "name": "Meting",
                         "data": {
                             "extra_pv_power_entities": "Vermogen",
-                            "extra_pv_string_entities": "Vermogen per string, MPPT of fase"
+                            "extra_pv_string_entities": "Vermogen per MPPT (string)"
                         },
                         "data_description": {
                             "extra_pv_power_entities": "Het vermogen dat de bron nu levert, bijvoorbeeld 'AC-vermogen' van de omvormer. Meerdere sensoren worden opgeteld (een tweede omvormer, micro-omvormers, of het vermogen per string).",
-                            "extra_pv_string_entities": "Alleen voor het paneel. Heten de sensoren '... L1', '... L2', ..., dan toont het paneel ze per fase. Leeg bij de SMA-integratie: haar eigen strings."
+                            "extra_pv_string_entities": "Alleen voor het paneel: het vermogen per MPPT-ingang van de omvormer, dus per lijn panelen (string), bijvoorbeeld 'DC-vermogen string 1' en 'string 2'. Leeg bij de SMA-integratie: haar eigen strings."
                         }
                     },
                     "installation": {
