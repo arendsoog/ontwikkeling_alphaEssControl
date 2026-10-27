@@ -117,9 +117,15 @@ const esc = (value) =>
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
   );
 
+// An SMA inverter reports "no value" (asleep at night) as the lowest
+// 32-bit number; it means no power, as orchestrator.py's _entity_power
+// reads it too.
+const SMA_S32_NAN = -2147483648;
+
 const num = (value) => {
   if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
+  if (n === SMA_S32_NAN) return 0;
   return Number.isFinite(n) ? n : null;
 };
 
