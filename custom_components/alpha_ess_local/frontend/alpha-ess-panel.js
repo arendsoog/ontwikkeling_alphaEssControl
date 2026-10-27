@@ -1566,6 +1566,9 @@ class AlphaEssPanel extends HTMLElement {
       const label = s && s.attributes.friendly_name;
       let value = s ? num(s.state) : null;
       if (value !== null && s.attributes.unit_of_measurement === "kW") value *= 1000;
+      // A charger that isn't charging may give no value per phase (an
+      // Alfen does): that's no power, as long as its total is known.
+      if (value === null && power !== null && !charging) value = 0;
       return { id, label: (label && phaseOf(label)) || `L${i + 1}`, value };
     });
 
