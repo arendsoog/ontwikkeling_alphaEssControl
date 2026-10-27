@@ -1555,10 +1555,12 @@ class AlphaEssPanel extends HTMLElement {
     }));
     // Phase label from the sensor's name ("... L2", "... fase 2"), else by
     // its place in the list.
-    const phases = group.current.map((id, i) => {
+    const phases = group.phases.map((id, i) => {
       const s = this._hass.states[id];
       const label = s && s.attributes.friendly_name;
-      return { id, label: (label && phaseOf(label)) || `L${i + 1}`, value: s ? num(s.state) : null };
+      let value = s ? num(s.state) : null;
+      if (value !== null && s.attributes.unit_of_measurement === "kW") value *= 1000;
+      return { id, label: (label && phaseOf(label)) || `L${i + 1}`, value };
     });
 
     return `
@@ -1579,12 +1581,12 @@ class AlphaEssPanel extends HTMLElement {
         }
         ${
           phases.length
-            ? `<div class="section-title">Stroom per fase</div>
+            ? `<div class="section-title">Vermogen per fase</div>
         <div class="mppt-row">${phases
           .map(
             (p) =>
               `<span class="mppt ${p.value ? "active" : ""}" data-entity="${esc(p.id)}">${esc(p.label)} · ${
-                p.value === null ? "–" : `${fmtNum(p.value, 1)} A`
+                fmtW(p.value)
               }</span>`
           )
           .join("")}</div>`

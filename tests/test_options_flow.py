@@ -760,7 +760,7 @@ async def test_options_flow_ev_charger_section_saves_the_lists(
     assert [str(key) for key in result["data_schema"].schema] == [
         "ev_charger_power_entities",
         "ev_charger_energy_entities",
-        "ev_charger_current_entities",
+        "ev_charger_phase_entities",
         "excluded_load_entities",
     ]
 
@@ -771,14 +771,14 @@ async def test_options_flow_ev_charger_section_saves_the_lists(
         {
             "ev_charger_power_entities": ["sensor.laadpaal_vermogen"],
             "ev_charger_energy_entities": ["sensor.laadpaal_energie_totaal"],
-            "ev_charger_current_entities": ["sensor.laadpaal_stroom_l1"],
+            "ev_charger_phase_entities": ["sensor.laadpaal_vermogen_l1"],
             "excluded_load_entities": ["sensor.warmtepomp_vermogen"],
         },
     )
 
     assert entry.options["ev_charger_power_entities"] == ["sensor.laadpaal_vermogen"]
     assert entry.options["ev_charger_energy_entities"] == ["sensor.laadpaal_energie_totaal"]
-    assert entry.options["ev_charger_current_entities"] == ["sensor.laadpaal_stroom_l1"]
+    assert entry.options["ev_charger_phase_entities"] == ["sensor.laadpaal_vermogen_l1"]
     assert entry.options["excluded_load_entities"] == ["sensor.warmtepomp_vermogen"]
 
 

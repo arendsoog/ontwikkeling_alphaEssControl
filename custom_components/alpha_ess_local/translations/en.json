@@ -107,13 +107,13 @@
                 "data": {
                     "ev_charger_power_entities": "EV chargers: power",
                     "ev_charger_energy_entities": "EV chargers: total energy",
-                    "ev_charger_current_entities": "EV chargers: current per phase",
+                    "ev_charger_phase_entities": "EV chargers: power per phase",
                     "excluded_load_entities": "Other consumers: power"
                 },
                 "data_description": {
                     "ev_charger_power_entities": "Each EV charger's charging power. Shown together in the panel's energy flow.",
                     "ev_charger_energy_entities": "Each EV charger's total charged energy (an increasing kWh counter). Shown per charger in the panel's daily totals. Optional.",
-                    "ev_charger_current_entities": "Each EV charger's current per phase (L1, L2, L3), for its card on the Inverters tab. Optional.",
+                    "ev_charger_phase_entities": "Each EV charger's power per phase (L1, L2, L3), for its card on the Inverters tab. Optional.",
                     "excluded_load_entities": "The power of other big consumers, such as a heat pump. For the learning only, not in the panel."
                 }
             },

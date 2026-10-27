@@ -149,7 +149,7 @@ CONF_EV_CHARGER_ENERGY_ENTITY = "ev_charger_energy_entity"
 # consumers' power sensors (a heat pump, ...).
 CONF_EV_CHARGER_POWER_ENTITIES = "ev_charger_power_entities"
 CONF_EV_CHARGER_ENERGY_ENTITIES = "ev_charger_energy_entities"
-CONF_EV_CHARGER_CURRENT_ENTITIES = "ev_charger_current_entities"
+CONF_EV_CHARGER_PHASE_ENTITIES = "ev_charger_phase_entities"
 CONF_EXCLUDED_LOAD_ENTITIES = "excluded_load_entities"
 
 # Options flow: scheduler tuning (config.ini [Daily])

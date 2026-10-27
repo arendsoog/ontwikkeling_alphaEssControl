@@ -5,7 +5,7 @@ their power is taken off the measured house load first. Two groups, each
 picked by their sensors in the options, any number of each:
 - EV chargers: a power sensor (summed in the panel's energy flow) and,
   optionally, a total-energy counter (its kWh today in the panel) and a
-  current sensor per phase (its card in the panel);
+  power sensor per phase (its card in the panel);
 - other consumers (a heat pump, ...): a power sensor, for the learning only.
 
 Before these lists, one EV charger had its own power/energy fields; those
@@ -22,9 +22,9 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from .const import (
-    CONF_EV_CHARGER_CURRENT_ENTITIES,
     CONF_EV_CHARGER_ENERGY_ENTITIES,
     CONF_EV_CHARGER_ENERGY_ENTITY,
+    CONF_EV_CHARGER_PHASE_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXCLUDED_LOAD_ENTITIES,
@@ -56,9 +56,9 @@ def ev_charger_energy_entities(options: Mapping[str, Any]) -> list[str]:
     )
 
 
-def ev_charger_current_entities(options: Mapping[str, Any]) -> list[str]:
-    """The EV chargers' current sensors, one per phase (panel only)."""
-    return _unique(list(options.get(CONF_EV_CHARGER_CURRENT_ENTITIES) or []))
+def ev_charger_phase_entities(options: Mapping[str, Any]) -> list[str]:
+    """The EV chargers' power sensors per phase, one per phase (panel only)."""
+    return _unique(list(options.get(CONF_EV_CHARGER_PHASE_ENTITIES) or []))
 
 
 def ev_charger_groups(hass: HomeAssistant, options: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -74,7 +74,7 @@ def ev_charger_groups(hass: HomeAssistant, options: Mapping[str, Any]) -> list[d
     for kind, entities in (
         ("power", ev_charger_power_entities(options)),
         ("energy", ev_charger_energy_entities(options)),
-        ("current", ev_charger_current_entities(options)),
+        ("phases", ev_charger_phase_entities(options)),
     ):
         for entity_id in entities:
             reg_entry = registry.async_get(entity_id)
@@ -83,7 +83,7 @@ def ev_charger_groups(hass: HomeAssistant, options: Mapping[str, Any]) -> list[d
             if group is None:
                 device = devices.async_get(device_id) if device_id else None
                 name = (device.name_by_user or device.name) if device else None
-                group = {"name": name, "power": [], "energy": [], "current": []}
+                group = {"name": name, "power": [], "energy": [], "phases": []}
                 groups[device_id] = group
             group[kind].append(entity_id)
     return list(groups.values())

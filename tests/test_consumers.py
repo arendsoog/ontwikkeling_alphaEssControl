@@ -61,10 +61,10 @@ def test_ev_charger_groups_per_device(hass: HomeAssistant):
             "sensor.modbus_laadpaal_vermogen",
         ],
         "ev_charger_energy_entities": [entities[("Garage", "energy")]],
-        "ev_charger_current_entities": [
+        "ev_charger_phase_entities": [
             entities[("Oprit", "l1")],
             entities[("Oprit", "l2")],
-            "sensor.modbus_laadpaal_stroom_l1",
+            "sensor.modbus_laadpaal_vermogen_l1",
         ],
     }
 
@@ -73,18 +73,18 @@ def test_ev_charger_groups_per_device(hass: HomeAssistant):
             "name": "Oprit",
             "power": [entities[("Oprit", "power")]],
             "energy": [],
-            "current": [entities[("Oprit", "l1")], entities[("Oprit", "l2")]],
+            "phases": [entities[("Oprit", "l1")], entities[("Oprit", "l2")]],
         },
         {
             "name": "Garage",
             "power": [entities[("Garage", "power")]],
             "energy": [entities[("Garage", "energy")]],
-            "current": [],
+            "phases": [],
         },
         {
             "name": None,
             "power": ["sensor.modbus_laadpaal_vermogen"],
             "energy": [],
-            "current": ["sensor.modbus_laadpaal_stroom_l1"],
+            "phases": ["sensor.modbus_laadpaal_vermogen_l1"],
         },
     ]

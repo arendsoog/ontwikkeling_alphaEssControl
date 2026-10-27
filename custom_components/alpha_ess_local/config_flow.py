@@ -24,9 +24,9 @@ from .const import (
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
     CONF_ENTSOE_PRICE_ENTITY,
-    CONF_EV_CHARGER_CURRENT_ENTITIES,
     CONF_EV_CHARGER_ENERGY_ENTITIES,
     CONF_EV_CHARGER_ENERGY_ENTITY,
+    CONF_EV_CHARGER_PHASE_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXCLUDED_LOAD_ENTITIES,
@@ -80,8 +80,8 @@ from .const import (
     LOGGER,
 )
 from .consumers import (
-    ev_charger_current_entities,
     ev_charger_energy_entities,
+    ev_charger_phase_entities,
     ev_charger_power_entities,
 )
 from .extra_pv import (  # noqa: F401 -- SMA_* re-exported
@@ -463,9 +463,7 @@ def _ev_charger_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sect
         entities_field(
             CONF_EV_CHARGER_ENERGY_ENTITIES, ev_charger_energy_entities(options), "energy"
         ),
-        entities_field(
-            CONF_EV_CHARGER_CURRENT_ENTITIES, ev_charger_current_entities(options), "current"
-        ),
+        entities_field(CONF_EV_CHARGER_PHASE_ENTITIES, ev_charger_phase_entities(options), "power"),
         entities_field(
             CONF_EXCLUDED_LOAD_ENTITIES,
             list(options.get(CONF_EXCLUDED_LOAD_ENTITIES) or []),
