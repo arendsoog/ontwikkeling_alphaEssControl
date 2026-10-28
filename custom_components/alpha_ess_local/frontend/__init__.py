@@ -19,34 +19,22 @@ from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from .. import storage
-from ..config_flow import SMA_PV_POWER_STRING_KEY
 from ..const import (
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
-    CONF_ENTSOE_PRICE_ENTITY,
-    CONF_EV_CHARGER_ENERGY_ENTITY,
-    CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_EXTRA_PV_MODBUS_HUB,
     CONF_EXTRA_PV_POWER_CAPACITY,
-    CONF_EXTRA_PV_POWER_ENTITY,
-    CONF_EXTRA_PV_STRING_ENTITIES,
-    CONF_FORECAST_SOLAR_ENTRIES,
-    CONF_FRANK_ENERGIE_PRICE_ENTITY,
     CONF_INVERTER_NOMINAL_POWER,
     CONF_NETWORK_USE_FEE_LOW,
     CONF_NETWORK_USE_FEE_NORMAL,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
-    CONF_PRICE_SOURCE_PRIMARY,
     CONF_PROVIDER_RETURN_FEE,
     CONF_PROVIDER_USE_FEE,
     CONF_PV_POWER,
-    CONF_SOLAR_SOURCE_PRIMARY,
-    CONF_SOLCAST_ENTRIES,
     CONF_USABLE_BATTERY_CAPACITY,
     CONF_VAT_PERCENTAGE,
     DEFAULT_APPLY_VAT_ON_RETURN,
@@ -54,23 +42,23 @@ from ..const import (
     DEFAULT_EXTRA_PV_CONTROL_ENABLED,
     DEFAULT_NETWORK_USE_FEE,
     DEFAULT_PERSIST_DAILY_CHARGE_LIMIT,
-    DEFAULT_PRICE_SOURCE_PRIMARY,
     DEFAULT_PROVIDER_RETURN_FEE,
     DEFAULT_PROVIDER_USE_FEE,
-    DEFAULT_SOLAR_SOURCE_PRIMARY,
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
-    PRICE_SOURCE_ENTSOE,
-    PRICE_SOURCE_FRANK_ENERGIE,
-    SOLAR_SOURCE_FORECAST_SOLAR,
-    SOLAR_SOURCE_SOLCAST,
+)
+from ..consumers import (
+    ev_charger_energy_entities,
+    ev_charger_groups,
+    ev_charger_power_entities,
 )
 from ..data import MAX_FIVE_MINS, Charge, Day
+from ..extra_pv import extra_pv_power_entities, extra_pv_string_entities, extra_pv_switch
 from ..orchestrator import get_db_path, grid_meter_status
-from ..prices import PRICE_SOURCES
+from ..prices import configured_price_entities
 from ..schedule import set_charging_msg
-from ..solar import SOLAR_SOURCES
+from ..solar import configured_solar_sources, solar_source_name
 
 # Specific enough not to collide with a user's own dashboard: a Lovelace
 # dashboard named "AlphaESS" readily gets "alpha-ess" as its URL, which made
@@ -99,24 +87,18 @@ def _ws_panel_status(
     options = entry.options
     runtime = entry.runtime_data
     override = runtime.dispatch_coordinator.manual_override
+    price_entities = configured_price_entities(options)
     price_sources = source_list(
-        PRICE_SOURCES,
-        {
-            PRICE_SOURCE_ENTSOE: options.get(CONF_ENTSOE_PRICE_ENTITY),
-            PRICE_SOURCE_FRANK_ENERGIE: options.get(CONF_FRANK_ENERGIE_PRICE_ENTITY),
-        },
-        options.get(CONF_PRICE_SOURCE_PRIMARY, DEFAULT_PRICE_SOURCE_PRIMARY),
+        {entity: _entity_name(hass, entity) for entity in price_entities},
+        {entity: entity for entity in price_entities},
+        price_entities[0] if price_entities else "",
         _today_source(runtime.prices_coordinator),
     )
+    solar = configured_solar_sources(hass, options)
     solar_sources = source_list(
-        SOLAR_SOURCES,
-        {
-            SOLAR_SOURCE_FORECAST_SOLAR: _entry_titles(
-                hass, options.get(CONF_FORECAST_SOLAR_ENTRIES)
-            ),
-            SOLAR_SOURCE_SOLCAST: _entry_titles(hass, options.get(CONF_SOLCAST_ENTRIES)),
-        },
-        options.get(CONF_SOLAR_SOURCE_PRIMARY, DEFAULT_SOLAR_SOURCE_PRIMARY),
+        {source: solar_source_name(source) for source, _ in solar},
+        {source: _entry_titles(hass, entry_ids) for source, entry_ids in solar},
+        solar[0][0] if solar else "",
         _today_source(runtime.solar_coordinator),
     )
 
@@ -145,11 +127,13 @@ def _ws_panel_status(
                 CONF_NETWORK_USE_FEE_NORMAL, DEFAULT_NETWORK_USE_FEE
             ),
             "network_use_fee_low": options.get(CONF_NETWORK_USE_FEE_LOW, DEFAULT_NETWORK_USE_FEE),
-            "ev_charger_power_entity": options.get(CONF_EV_CHARGER_POWER_ENTITY) or None,
-            "ev_charger_energy_entity": options.get(CONF_EV_CHARGER_ENERGY_ENTITY) or None,
-            "extra_pv_configured": bool(options.get(CONF_EXTRA_PV_POWER_ENTITY)),
+            "ev_charger_power_entities": ev_charger_power_entities(options),
+            "ev_charger_energy_entities": ev_charger_energy_entities(options),
+            "ev_chargers": ev_charger_groups(hass, options),
+            "extra_pv_configured": bool(extra_pv_power_entities(hass, options)),
             "extra_pv_string_entities": extra_pv_string_entities(hass, options),
             "extra_pv_power_capacity": options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0),
+            "extra_pv_switch": extra_pv_switch(options),
             "extra_pv_modbus_hub": options.get(CONF_EXTRA_PV_MODBUS_HUB) or None,
             "extra_pv_unreachable": runtime.dispatch_coordinator.extra_pv_unreachable,
             "manual_override": None if override is None else set_charging_msg(override),
@@ -193,6 +177,12 @@ def source_list(
     return result
 
 
+def _entity_name(hass: HomeAssistant, entity_id: str) -> str:
+    """An entity's friendly name, or its id when it has no state (yet)."""
+    state = hass.states.get(entity_id)
+    return state.name if state is not None else entity_id
+
+
 def _entry_titles(hass: HomeAssistant, entry_ids: list[str] | None) -> list[str]:
     """The titles of the given config entries (skipping ones that are gone)."""
     titles = []
@@ -201,35 +191,6 @@ def _entry_titles(hass: HomeAssistant, entry_ids: list[str] | None) -> list[str]
         if entry is not None:
             titles.append(entry.title)
     return titles
-
-
-def extra_pv_string_entities(hass: HomeAssistant, options: Mapping[str, Any]) -> list[str]:
-    """The extra PV installation's power-per-string sensors, for the panel.
-
-    The ones picked in the options, else -- when the extra PV comes from the
-    SMA integration (its "sma:<entry>" sum, or one of its own sensors) --
-    that integration's enabled per-string power sensors (A, B, ...).
-    """
-    configured = options.get(CONF_EXTRA_PV_STRING_ENTITIES)
-    if configured:
-        return list(configured)
-    source = options.get(CONF_EXTRA_PV_POWER_ENTITY)
-    if not source:
-        return []
-    registry = er.async_get(hass)
-    if source.startswith("sma:"):
-        sma_entry_id = source.removeprefix("sma:")
-    else:
-        reg_entry = registry.async_get(source)
-        if reg_entry is None or reg_entry.platform != "sma":
-            return []
-        sma_entry_id = reg_entry.config_entry_id
-    strings = [
-        reg_entry
-        for reg_entry in er.async_entries_for_config_entry(registry, sma_entry_id)
-        if f"-{SMA_PV_POWER_STRING_KEY}_" in reg_entry.unique_id and not reg_entry.disabled
-    ]
-    return [reg_entry.entity_id for reg_entry in sorted(strings, key=lambda e: e.unique_id)]
 
 
 def today_power_payload(day: Day, now: datetime) -> dict[str, Any] | None:

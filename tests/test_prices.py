@@ -18,8 +18,11 @@ from custom_components.alpha_ess_local.prices import (
     _parse_frank_energie_prices,
     apply_earning_classification,
     build_day,
+    configured_price_entities,
+    is_price_entity,
     mk_return_price,
     mk_use_price,
+    parse_entity_prices,
     read_hour_prices,
     read_hour_prices_with_source,
 )
@@ -153,40 +156,6 @@ def test_parse_frank_energie_prices_missing_attribute_returns_none(hass: HomeAss
     assert _parse_frank_energie_prices(state, dt_util.now().date()) is None
 
 
-def test_read_hour_prices_prefers_entsoe(hass: HomeAssistant):
-    hass.states.async_set(
-        ENTSOE_ENTITY_ID,
-        "0.15",
-        {"prices_today": [{"time": _local_iso(0), "price": 0.10}]},
-    )
-    hass.states.async_set(
-        FRANK_ENERGIE_ENTITY_ID,
-        "0.20",
-        {"prices": [{"from": _local_iso(0), "price": 0.99}]},
-    )
-
-    prices = read_hour_prices(
-        hass, ENTSOE_ENTITY_ID, FRANK_ENERGIE_ENTITY_ID, dt_util.now().date(), "prices_today"
-    )
-
-    assert prices == {0: 0.10}
-
-
-def test_read_hour_prices_falls_back_to_frank_energie(hass: HomeAssistant):
-    hass.states.async_set(ENTSOE_ENTITY_ID, "unknown", {})  # no prices_today attribute
-    hass.states.async_set(
-        FRANK_ENERGIE_ENTITY_ID,
-        "0.20",
-        {"prices": [{"from": _local_iso(5), "price": 0.30}]},
-    )
-
-    prices = read_hour_prices(
-        hass, ENTSOE_ENTITY_ID, FRANK_ENERGIE_ENTITY_ID, dt_util.now().date(), "prices_today"
-    )
-
-    assert prices == {5: 0.30}
-
-
 def _both_price_sources(hass: HomeAssistant) -> None:
     hass.states.async_set(
         ENTSOE_ENTITY_ID, "0.15", {"prices_today": [{"time": _local_iso(0), "price": 0.10}]}
@@ -196,68 +165,103 @@ def _both_price_sources(hass: HomeAssistant) -> None:
     )
 
 
-def test_read_hour_prices_with_source_reports_entsoe_by_default(hass: HomeAssistant):
+def test_read_hour_prices_uses_the_first_entity_in_the_list(hass: HomeAssistant):
     _both_price_sources(hass)
+    today = dt_util.now().date()
 
-    prices, source = read_hour_prices_with_source(
-        hass, ENTSOE_ENTITY_ID, FRANK_ENERGIE_ENTITY_ID, dt_util.now().date(), "prices_today"
-    )
-
-    assert (prices, source) == ({0: 0.10}, "entsoe")
-
-
-def test_read_hour_prices_with_source_frank_energie_first(hass: HomeAssistant):
-    _both_price_sources(hass)
-
-    prices, source = read_hour_prices_with_source(
-        hass,
-        ENTSOE_ENTITY_ID,
-        FRANK_ENERGIE_ENTITY_ID,
-        dt_util.now().date(),
-        "prices_today",
-        primary="frank_energie",
-    )
-
-    assert (prices, source) == ({0: 0.99}, "frank_energie")
+    assert read_hour_prices(hass, [ENTSOE_ENTITY_ID, FRANK_ENERGIE_ENTITY_ID], today) == {0: 0.10}
+    assert read_hour_prices_with_source(
+        hass, [FRANK_ENERGIE_ENTITY_ID, ENTSOE_ENTITY_ID], today
+    ) == ({0: 0.99}, FRANK_ENERGIE_ENTITY_ID)
 
 
-def test_read_hour_prices_with_source_falls_back_to_entsoe(hass: HomeAssistant):
+def test_read_hour_prices_falls_back_to_the_next_entity(hass: HomeAssistant):
     _both_price_sources(hass)
     hass.states.async_set(FRANK_ENERGIE_ENTITY_ID, "unknown", {})
 
     prices, source = read_hour_prices_with_source(
-        hass,
-        ENTSOE_ENTITY_ID,
-        FRANK_ENERGIE_ENTITY_ID,
-        dt_util.now().date(),
-        "prices_today",
-        primary="frank_energie",
+        hass, ["sensor.gone", FRANK_ENERGIE_ENTITY_ID, ENTSOE_ENTITY_ID], dt_util.now().date()
     )
 
-    assert (prices, source) == ({0: 0.10}, "entsoe")
+    assert (prices, source) == ({0: 0.10}, ENTSOE_ENTITY_ID)
+
+
+def test_read_hour_prices_returns_none_when_no_entity_has_prices(hass: HomeAssistant):
+    hass.states.async_set("sensor.other", "1", {})
+
+    assert read_hour_prices_with_source(hass, [], dt_util.now().date()) == (None, "")
+    assert read_hour_prices(hass, ["sensor.other"], dt_util.now().date()) is None
+
+
+def test_parse_entity_prices_reads_entsoe_tomorrow(hass: HomeAssistant):
+    tomorrow = dt_util.now().date() + timedelta(days=1)
+    state = State(
+        ENTSOE_ENTITY_ID,
+        "0.15",
+        {
+            "prices_today": [{"time": _local_iso(3), "price": 0.10}],
+            "prices_tomorrow": [{"time": _local_iso(3, on_date=tomorrow), "price": 0.40}],
+        },
+    )
+
+    assert parse_entity_prices(state, tomorrow) == {3: 0.40}
+
+
+def test_parse_entity_prices_reads_nordpool_in_cents(hass: HomeAssistant):
+    today = dt_util.now().date()
+    tomorrow = today + timedelta(days=1)
+    state = State(
+        "sensor.nordpool_kwh_nl_eur",
+        "21.0",
+        {
+            "unit_of_measurement": "c/kWh",
+            "raw_today": [
+                {"start": _local_iso(7), "end": _local_iso(8), "value": 20.0},
+                {"start": _local_iso(7, minute=30), "end": _local_iso(8), "value": 30.0},
+            ],
+            "raw_tomorrow": [
+                {"start": _local_iso(7, on_date=tomorrow), "end": "", "value": 99.0},
+                {"start": _local_iso(8, on_date=tomorrow), "end": "", "value": None},
+            ],
+        },
+    )
+
+    assert parse_entity_prices(state, today) == {7: pytest.approx(0.25)}
+    assert parse_entity_prices(state, tomorrow) == {7: pytest.approx(0.99)}
+
+
+def test_is_price_entity():
+    assert is_price_entity(State("sensor.a", "1", {"prices": []}))
+    assert is_price_entity(State("sensor.b", "1", {"raw_today": []}))
+    assert not is_price_entity(State("sensor.c", "1", {"prices": "n/a"}))
+    assert not is_price_entity(State("sensor.d", "1", {}))
+
+
+def test_configured_price_entities_reads_the_list_or_the_old_pair():
+    assert configured_price_entities({"price_entities": ["sensor.b", "sensor.a"]}) == [
+        "sensor.b",
+        "sensor.a",
+    ]
+    # Saved before price_entities existed: the old pair, in the old order.
+    old = {"entsoe_price_entity": "sensor.e", "frank_energie_price_entity": "sensor.f"}
+    assert configured_price_entities(old) == ["sensor.e", "sensor.f"]
+    assert configured_price_entities({**old, "price_source_primary": "frank_energie"}) == [
+        "sensor.f",
+        "sensor.e",
+    ]
+    assert configured_price_entities({"frank_energie_price_entity": "sensor.f"}) == ["sensor.f"]
+    # A saved (even empty) list wins over leftovers of the old pair.
+    assert configured_price_entities({**old, "price_entities": []}) == []
 
 
 def test_build_day_records_its_source(hass: HomeAssistant):
     _both_price_sources(hass)
 
     day = build_day(
-        hass,
-        dt_util.now().date(),
-        ENTSOE_ENTITY_ID,
-        FRANK_ENERGIE_ENTITY_ID,
-        0.0,
-        0.0,
-        21.0,
-        primary="frank_energie",
+        hass, dt_util.now().date(), [FRANK_ENERGIE_ENTITY_ID, ENTSOE_ENTITY_ID], 0.0, 0.0, 21.0
     )
 
-    assert day.source == "frank_energie"
-
-
-def test_read_hour_prices_returns_none_when_both_missing(hass: HomeAssistant):
-    prices = read_hour_prices(hass, None, None, dt_util.now().date(), "prices_today")
-
-    assert prices is None
+    assert day.source == FRANK_ENERGIE_ENTITY_ID
 
 
 def test_apply_earning_classification_marks_highest_and_lowest():
@@ -332,7 +336,7 @@ def test_build_day_populates_and_classifies(hass: HomeAssistant):
         },
     )
 
-    day = build_day(hass, today, ENTSOE_ENTITY_ID, None, 0.02, 0.02, 21)
+    day = build_day(hass, today, [ENTSOE_ENTITY_ID], 0.02, 0.02, 21)
 
     assert day.valid is True
     assert day.hour[0].valid is True
@@ -342,7 +346,7 @@ def test_build_day_populates_and_classifies(hass: HomeAssistant):
 
 
 def test_build_day_stays_invalid_when_no_source_configured(hass: HomeAssistant):
-    day = build_day(hass, dt_util.now().date(), None, None, 0.02, 0.02, 21)
+    day = build_day(hass, dt_util.now().date(), [], 0.02, 0.02, 21)
 
     assert day.valid is False
 
@@ -355,7 +359,7 @@ def test_build_day_threads_return_vat_percentage_through(hass: HomeAssistant):
         {"prices_today": [{"time": _local_iso(5), "price": 0.10}]},
     )
 
-    day = build_day(hass, today, ENTSOE_ENTITY_ID, None, 0.0, -0.12, 21, return_vat_percentage=0)
+    day = build_day(hass, today, [ENTSOE_ENTITY_ID], 0.0, -0.12, 21, return_vat_percentage=0)
 
     assert day.hour[5].earning == Earning.NO_EARNING
 
@@ -366,9 +370,7 @@ def test_parse_entsoe_prices_none_state_handled_by_caller(hass: HomeAssistant):
     mock_hass = MagicMock()
     mock_hass.states.get.return_value = None
 
-    prices = read_hour_prices(
-        mock_hass, ENTSOE_ENTITY_ID, None, dt_util.now().date(), "prices_today"
-    )
+    prices = read_hour_prices(mock_hass, [ENTSOE_ENTITY_ID], dt_util.now().date())
 
     assert prices is None
 

@@ -12,12 +12,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.alpha_ess_local.solar import (
     _wh_hours_to_day_hours,
     build_day,
+    configured_solar_sources,
     get_combined_solar_forecast,
     get_solar_forecast,
     read_solar_forecast,
@@ -171,7 +173,11 @@ async def test_read_solar_forecast_prefers_forecast_solar(hass: HomeAssistant):
         "custom_components.alpha_ess_local.solar.get_solar_forecast",
         fake_get_solar_forecast,
     ):
-        hours = await read_solar_forecast(hass, ["forecast-solar-entry"], ["solcast-entry"], today)
+        hours = await read_solar_forecast(
+            hass,
+            [("forecast_solar", ["forecast-solar-entry"]), ("solcast_solar", ["solcast-entry"])],
+            today,
+        )
 
     assert hours == {0: 123.0}
 
@@ -188,7 +194,11 @@ async def test_read_solar_forecast_falls_back_to_solcast(hass: HomeAssistant):
         "custom_components.alpha_ess_local.solar.get_solar_forecast",
         fake_get_solar_forecast,
     ):
-        hours = await read_solar_forecast(hass, ["forecast-solar-entry"], ["solcast-entry"], today)
+        hours = await read_solar_forecast(
+            hass,
+            [("forecast_solar", ["forecast-solar-entry"]), ("solcast_solar", ["solcast-entry"])],
+            today,
+        )
 
     assert hours == {6: 55.0}
 
@@ -206,18 +216,22 @@ async def test_read_solar_forecast_with_source_solcast_first(hass: HomeAssistant
         fake_get_solar_forecast,
     ):
         default = await read_solar_forecast_with_source(
-            hass, ["forecast-solar-entry"], ["solcast-entry"], today
+            hass,
+            [("forecast_solar", ["forecast-solar-entry"]), ("solcast_solar", ["solcast-entry"])],
+            today,
         )
         solcast_first = await read_solar_forecast_with_source(
-            hass, ["forecast-solar-entry"], ["solcast-entry"], today, primary="solcast"
+            hass,
+            [("solcast_solar", ["solcast-entry"]), ("forecast_solar", ["forecast-solar-entry"])],
+            today,
         )
 
     assert default == ({0: 123.0}, "forecast_solar")
-    assert solcast_first == ({0: 999.0}, "solcast")
+    assert solcast_first == ({0: 999.0}, "solcast_solar")
 
 
 async def test_read_solar_forecast_returns_none_when_both_missing(hass: HomeAssistant):
-    hours = await read_solar_forecast(hass, [], [], dt_util.now().date())
+    hours = await read_solar_forecast(hass, [], dt_util.now().date())
 
     assert hours is None
 
@@ -232,7 +246,7 @@ async def test_build_day_populates_estimated_solar_power(hass: HomeAssistant):
         "custom_components.alpha_ess_local.solar.get_solar_forecast",
         fake_get_solar_forecast,
     ):
-        day = await build_day(hass, today, ["forecast-solar-entry"], [])
+        day = await build_day(hass, today, [("forecast_solar", ["forecast-solar-entry"])])
 
     assert day.valid is True
     assert day.hour[9].valid is True
@@ -240,7 +254,7 @@ async def test_build_day_populates_estimated_solar_power(hass: HomeAssistant):
 
 
 async def test_build_day_stays_invalid_when_no_source_configured(hass: HomeAssistant):
-    day = await build_day(hass, dt_util.now().date(), [], [])
+    day = await build_day(hass, dt_util.now().date(), [])
 
     assert day.valid is False
 
@@ -255,7 +269,7 @@ async def test_build_day_without_correction_leaves_raw_and_corrected_equal(hass:
         "custom_components.alpha_ess_local.solar.get_solar_forecast",
         fake_get_solar_forecast,
     ):
-        day = await build_day(hass, today, ["forecast-solar-entry"], [])
+        day = await build_day(hass, today, [("forecast_solar", ["forecast-solar-entry"])])
 
     assert day.hour[9].estimated_solar_power_raw == 321.0
     assert day.hour[9].estimated_solar_power == 321
@@ -272,7 +286,10 @@ async def test_build_day_applies_reliable_correction(hass: HomeAssistant):
         fake_get_solar_forecast,
     ):
         day = await build_day(
-            hass, today, ["forecast-solar-entry"], [], hour_correction={9: (1.5, 10.0)}
+            hass,
+            today,
+            [("forecast_solar", ["forecast-solar-entry"])],
+            hour_correction={9: (1.5, 10.0)},
         )
 
     assert day.hour[9].estimated_solar_power_raw == 200.0
@@ -290,7 +307,66 @@ async def test_build_day_skips_unreliable_correction(hass: HomeAssistant):
         fake_get_solar_forecast,
     ):
         day = await build_day(
-            hass, today, ["forecast-solar-entry"], [], hour_correction={9: (-1.0, 0.0)}
+            hass,
+            today,
+            [("forecast_solar", ["forecast-solar-entry"])],
+            hour_correction={9: (-1.0, 0.0)},
         )
 
     assert day.hour[9].estimated_solar_power == 200
+
+
+def test_configured_solar_sources_reads_the_old_lists():
+    """Saved before solar_forecast_entities existed: the old lists, in the
+    old order."""
+    old = {"forecast_solar_entries": ["a", "b"], "solcast_entries": ["s"]}
+
+    assert configured_solar_sources(None, old) == [
+        ("forecast_solar", ["a", "b"]),
+        ("solcast_solar", ["s"]),
+    ]
+    assert configured_solar_sources(None, {**old, "solar_source_primary": "solcast"}) == [
+        ("solcast_solar", ["s"]),
+        ("forecast_solar", ["a", "b"]),
+    ]
+    assert configured_solar_sources(None, {"solcast_entries": ["s"]}) == [("solcast_solar", ["s"])]
+
+
+async def test_configured_solar_sources_groups_the_locations_per_integration(
+    hass: HomeAssistant,
+):
+    """Each picked sensor stands for its location; locations of one
+    integration form one source, the sources in order of first appearance."""
+    registry = er.async_get(hass)
+    sensors = {}
+    for domain, title in (
+        ("solcast_solar", "Home"),
+        ("forecast_solar", "Achterkant"),
+        ("forecast_solar", "Voorkant"),
+    ):
+        config_entry = MockConfigEntry(domain=domain, title=title)
+        config_entry.add_to_hass(hass)
+        sensors[title] = (
+            config_entry.entry_id,
+            registry.async_get_or_create(
+                "sensor", domain, f"{title}_energy_production_today", config_entry=config_entry
+            ).entity_id,
+        )
+    picked = [
+        sensors["Achterkant"][1],
+        sensors["Home"][1],
+        sensors["Voorkant"][1],
+        "sensor.gone",
+    ]
+
+    assert configured_solar_sources(hass, {"solar_forecast_entities": picked}) == [
+        ("forecast_solar", [sensors["Achterkant"][0], sensors["Voorkant"][0]]),
+        ("solcast_solar", [sensors["Home"][0]]),
+    ]
+    # A saved (even empty) list wins over leftovers of the old lists.
+    assert (
+        configured_solar_sources(
+            hass, {"solar_forecast_entities": [], "forecast_solar_entries": ["a"]}
+        )
+        == []
+    )

@@ -54,6 +54,10 @@ DEFAULT_NETWORK_USE_FEE = 0.0
 # integration rather than duplicated here. No raw tokens are stored.
 CONF_ENTSOE_PRICE_ENTITY = "entsoe_price_entity"
 CONF_FRANK_ENERGIE_PRICE_ENTITY = "frank_energie_price_entity"
+# The price entities in the order they're tried (the first with prices is
+# used, the rest are backups) -- replaces the two entities above and
+# CONF_PRICE_SOURCE_PRIMARY, which are still read until prices are saved.
+CONF_PRICE_ENTITIES = "price_entities"
 
 # Options flow: solar forecast source config entries (config.ini [General])
 # Unlike the price sources above, these reference *config entries* (not
@@ -67,12 +71,21 @@ CONF_FORECAST_SOLAR_ENTRIES = "forecast_solar_entries"
 CONF_SOLCAST_ENTRIES = "solcast_entries"
 DEFAULT_FORECAST_SOLAR_ENTRIES: list[str] = []
 DEFAULT_SOLCAST_ENTRIES: list[str] = []
+# One sensor per solar forecast location, standing for its config entry, in
+# the order the sources are tried -- replaces the two lists above and
+# CONF_SOLAR_SOURCE_PRIMARY, which are still read until it's saved.
+CONF_SOLAR_FORECAST_ENTITIES = "solar_forecast_entities"
 
 # Options flow: optional local sensors (config.ini [General])
 # "extra" = a second, separately-metered PV installation besides the main
 # roof array (config.ini's ShellyPMPVPower/ShellyPMNetworkName) — not
 # necessarily garage-located, just wherever the extra array/meter is.
 CONF_EXTRA_PV_POWER_ENTITY = "extra_pv_power_entity"
+# Its power sensors, summed, and the switch that turns it off at negative
+# prices -- replace CONF_EXTRA_PV_POWER_ENTITY and the Modbus hub settings
+# below, still read until saved (see extra_pv.py).
+CONF_EXTRA_PV_POWER_ENTITIES = "extra_pv_power_entities"
+CONF_EXTRA_PV_SWITCH_ENTITY = "extra_pv_switch_entity"
 # Same Wp-per-panel * panel-count split as CONF_PV_POWER above -- see its
 # comment.
 CONF_EXTRA_PV_POWER_CAPACITY = "extra_pv_power_capacity"
@@ -103,6 +116,11 @@ DEFAULT_EXTRA_PV_MODBUS_ON_VALUE = 100
 DEFAULT_EXTRA_PV_MODBUS_OFF_VALUE = 0
 
 CONF_HOUSE_LOAD_POWER_ENTITY = "house_load_power_entity"
+# The smart meter's sensors, each picked on its own (see meter.py) --
+# replace CONF_HOUSE_LOAD_POWER_ENTITY, which is still read until saved.
+CONF_GRID_IMPORT_POWER_ENTITY = "grid_import_power_entity"
+CONF_GRID_EXPORT_POWER_ENTITY = "grid_export_power_entity"
+CONF_GRID_TARIFF_ENTITY = "grid_tariff_entity"
 # Optional EV charger sensors -- display only, not used for control: live
 # power (the panel's energy-flow scene splits the house load into rooms and
 # charger) and the cumulative energy counter (per-day totals in the panel).
@@ -122,8 +140,17 @@ DEFAULT_SOLAR_SOURCE_PRIMARY = SOLAR_SOURCE_FORECAST_SOLAR
 # integration's own per-string sensors.
 CONF_EXTRA_PV_STRING_ENTITIES = "extra_pv_string_entities"
 
+# One EV charger's sensors -- replaced by the lists below, still read until
+# the section is saved (see consumers.py).
 CONF_EV_CHARGER_POWER_ENTITY = "ev_charger_power_entity"
 CONF_EV_CHARGER_ENERGY_ENTITY = "ev_charger_energy_entity"
+# Consumers left out of the learned house load: the EV chargers' power
+# sensors and total-energy counters (also shown in the panel), and other
+# consumers' power sensors (a heat pump, ...).
+CONF_EV_CHARGER_POWER_ENTITIES = "ev_charger_power_entities"
+CONF_EV_CHARGER_ENERGY_ENTITIES = "ev_charger_energy_entities"
+CONF_EV_CHARGER_PHASE_ENTITIES = "ev_charger_phase_entities"
+CONF_EXCLUDED_LOAD_ENTITIES = "excluded_load_entities"
 
 # Options flow: scheduler tuning (config.ini [Daily])
 CONF_ALLOW_PROVIDER_CONTROL_HOURS = "allow_provider_control_hours"

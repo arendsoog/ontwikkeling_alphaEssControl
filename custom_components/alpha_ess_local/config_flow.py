@@ -9,6 +9,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import section
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
 
@@ -23,8 +24,12 @@ from .const import (
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
     CONF_ENTSOE_PRICE_ENTITY,
+    CONF_EV_CHARGER_ENERGY_ENTITIES,
     CONF_EV_CHARGER_ENERGY_ENTITY,
+    CONF_EV_CHARGER_PHASE_ENTITIES,
+    CONF_EV_CHARGER_POWER_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITY,
+    CONF_EXCLUDED_LOAD_ENTITIES,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_EXTRA_PV_MODBUS_ADDRESS,
     CONF_EXTRA_PV_MODBUS_HUB,
@@ -34,22 +39,29 @@ from .const import (
     CONF_EXTRA_PV_PANEL_COUNT,
     CONF_EXTRA_PV_PANEL_WP,
     CONF_EXTRA_PV_POWER_CAPACITY,
+    CONF_EXTRA_PV_POWER_ENTITIES,
     CONF_EXTRA_PV_POWER_ENTITY,
     CONF_EXTRA_PV_STRING_ENTITIES,
+    CONF_EXTRA_PV_SWITCH_ENTITY,
     CONF_FORECAST_SOLAR_ENTRIES,
     CONF_FRANK_ENERGIE_PRICE_ENTITY,
+    CONF_GRID_EXPORT_POWER_ENTITY,
+    CONF_GRID_IMPORT_POWER_ENTITY,
+    CONF_GRID_TARIFF_ENTITY,
     CONF_HOUSE_LOAD_POWER_ENTITY,
     CONF_INVERTER_NOMINAL_POWER,
     CONF_NETWORK_USE_FEE_LOW,
     CONF_NETWORK_USE_FEE_NORMAL,
     CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
+    CONF_PRICE_ENTITIES,
     CONF_PRICE_SOURCE_PRIMARY,
     CONF_PROVIDER_RETURN_FEE,
     CONF_PROVIDER_USE_FEE,
     CONF_PV_PANEL_COUNT,
     CONF_PV_PANEL_WP,
     CONF_PV_POWER,
+    CONF_SOLAR_FORECAST_ENTITIES,
     CONF_SOLAR_SOURCE_PRIMARY,
     CONF_SOLCAST_ENTRIES,
     CONF_USABLE_BATTERY_CAPACITY,
@@ -58,25 +70,29 @@ from .const import (
     DEFAULT_APPLY_VAT_ON_RETURN,
     DEFAULT_CONTROL_ENABLED,
     DEFAULT_EXTRA_PV_CONTROL_ENABLED,
-    DEFAULT_EXTRA_PV_MODBUS_ADDRESS,
-    DEFAULT_EXTRA_PV_MODBUS_OFF_VALUE,
-    DEFAULT_EXTRA_PV_MODBUS_ON_VALUE,
-    DEFAULT_EXTRA_PV_MODBUS_SLAVE,
-    DEFAULT_FORECAST_SOLAR_ENTRIES,
     DEFAULT_NETWORK_USE_FEE,
     DEFAULT_PERSIST_DAILY_CHARGE_LIMIT,
     DEFAULT_PORT,
-    DEFAULT_PRICE_SOURCE_PRIMARY,
     DEFAULT_PROVIDER_RETURN_FEE,
     DEFAULT_PROVIDER_USE_FEE,
-    DEFAULT_SOLAR_SOURCE_PRIMARY,
-    DEFAULT_SOLCAST_ENTRIES,
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
 )
-from .prices import PRICE_SOURCES
-from .solar import SOLAR_SOURCES
+from .consumers import (
+    ev_charger_energy_entities,
+    ev_charger_phase_entities,
+    ev_charger_power_entities,
+)
+from .extra_pv import (  # noqa: F401 -- SMA_* re-exported
+    SMA_PV_POWER_AGGREGATE_KEY,
+    SMA_PV_POWER_STRING_KEY,
+    detected_extra_pv_power_entities,
+    extra_pv_power_entities,
+)
+from .meter import configured_grid_meter, detected_meter_sensors, detected_peak_sensor
+from .prices import configured_price_entities, is_price_entity
+from .solar import SOLAR_SOURCES, configured_solar_sources, solar_source_name
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -100,169 +116,6 @@ def _count_selector() -> selector.NumberSelector:
     )
 
 
-def _config_entry_checklist(entries: list[config_entries.ConfigEntry]) -> selector.SelectSelector:
-    """A checkbox list of config entries (e.g. one per roof plane/location)."""
-    return selector.SelectSelector(
-        selector.SelectSelectorConfig(
-            options=[
-                selector.SelectOptionDict(value=entry.entry_id, label=entry.title)
-                for entry in entries
-            ],
-            multiple=True,
-            mode=selector.SelectSelectorMode.LIST,
-        )
-    )
-
-
-def _entities_with_attribute(
-    hass: HomeAssistant,
-    domain: str,
-    attribute: str,
-    *,
-    exclude_unique_id_prefix: str | None = None,
-) -> list[er.RegistryEntry]:
-    """Sensor entities from a domain's config entries that currently expose `attribute`.
-
-    Used to auto-detect the *specific* entity prices.py needs (e.g. ENTSO-e's
-    "average price" sensor, which carries the prices_today attribute) out of
-    every sensor that integration creates, rather than offering a raw pick-any
-    -sensor EntitySelector where it's easy to select the wrong one.
-
-    `exclude_unique_id_prefix` drops entities such as Frank Energie's gas-price
-    sensors, which carry the same `prices` attribute as the electricity ones
-    but use a stable "frank_energie.gas_*" unique_id regardless of locale.
-    """
-    registry = er.async_get(hass)
-    return [
-        reg_entry
-        for entry in hass.config_entries.async_entries(domain)
-        for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id)
-        if reg_entry.domain == "sensor"
-        and (state := hass.states.get(reg_entry.entity_id)) is not None
-        and attribute in state.attributes
-        and not (
-            exclude_unique_id_prefix and reg_entry.unique_id.startswith(exclude_unique_id_prefix)
-        )
-    ]
-
-
-def _entity_checklist(entries: list[er.RegistryEntry]) -> selector.SelectSelector:
-    """A single-pick list of candidate entities — same look as the config-entry checklists."""
-    return selector.SelectSelector(
-        selector.SelectSelectorConfig(
-            options=[
-                selector.SelectOptionDict(
-                    value=entry.entity_id,
-                    label=entry.name or entry.original_name or entry.entity_id,
-                )
-                for entry in entries
-            ],
-            mode=selector.SelectSelectorMode.LIST,
-        )
-    )
-
-
-def _house_load_candidates(hass: HomeAssistant) -> list[tuple[str, str]]:
-    """Auto-detect P1/smart-meter sources usable for real-time house load.
-
-    Two shapes, both matched by their entities' unique_id suffix (stable
-    across locales, unlike entity_id/friendly_name):
-    - HomeWizard P1 (`homewizard` integration): a single `*_active_power_w`
-      sensor already reports signed net power (positive=use, negative=feed)
-      — usable directly, so the candidate value is that entity_id.
-    - DSMR (`dsmr` integration): usage/delivery are two separate, always-
-      positive sensors (`*_current_electricity_usage`/`..._delivery`) — the
-      candidate value is the config entry ("dsmr:<entry_id>"), resolved to
-      both sibling entities and netted (usage - delivery) at read time —
-      see orchestrator.py's house-load reader.
-    """
-    registry = er.async_get(hass)
-    candidates: list[tuple[str, str]] = []
-
-    for entry in hass.config_entries.async_entries("homewizard"):
-        for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
-            if reg_entry.domain == "sensor" and reg_entry.unique_id.endswith("_active_power_w"):
-                candidates.append((reg_entry.entity_id, entry.title))
-
-    for entry in hass.config_entries.async_entries("dsmr"):
-        reg_entries = er.async_entries_for_config_entry(registry, entry.entry_id)
-        if any(e.unique_id.endswith("_current_electricity_usage") for e in reg_entries):
-            candidates.append((f"dsmr:{entry.entry_id}", entry.title))
-
-    return candidates
-
-
-# DSMR's own "belgium_maximum_demand_current_month" sensor -- the highest
-# monthly 15-minute-average peak, published only by Belgian "5B" meters
-# (verified against homeassistant/components/dsmr/sensor.py). Exactly what
-# CONF_PEAK_LOAD_THIS_MONTH_ENTITY wants (the capaciteitstarief floor), so
-# it's worth auto-detecting like the other DSMR-derived fields above,
-# instead of leaving that field a plain pick-any-sensor selector.
-_DSMR_PEAK_LOAD_KEY = "belgium_maximum_demand_current_month"
-
-
-def _peak_load_candidates(hass: HomeAssistant) -> list[tuple[str, str]]:
-    """Auto-detect DSMR's own peak-load-this-month sensor (Belgian 5B meters)."""
-    registry = er.async_get(hass)
-    candidates: list[tuple[str, str]] = []
-    for entry in hass.config_entries.async_entries("dsmr"):
-        for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
-            if reg_entry.domain == "sensor" and reg_entry.unique_id.endswith(
-                f"_{_DSMR_PEAK_LOAD_KEY}"
-            ):
-                candidates.append((reg_entry.entity_id, entry.title))
-    return candidates
-
-
-# pysma's internal register keys for its PV-power sensors, verified directly
-# from pysma/definitions/webconnect.py — pysma doesn't give these entities a
-# readable unique_id suffix the way HomeWizard/DSMR do, so there's nothing
-# more semantic to match on:
-# - "6100_0046C200" ("pv_power"): the *total* PV power — disabled by default
-#   in pysma, so often doesn't exist as a live entity at all.
-# - "6380_40251E00" ("pv_power_a"/"_b"/"_c"): per-MPPT-string power —
-#   enabled by default (a/b; c is off). Summed at read time when the total
-#   isn't available — see orchestrator.py.
-SMA_PV_POWER_AGGREGATE_KEY = "6100_0046C200"
-SMA_PV_POWER_STRING_KEY = "6380_40251E00"
-
-
-def _extra_pv_candidates(hass: HomeAssistant) -> list[tuple[str, str]]:
-    """Auto-detect a second/separate PV installation's power source.
-
-    Currently only SMA Solar (`sma` integration) is recognized — prefers the
-    total-power entity if enabled, otherwise falls back to summing the
-    per-string entities (see SMA_PV_POWER_*_KEY above).
-    """
-    registry = er.async_get(hass)
-    candidates: list[tuple[str, str]] = []
-
-    for entry in hass.config_entries.async_entries("sma"):
-        reg_entries = er.async_entries_for_config_entry(registry, entry.entry_id)
-        aggregate = next(
-            (e for e in reg_entries if e.unique_id.endswith(f"-{SMA_PV_POWER_AGGREGATE_KEY}_0")),
-            None,
-        )
-        if aggregate:
-            candidates.append((aggregate.entity_id, entry.title))
-        elif any(f"-{SMA_PV_POWER_STRING_KEY}_" in e.unique_id for e in reg_entries):
-            candidates.append((f"sma:{entry.entry_id}", entry.title))
-
-    return candidates
-
-
-def _value_label_checklist(candidates: list[tuple[str, str]]) -> selector.SelectSelector:
-    """A single-pick list built from explicit (value, label) pairs."""
-    return selector.SelectSelector(
-        selector.SelectSelectorConfig(
-            options=[
-                selector.SelectOptionDict(value=value, label=label) for value, label in candidates
-            ],
-            mode=selector.SelectSelectorMode.LIST,
-        )
-    )
-
-
 def _missing_source_note(hass: HomeAssistant, missing: list[str]) -> str:
     """A short note appended to the options form listing sources with nothing to pick from."""
     if not missing:
@@ -271,6 +124,37 @@ def _missing_source_note(hass: HomeAssistant, missing: list[str]) -> str:
     if hass.config.language.startswith("nl"):
         return f"\n\nGeen {sources} integratie gevonden — installeer er één voor deze functie."
     return f"\n\nNo {sources} integration found — install one to enable this feature."
+
+
+def _solar_sources_note(hass: HomeAssistant, options: Mapping[str, Any]) -> str:
+    """How the saved location list is read: per source, its summed locations.
+
+    The entity list itself can't show the grouping, so the form states it --
+    the same sources in the same order as solar.py tries them.
+    """
+    sources = configured_solar_sources(hass, options)
+    if not sources:
+        return ""
+    dutch = hass.config.language.startswith("nl")
+    parts = []
+    for index, (source, entry_ids) in enumerate(sources, start=1):
+        titles = [
+            entry.title
+            for entry_id in entry_ids
+            if (entry := hass.config_entries.async_get_entry(entry_id)) is not None
+        ]
+        part = f"{index}. {solar_source_name(source)}: {' + '.join(titles)}"
+        if len(titles) > 1:
+            part += " (opgeteld)" if dutch else " (summed)"
+        if index > 1:
+            part += " (reserve)" if dutch else " (backup)"
+        parts.append(part)
+    label = "Nu gebruikt" if dutch else "In use now"
+    return f"\n\n**{label}:** " + " · ".join(parts)
+
+
+# Notes a section's description shows besides the missing-source note.
+_SECTION_NOTES = {"solar_forecast": _solar_sources_note}
 
 
 def _eur_per_kwh_selector(*, min_value: float | None = None) -> selector.NumberSelector:
@@ -318,28 +202,39 @@ def _installation_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Se
     ], []
 
 
-def _source_order_selector(sources: Mapping[str, str]) -> selector.SelectSelector:
-    """Pick which of two sources is used first (the other is the fallback)."""
-    return selector.SelectSelector(
-        selector.SelectSelectorConfig(
-            options=[
-                selector.SelectOptionDict(value=key, label=f"1. {name}  ·  2. {other}")
-                for key, name in sources.items()
-                for other_key, other in sources.items()
-                if other_key != key
-            ],
-            mode=selector.SelectSelectorMode.LIST,
-        )
-    )
+def _price_entity_candidates(hass: HomeAssistant) -> list[str]:
+    """Sensors carrying day-ahead prices prices.py can read (ENTSO-e,
+    Frank Energie, Nord Pool, ...), for the price-entity picker.
+
+    Frank Energie's gas-price sensors carry the same `prices` attribute as
+    the electricity ones; they're left out by their stable unique_id.
+    """
+    registry = er.async_get(hass)
+    candidates = []
+    for state in hass.states.async_all("sensor"):
+        if not is_price_entity(state):
+            continue
+        reg_entry = registry.async_get(state.entity_id)
+        if reg_entry and reg_entry.unique_id.startswith("frank_energie.gas_"):
+            continue
+        candidates.append(state.entity_id)
+    return candidates
+
+
+def _ordered_entities_selector(include_entities: list[str]) -> selector.EntitySelector:
+    """A list of entities picked one by one ("add entity"), in the order
+    they're tried -- draggable on Home Assistant versions that can."""
+    config: dict[str, Any] = {"domain": "sensor", "multiple": True}
+    if include_entities:
+        config["include_entities"] = include_entities
+    try:
+        return selector.EntitySelector({**config, "reorder": True})
+    except vol.Invalid:
+        return selector.EntitySelector(config)
 
 
 def _prices_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """Supplier/network fees, VAT, and the price source entity."""
-    entsoe_entities = _entities_with_attribute(hass, "entsoe", "prices_today")
-    frank_energie_entities = _entities_with_attribute(
-        hass, "frank_energie", "prices", exclude_unique_id_prefix="frank_energie.gas_"
-    )
-
+    """Supplier/network fees, VAT, and the price entities."""
     fields: list[tuple[Any, Any]] = [
         (
             vol.Optional(
@@ -399,133 +294,112 @@ def _prices_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionF
         ),
     ]
 
-    # Price source fields are auto-populated checklists (see
-    # _entities_with_attribute), not a raw pick-any-sensor EntitySelector:
-    # this way there's nothing to misconfigure, and the field simply doesn't
-    # appear when the corresponding integration isn't installed — see the
-    # `missing` note returned below.
-    if entsoe_entities:
-        fields.append(
-            (
-                vol.Optional(
-                    CONF_ENTSOE_PRICE_ENTITY,
-                    description={"suggested_value": options.get(CONF_ENTSOE_PRICE_ENTITY)},
-                ),
-                _entity_checklist(entsoe_entities),
-            )
+    # The price entities: picked one by one, tried in their order -- the
+    # first with prices for a day is used, the next ones are backups. The
+    # picker offers only sensors with readable prices (plus the ones already
+    # chosen, should one be unavailable right now).
+    configured = configured_price_entities(options)
+    candidates = _price_entity_candidates(hass)
+    fields.append(
+        (
+            vol.Optional(CONF_PRICE_ENTITIES, description={"suggested_value": configured}),
+            _ordered_entities_selector(
+                [*candidates, *(entity for entity in configured if entity not in candidates)]
+            ),
         )
-    if frank_energie_entities:
-        fields.append(
-            (
-                vol.Optional(
-                    CONF_FRANK_ENERGIE_PRICE_ENTITY,
-                    description={"suggested_value": options.get(CONF_FRANK_ENERGIE_PRICE_ENTITY)},
-                ),
-                _entity_checklist(frank_energie_entities),
-            )
-        )
-    if entsoe_entities and frank_energie_entities:
-        fields.append(
-            (
-                vol.Optional(
-                    CONF_PRICE_SOURCE_PRIMARY,
-                    default=options.get(CONF_PRICE_SOURCE_PRIMARY, DEFAULT_PRICE_SOURCE_PRIMARY),
-                ),
-                _source_order_selector(PRICE_SOURCES),
-            )
-        )
+    )
 
-    missing = [
-        name
-        for name, found in (("ENTSO-E", entsoe_entities), ("Frank Energie", frank_energie_entities))
-        if not found
-    ]
+    missing = [] if candidates or configured else ["ENTSO-E / Frank Energie / Nord Pool"]
     return fields, missing
+
+
+def _location_sensor(hass: HomeAssistant, entry_id: str) -> str | None:
+    """The sensor that stands for a solar forecast location (config entry)
+    in the options: its "energy production today", else its first sensor."""
+    sensors = [
+        reg_entry
+        for reg_entry in er.async_entries_for_config_entry(er.async_get(hass), entry_id)
+        if reg_entry.domain == "sensor" and not reg_entry.disabled_by
+    ]
+    preferred = next(
+        (
+            reg_entry
+            for reg_entry in sensors
+            if reg_entry.unique_id.endswith(("energy_production_today", "forecast_today"))
+        ),
+        sensors[0] if sensors else None,
+    )
+    return preferred.entity_id if preferred else None
 
 
 def _solar_forecast_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
     """Solar forecast sources.
 
-    A checklist of config entries (not entities) — Forecast.Solar/Solcast
-    only expose their full hourly forecast via HA's "energy platform" hook
-    (async_get_solar_forecast), keyed by config_entry_id. Any number of
-    entries can be ticked (e.g. one Forecast.Solar entry per roof
-    plane/location); their forecasts get summed together in solar.py.
-    Omitted entirely when there are no entries to pick from.
+    Forecast.Solar/Solcast expose their full hourly forecast only via HA's
+    "energy platform" hook (async_get_solar_forecast), keyed by config
+    entry -- so each location is picked by one of its sensors, standing for
+    its config entry. Picked one by one and dragged in order like the price
+    entities; the locations of one integration are summed (e.g. one
+    Forecast.Solar entry per roof plane), see solar.py.
     """
-    forecast_solar_entries = hass.config_entries.async_entries("forecast_solar")
-    solcast_entries = hass.config_entries.async_entries("solcast_solar")
-
-    fields: list[tuple[Any, Any]] = []
-    if forecast_solar_entries:
-        fields.append(
-            (
-                vol.Optional(
-                    CONF_FORECAST_SOLAR_ENTRIES,
-                    default=options.get(
-                        CONF_FORECAST_SOLAR_ENTRIES, DEFAULT_FORECAST_SOLAR_ENTRIES
-                    ),
-                ),
-                _config_entry_checklist(forecast_solar_entries),
-            )
-        )
-    if solcast_entries:
-        fields.append(
-            (
-                vol.Optional(
-                    CONF_SOLCAST_ENTRIES,
-                    default=options.get(CONF_SOLCAST_ENTRIES, DEFAULT_SOLCAST_ENTRIES),
-                ),
-                _config_entry_checklist(solcast_entries),
-            )
-        )
-    if forecast_solar_entries and solcast_entries:
-        fields.append(
-            (
-                vol.Optional(
-                    CONF_SOLAR_SOURCE_PRIMARY,
-                    default=options.get(CONF_SOLAR_SOURCE_PRIMARY, DEFAULT_SOLAR_SOURCE_PRIMARY),
-                ),
-                _source_order_selector(SOLAR_SOURCES),
-            )
-        )
-
-    missing = [
-        name
-        for name, found in (
-            ("Forecast.Solar", forecast_solar_entries),
-            ("Solcast", solcast_entries),
-        )
-        if not found
+    candidates = [
+        entity_id
+        for domain in SOLAR_SOURCES
+        for entry in hass.config_entries.async_entries(domain)
+        if (entity_id := _location_sensor(hass, entry.entry_id))
     ]
+    if CONF_SOLAR_FORECAST_ENTITIES in options:
+        configured = list(options[CONF_SOLAR_FORECAST_ENTITIES] or [])
+    else:
+        configured = [
+            entity_id
+            for _, entry_ids in configured_solar_sources(hass, options)
+            for entry_id in entry_ids
+            if (entity_id := _location_sensor(hass, entry_id))
+        ]
+
+    fields: list[tuple[Any, Any]] = [
+        (
+            vol.Optional(CONF_SOLAR_FORECAST_ENTITIES, description={"suggested_value": configured}),
+            _ordered_entities_selector(
+                [*candidates, *(entity for entity in configured if entity not in candidates)]
+            ),
+        )
+    ]
+    missing = [] if candidates or configured else ["Forecast.Solar / Solcast"]
     return fields, missing
 
 
 def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """A second/separate PV installation and its Modbus price control."""
-    extra_pv_candidates = _extra_pv_candidates(hass)
-    return [
-        (
-            vol.Optional(
-                CONF_EXTRA_PV_POWER_ENTITY,
-                description={"suggested_value": options.get(CONF_EXTRA_PV_POWER_ENTITY)},
-            ),
-            # Same tick-if-detected pattern as house-load: prefers an
-            # auto-detected source (currently SMA Solar), falls back to a
-            # manual pick-any-sensor selector when nothing is detected.
-            _value_label_checklist(extra_pv_candidates)
-            if extra_pv_candidates
-            else selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-        ),
-        (
-            vol.Optional(
-                CONF_EXTRA_PV_STRING_ENTITIES,
-                description={"suggested_value": options.get(CONF_EXTRA_PV_STRING_ENTITIES)},
-            ),
+    """The extra energy source (a second solar installation, ...) in three
+    blocks: its measurement, its panels, and the switch that turns it off at
+    negative prices (collapsed) -- see extra_pv.py.
+
+    The power is pre-filled with the saved sensors (also the old single
+    source), or with a detected SMA integration's when nothing is saved.
+    """
+    if CONF_EXTRA_PV_POWER_ENTITIES in options or options.get(CONF_EXTRA_PV_POWER_ENTITY):
+        power = extra_pv_power_entities(hass, options)
+    else:
+        power = detected_extra_pv_power_entities(hass)
+
+    def entities(key: str, value: Any, device_class: str) -> tuple[Any, Any]:
+        return (
+            vol.Optional(key, description={"suggested_value": value}),
             selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor", device_class="power", multiple=True)
+                selector.EntitySelectorConfig(
+                    domain="sensor", device_class=device_class, multiple=True
+                )
             ),
+        )
+
+    measurement = [
+        entities(CONF_EXTRA_PV_POWER_ENTITIES, power, "power"),
+        entities(
+            CONF_EXTRA_PV_STRING_ENTITIES, options.get(CONF_EXTRA_PV_STRING_ENTITIES), "power"
         ),
+    ]
+    installation = [
         (
             vol.Optional(CONF_EXTRA_PV_PANEL_WP, default=options.get(CONF_EXTRA_PV_PANEL_WP, 0)),
             _power_selector("Wp"),
@@ -536,11 +410,11 @@ def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sectio
             ),
             _count_selector(),
         ),
+    ]
+    control = [
         (
-            # Dedicated feature toggle for the extra-PV price control below —
-            # separate from CONF_CONTROL_ENABLED, so the hub/register config
-            # can be entered once and paused/resumed without clearing it.
-            # Defaults off.
+            # Its own toggle, separate from CONF_CONTROL_ENABLED, so the
+            # switch can be picked once and paused/resumed. Defaults off.
             vol.Optional(
                 CONF_EXTRA_PV_CONTROL_ENABLED,
                 default=options.get(
@@ -550,116 +424,99 @@ def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sectio
             selector.BooleanSelector(),
         ),
         (
-            # Register layout isn't the same for every SMA installation, so
-            # all of hub/slave/address/values are configurable rather than
-            # hardcoded — see dispatch.decide_extra_pv_state.
             vol.Optional(
-                CONF_EXTRA_PV_MODBUS_HUB,
-                description={"suggested_value": options.get(CONF_EXTRA_PV_MODBUS_HUB)},
+                CONF_EXTRA_PV_SWITCH_ENTITY,
+                description={"suggested_value": options.get(CONF_EXTRA_PV_SWITCH_ENTITY)},
             ),
-            selector.TextSelector(),
-        ),
-        (
-            vol.Optional(
-                CONF_EXTRA_PV_MODBUS_SLAVE,
-                default=options.get(CONF_EXTRA_PV_MODBUS_SLAVE, DEFAULT_EXTRA_PV_MODBUS_SLAVE),
-            ),
-            selector.NumberSelector(
-                selector.NumberSelectorConfig(mode=selector.NumberSelectorMode.BOX, min=0, step=1)
+            selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["switch", "input_boolean"])
             ),
         ),
+    ]
+    return [
+        (vol.Required("measurement"), section(vol.Schema(dict(measurement)))),
+        (vol.Required("installation"), section(vol.Schema(dict(installation)))),
         (
-            vol.Optional(
-                CONF_EXTRA_PV_MODBUS_ADDRESS,
-                default=options.get(CONF_EXTRA_PV_MODBUS_ADDRESS, DEFAULT_EXTRA_PV_MODBUS_ADDRESS),
-            ),
-            selector.NumberSelector(
-                selector.NumberSelectorConfig(mode=selector.NumberSelectorMode.BOX, min=0, step=1)
-            ),
-        ),
-        (
-            vol.Optional(
-                CONF_EXTRA_PV_MODBUS_ON_VALUE,
-                default=options.get(
-                    CONF_EXTRA_PV_MODBUS_ON_VALUE, DEFAULT_EXTRA_PV_MODBUS_ON_VALUE
-                ),
-            ),
-            selector.NumberSelector(
-                selector.NumberSelectorConfig(mode=selector.NumberSelectorMode.BOX, step=1)
-            ),
-        ),
-        (
-            vol.Optional(
-                CONF_EXTRA_PV_MODBUS_OFF_VALUE,
-                default=options.get(
-                    CONF_EXTRA_PV_MODBUS_OFF_VALUE, DEFAULT_EXTRA_PV_MODBUS_OFF_VALUE
-                ),
-            ),
-            selector.NumberSelector(
-                selector.NumberSelectorConfig(mode=selector.NumberSelectorMode.BOX, step=1)
-            ),
+            vol.Required("control"),
+            section(vol.Schema(dict(control)), {"collapsed": True}),
         ),
     ], []
 
 
 def _ev_charger_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """EV charger sensors -- display only (the panel), not used for control."""
+    """Consumers left out of the learned house load: EV chargers (also shown
+    in the panel) and other consumers (a heat pump, ...), any number of
+    each, picked one by one -- see consumers.py."""
+
+    def entities_field(key: str, suggested: list[str], device_class: str) -> tuple[Any, Any]:
+        return (
+            vol.Optional(key, description={"suggested_value": suggested}),
+            selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain="sensor", device_class=device_class, multiple=True
+                )
+            ),
+        )
+
     return [
-        (
-            vol.Optional(
-                CONF_EV_CHARGER_POWER_ENTITY,
-                description={"suggested_value": options.get(CONF_EV_CHARGER_POWER_ENTITY)},
-            ),
-            selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor", device_class="power")
-            ),
+        entities_field(CONF_EV_CHARGER_POWER_ENTITIES, ev_charger_power_entities(options), "power"),
+        entities_field(
+            CONF_EV_CHARGER_ENERGY_ENTITIES, ev_charger_energy_entities(options), "energy"
         ),
-        (
-            vol.Optional(
-                CONF_EV_CHARGER_ENERGY_ENTITY,
-                description={"suggested_value": options.get(CONF_EV_CHARGER_ENERGY_ENTITY)},
-            ),
-            selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor", device_class="energy")
-            ),
+        entities_field(CONF_EV_CHARGER_PHASE_ENTITIES, ev_charger_phase_entities(options), "power"),
+        entities_field(
+            CONF_EXCLUDED_LOAD_ENTITIES,
+            list(options.get(CONF_EXCLUDED_LOAD_ENTITIES) or []),
+            "power",
         ),
     ], []
 
 
 def _meter_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """Smart-meter (P1/DSMR) sources: live house load and monthly peak."""
-    house_load_candidates = _house_load_candidates(hass)
-    peak_load_candidates = _peak_load_candidates(hass)
+    """The smart (P1) meter's sensors, each picked on its own so any P1
+    integration works -- see meter.py.
+
+    Pre-filled with the saved meter (also one saved the old way, as a single
+    house-load source); with none saved yet, with a detected DSMR/HomeWizard
+    meter's sensors. The month's peak is pre-filled with a detected sensor
+    whenever none is saved (as before).
+    """
+    meter = configured_grid_meter(hass, options)
+    if meter is not None:
+        suggested = {
+            CONF_GRID_IMPORT_POWER_ENTITY: meter.import_entity,
+            CONF_GRID_EXPORT_POWER_ENTITY: meter.export_entity,
+            CONF_GRID_TARIFF_ENTITY: meter.tariff_entity,
+        }
+    elif CONF_GRID_IMPORT_POWER_ENTITY in options or CONF_HOUSE_LOAD_POWER_ENTITY in options:
+        suggested = {}
+    else:
+        suggested = detected_meter_sensors(hass)
+
+    def power_field(key: str) -> tuple[Any, Any]:
+        return (
+            vol.Optional(key, description={"suggested_value": suggested.get(key)}),
+            selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="power")
+            ),
+        )
+
     return [
+        power_field(CONF_GRID_IMPORT_POWER_ENTITY),
+        power_field(CONF_GRID_EXPORT_POWER_ENTITY),
         (
             vol.Optional(
-                CONF_HOUSE_LOAD_POWER_ENTITY,
-                description={"suggested_value": options.get(CONF_HOUSE_LOAD_POWER_ENTITY)},
+                CONF_GRID_TARIFF_ENTITY,
+                description={"suggested_value": suggested.get(CONF_GRID_TARIFF_ENTITY)},
             ),
-            # Tick a detected P1/smart-meter source (HomeWizard P1, DSMR) when
-            # any exist; otherwise fall back to a manual pick-any-sensor
-            # selector — unlike the price/solar sources, "no match" here
-            # just means an undetected meter brand, not a missing integration,
-            # so this field is never simply omitted.
-            _value_label_checklist(house_load_candidates)
-            if house_load_candidates
-            else selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
+            selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
         ),
         (
             vol.Optional(
                 CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
-                # Pre-fills with the previously saved value if there is one;
-                # otherwise with DSMR's own "belgium_maximum_demand_current_
-                # month" sensor when detected (Belgian 5B meters). Always a
-                # plain pick-any-sensor selector (not a locked checklist like
-                # house-load/extra-PV) -- unlike those, this field has
-                # no "wrong" alternative to guard against, so it should
-                # always be free to point at any sensor, auto-detected or
-                # not, shown by its own friendly name rather than the DSMR
-                # hub's host:port title.
                 description={
                     "suggested_value": options.get(CONF_PEAK_LOAD_THIS_MONTH_ENTITY)
-                    or (peak_load_candidates[0][0] if peak_load_candidates else None)
+                    or detected_peak_sensor(hass)
                 },
             ),
             selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
@@ -712,11 +569,62 @@ OPTIONS_SECTIONS = {
     "installation": _installation_fields,
     "prices": _prices_fields,
     "solar_forecast": _solar_forecast_fields,
+    "meter": _meter_fields,
     "extra_pv": _extra_pv_fields,
     "ev_charger": _ev_charger_fields,
-    "meter": _meter_fields,
     "control": _control_fields,
 }
+
+# Options a section's newer field replaced: dropped when that section is
+# saved, so they aren't read as a fallback any more.
+_SUPERSEDED_KEYS = {
+    "prices": {
+        CONF_ENTSOE_PRICE_ENTITY,
+        CONF_FRANK_ENERGIE_PRICE_ENTITY,
+        CONF_PRICE_SOURCE_PRIMARY,
+    },
+    "meter": {CONF_HOUSE_LOAD_POWER_ENTITY},
+    "ev_charger": {CONF_EV_CHARGER_POWER_ENTITY, CONF_EV_CHARGER_ENERGY_ENTITY},
+    "extra_pv": {CONF_EXTRA_PV_POWER_ENTITY},
+    "solar_forecast": {
+        CONF_FORECAST_SOLAR_ENTRIES,
+        CONF_SOLCAST_ENTRIES,
+        CONF_SOLAR_SOURCE_PRIMARY,
+    },
+}
+
+
+# The old Modbus switching of the extra source, dropped once a switch is picked.
+_EXTRA_PV_MODBUS_KEYS = (
+    CONF_EXTRA_PV_MODBUS_HUB,
+    CONF_EXTRA_PV_MODBUS_SLAVE,
+    CONF_EXTRA_PV_MODBUS_ADDRESS,
+    CONF_EXTRA_PV_MODBUS_ON_VALUE,
+    CONF_EXTRA_PV_MODBUS_OFF_VALUE,
+)
+
+
+def _field_keys(schema: vol.Schema) -> set[str]:
+    """A form's option keys, also those inside its blocks (sections)."""
+    keys: set[str] = set()
+    for marker, value in schema.schema.items():
+        if isinstance(value, section):
+            keys |= _field_keys(value.schema)
+        else:
+            keys.add(str(marker))
+    return keys
+
+
+def _flatten_blocks(schema: vol.Schema, user_input: Mapping[str, Any]) -> dict[str, Any]:
+    """The submitted values with the blocks' (sections') fields lifted out."""
+    flat: dict[str, Any] = {}
+    for key, value in user_input.items():
+        marker = next((m for m in schema.schema if str(m) == key), None)
+        if marker is not None and isinstance(schema.schema[marker], section):
+            flat.update(value or {})
+        else:
+            flat[key] = value
+    return flat
 
 
 def _section_schema(
@@ -841,13 +749,18 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
         schema, missing = _section_schema(self.hass, section, self.config_entry.options)
 
         if user_input is not None:
-            section_keys = {str(marker) for marker in schema.schema}
+            user_input = _flatten_blocks(schema, user_input)
+            section_keys = _field_keys(schema) | _SUPERSEDED_KEYS.get(section, set())
             data = {
                 key: value
                 for key, value in self.config_entry.options.items()
                 if key not in section_keys
             }
             data.update(user_input)
+            if data.get(CONF_EXTRA_PV_SWITCH_ENTITY):
+                # The switch replaces the old Modbus hub settings.
+                for key in _EXTRA_PV_MODBUS_KEYS:
+                    data.pop(key, None)
             data[CONF_PV_POWER] = data.get(CONF_PV_PANEL_WP, 0) * data.get(CONF_PV_PANEL_COUNT, 0)
             data[CONF_EXTRA_PV_POWER_CAPACITY] = data.get(CONF_EXTRA_PV_PANEL_WP, 0) * data.get(
                 CONF_EXTRA_PV_PANEL_COUNT, 0
@@ -858,6 +771,11 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
             step_id=section,
             data_schema=schema,
             description_placeholders={
-                "missing_source_note": _missing_source_note(self.hass, missing)
+                "missing_source_note": _missing_source_note(self.hass, missing),
+                "sources_note": (
+                    note(self.hass, self.config_entry.options)
+                    if (note := _SECTION_NOTES.get(section))
+                    else ""
+                ),
             },
         )

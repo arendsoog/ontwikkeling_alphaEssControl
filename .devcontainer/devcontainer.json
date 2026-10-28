@@ -2,6 +2,12 @@
     "name": "AlphaESSControl (HACS dev)",
     "image": "mcr.microsoft.com/devcontainers/python:3.14",
     "postCreateCommand": "scripts/setup",
+    // uv (which Home Assistant installs its requirements with) uses its own
+    // root certificates unless told to use the system's -- the ones
+    // scripts/trust-local-ca adds for a TLS-intercepting antivirus.
+    "containerEnv": {
+        "UV_NATIVE_TLS": "true"
+    },
     "forwardPorts": [8123],
     "appPort": ["8123:8123"],
     "portsAttributes": {

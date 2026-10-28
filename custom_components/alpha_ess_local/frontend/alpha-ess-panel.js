@@ -105,15 +105,27 @@ const LIFETIME = [
 
 // ---------------------------------------------------------------- helpers
 
+// The phase in a sensor's name ("... L2", "... fase 2") as "L2", else null.
+function phaseOf(name) {
+  const match = /(?:\bL|fase\s*)([123])\b/i.exec(name);
+  return match ? `L${match[1]}` : null;
+}
+
 const esc = (value) =>
   String(value ?? "").replace(
     /[&<>"']/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
   );
 
+// An SMA inverter reports "no value" (asleep at night) as the lowest
+// 32-bit number; it means no power, as orchestrator.py's _entity_power
+// reads it too.
+const SMA_S32_NAN = -2147483648;
+
 const num = (value) => {
   if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
+  if (n === SMA_S32_NAN) return 0;
   return Number.isFinite(n) ? n : null;
 };
 
@@ -584,7 +596,7 @@ class AlphaEssPanel extends HTMLElement {
       // option toggles and settings don't vanish until the next refresh.
       console.debug("alpha-ess-panel: panel_status failed", err);
     }
-    const evEnergy = this._evEnergyId();
+    const evEnergy = this._evEnergyIds().join(",");
     if (evEnergy !== this._loadedEvEnergy) {
       this._loadedEvEnergy = evEnergy;
       if (evEnergy) this._loadHistory();
@@ -592,8 +604,13 @@ class AlphaEssPanel extends HTMLElement {
     this._renderAll();
   }
 
-  _evEnergyId() {
-    return (this._status && this._status.ev_charger_energy_entity) || null;
+  // The EV chargers' sensors chosen in the options (any number of each).
+  _evPowerIds() {
+    return (this._status && this._status.ev_charger_power_entities) || [];
+  }
+
+  _evEnergyIds() {
+    return (this._status && this._status.ev_charger_energy_entities) || [];
   }
 
   async _loadHistory() {
@@ -604,12 +621,17 @@ class AlphaEssPanel extends HTMLElement {
     ];
     const counterIds = [
       ...new Set(
-        [...this._devices.flatMap((d) => Object.values(COUNTERS).map((k) => d.entities[k])), this._evEnergyId()].filter(
+        [...this._devices.flatMap((d) => Object.values(COUNTERS).map((k) => d.entities[k])), ...this._evEnergyIds()].filter(
           Boolean
         )
       ),
     ];
     const now = new Date();
+    // Loads can overlap (the panel opens, then the options arrive with the
+    // EV chargers' counters): only the latest one's results are kept, so an
+    // older load finishing last can't overwrite them.
+    const seq = (this._historySeq = (this._historySeq || 0) + 1);
+    const stale = () => seq !== this._historySeq;
 
     try {
       const raw = await this._hass.callWS({
@@ -621,6 +643,7 @@ class AlphaEssPanel extends HTMLElement {
         no_attributes: true,
         significant_changes_only: false,
       });
+      if (stale()) return;
       const history = {};
       for (const [id, entries] of Object.entries(raw || {})) {
         history[id] = entries
@@ -634,6 +657,7 @@ class AlphaEssPanel extends HTMLElement {
 
     try {
       const today = await this._hass.callWS({ type: `${DOMAIN}/today_power` });
+      if (stale()) return;
       this._todayPower = today && Array.isArray(today.samples) ? today : null;
     } catch (err) {
       // Older backend without the command: fall back to recorder history only.
@@ -651,6 +675,7 @@ class AlphaEssPanel extends HTMLElement {
           types: ["change"],
           units: { energy: "kWh" },
         });
+        if (stale()) return;
         this._stats = week || {};
       } catch (err) {
         this._stats = this._stats || {};
@@ -704,10 +729,15 @@ class AlphaEssPanel extends HTMLElement {
     return this._dailyTotals(key, entities)[startOfDay().getTime()] ?? null;
   }
 
-  // kWh the EV charger delivered today, from its total-energy counter.
-  _evTodayKwh() {
-    const id = this._evEnergyId();
-    return id ? this._dailyTotalsById(id)[startOfDay().getTime()] ?? null : null;
+  // kWh an EV charger delivered today, from its total-energy counter.
+  _evTodayKwh(id) {
+    return this._dailyTotalsById(id)[startOfDay().getTime()] ?? null;
+  }
+
+  // kWh all EV chargers delivered today (null when none is known).
+  _evTodayTotalKwh() {
+    const values = this._evEnergyIds().map((id) => this._evTodayKwh(id)).filter((v) => v !== null);
+    return values.length ? values.reduce((sum, v) => sum + v, 0) : null;
   }
 
   _plan() {
@@ -892,13 +922,17 @@ class AlphaEssPanel extends HTMLElement {
     ).join("")}</div>`;
   }
 
-  // EV charger power in W from the sensor chosen in the options (W or kW).
+  // The EV chargers' power in W, summed, from the sensors chosen in the
+  // options (W or kW); null when none gives a reading.
   _evPower() {
-    const id = this._status && this._status.ev_charger_power_entity;
-    const state = id && this._hass.states[id];
-    const value = state ? num(state.state) : null;
-    if (value === null) return null;
-    return state.attributes.unit_of_measurement === "kW" ? value * 1000 : value;
+    let total = null;
+    for (const id of this._evPowerIds()) {
+      const state = this._hass.states[id];
+      const value = state ? num(state.state) : null;
+      if (value === null) continue;
+      total = (total || 0) + (state.attributes.unit_of_measurement === "kW" ? value * 1000 : value);
+    }
+    return total;
   }
 
   // Time-weighted mean of a sensor over the last `windowMs`, from the live
@@ -938,7 +972,7 @@ class AlphaEssPanel extends HTMLElement {
     const hasExtraPv =
       Boolean(this._entities.extra_pv_power) &&
       (extraPv !== null || Boolean(this._status && this._status.extra_pv_configured));
-    const hasEv = Boolean(this._status && this._status.ev_charger_power_entity);
+    const hasEv = this._evPowerIds().length > 0;
     const ev = hasEv ? this._evPower() : null;
     // The rooms get the house load minus what the car takes.
     const rooms = house !== null && ev !== null ? Math.max(0, house - ev) : house;
@@ -999,9 +1033,9 @@ class AlphaEssPanel extends HTMLElement {
         key: "ev",
         color: SCENE_COLOR.ev,
         value: fmtW(ev),
-        name: "EV-LADER",
-        entity: this._status.ev_charger_power_entity,
-        sub: this._evTodayKwh() === null ? "" : `${fmtNum(this._evTodayKwh(), 2)} kWh vandaag`,
+        name: this._evPowerIds().length > 1 ? "LAADPALEN" : "LAADPAAL",
+        entity: this._evPowerIds()[0],
+        sub: this._evTodayTotalKwh() === null ? "" : `${fmtNum(this._evTodayTotalKwh(), 2)} kWh vandaag`,
       },
     ].filter(Boolean);
 
@@ -1066,15 +1100,24 @@ class AlphaEssPanel extends HTMLElement {
       { label: "Net ingevoerd", value: this._todayTotal("imported"), color: COLOR.import, entity: COUNTERS.imported },
       { label: "Net teruggeleverd", value: this._todayTotal("exported"), color: COLOR.export, entity: COUNTERS.exported },
     ];
-    if (this._evEnergyId()) {
-      rows.push({ label: "EV geladen", value: this._evTodayKwh(), color: SCENE_COLOR.ev, entityId: this._evEnergyId() });
+    // One row per EV charger, by its energy counter's name when there's more than one.
+    const evIds = this._evEnergyIds();
+    for (const id of evIds) {
+      const state = this._hass.states[id];
+      const name = state && state.attributes.friendly_name;
+      rows.push({
+        label: evIds.length > 1 ? `Geladen: ${name || id}` : "Laadpaal geladen",
+        value: this._evTodayKwh(id),
+        color: SCENE_COLOR.ev,
+        entityId: id,
+      });
     }
     const max = Math.max(1, ...rows.map((r) => r.value || 0));
     const bars = rows
       .map(
         (r) => `
         <div class="energy-row" data-entity="${esc(r.entityId || this._entities[r.entity] || "")}">
-          <div class="energy-top"><span>${r.label}</span><span class="energy-value">${fmtNum(r.value, 2)}<small> kWh</small></span></div>
+          <div class="energy-top"><span>${esc(r.label)}</span><span class="energy-value">${fmtNum(r.value, 2)}<small> kWh</small></span></div>
           <div class="energy-bar"><div style="width:${((r.value || 0) / max) * 60}%;background:${r.color}"></div></div>
         </div>`
       )
@@ -1494,7 +1537,72 @@ class AlphaEssPanel extends HTMLElement {
       const extra = this._extraPvCard(device);
       if (extra) cards.push(extra);
     }
+    const chargers = (this._status && this._status.ev_chargers) || [];
+    chargers.forEach((group, i) => cards.push(this._evChargerCard(group, i, chargers.length)));
     return cards.join("");
+  }
+
+  // One card per EV charger (consumers.py's ev_charger_groups: its sensors
+  // grouped per HA device): power, kWh today and the current per phase.
+  _evChargerCard(group, index, count) {
+    let power = null;
+    for (const id of group.power) {
+      const s = this._hass.states[id];
+      const v = s ? num(s.state) : null;
+      if (v !== null) power = (power || 0) + (s.attributes.unit_of_measurement === "kW" ? v * 1000 : v);
+    }
+    const charging = power !== null && power > 50;
+    const name = group.name || (count > 1 ? `Laadpaal ${index + 1}` : "Laadpaal");
+    const energy = group.energy.map((id) => ({
+      label: group.energy.length > 1 ? (this._hass.states[id] || {}).attributes?.friendly_name || id : "Geladen",
+      value: this._evTodayKwh(id),
+      color: SCENE_COLOR.ev,
+      entity: id,
+    }));
+    // Phase label from the sensor's name ("... L2", "... fase 2"), else by
+    // its place in the list.
+    const phases = group.phases.map((id, i) => {
+      const s = this._hass.states[id];
+      const label = s && s.attributes.friendly_name;
+      let value = s ? num(s.state) : null;
+      if (value !== null && s.attributes.unit_of_measurement === "kW") value *= 1000;
+      // A charger that isn't charging may give no value per phase (an
+      // Alfen does): that's no power, as long as its total is known.
+      if (value === null && power !== null && !charging) value = 0;
+      return { id, label: (label && phaseOf(label)) || `L${i + 1}`, value };
+    });
+
+    return `
+      <section class="card device">
+        <div class="device-head">
+          <ha-icon icon="mdi:ev-station"></ha-icon>
+          <div class="device-name">${esc(name)}</div>
+          <div class="spacer"></div>
+          <span class="${charging ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : charging ? "Laadt" : "Laadt niet"}</span>
+        </div>
+        ${
+          group.power.length
+            ? `<div class="device-main wide" data-entity="${esc(group.power[0])}">
+          <div class="big ${charging ? "accent" : "muted"}">${fmtW(power)}</div>
+          <div class="muted">Laadvermogen</div>
+        </div>`
+            : ""
+        }
+        ${
+          phases.length
+            ? `<div class="section-title">Vermogen per fase</div>
+        <div class="mppt-row">${phases
+          .map(
+            (p) =>
+              `<span class="mppt ${p.value ? "active" : ""}" data-entity="${esc(p.id)}">${esc(p.label)} · ${
+                fmtW(p.value)
+              }</span>`
+          )
+          .join("")}</div>`
+            : ""
+        }
+        ${energy.length ? `<div class="section-title">Energie vandaag</div>${this._energyRows(energy)}` : ""}
+      </section>`;
   }
 
   _stateOf(entities, key) {
@@ -1517,7 +1625,7 @@ class AlphaEssPanel extends HTMLElement {
       .map(
         (r) => `
         <div class="energy-row" ${r.entity ? `data-entity="${esc(r.entity)}"` : ""}>
-          <div class="energy-top"><span>${r.label}</span><span class="energy-value">${fmtNum(r.value, 2)}<small> kWh</small></span></div>
+          <div class="energy-top"><span>${esc(r.label)}</span><span class="energy-value">${fmtNum(r.value, 2)}<small> kWh</small></span></div>
           <div class="energy-bar"><div style="width:${((r.value || 0) / max) * 100}%;background:${r.color}"></div></div>
         </div>`
       )
@@ -1643,18 +1751,27 @@ class AlphaEssPanel extends HTMLElement {
   }
 
   // Power per PV input (MPPT), one chip per power sensor entity_id.
+  // Power per MPPT (Maximum Power Point Tracker: an inverter input, one
+  // line of panels -- a string -- each) -- or per phase, when the sensors
+  // are named so ("... L2"): then labelled L1/L2/L3 instead of MPPT1/2/3.
   _mpptSection(ids) {
-    const chips = ids
-      .filter(Boolean)
-      .map((id, i) => {
-        const s = this._hass.states[id];
-        const w = s ? num(s.state) : null;
-        return `<span class="mppt ${w ? "active" : ""}" data-entity="${esc(id)}">MPPT${i + 1} · ${fmtW(w)}</span>`;
-      })
+    const items = ids.filter(Boolean).map((id) => {
+      const s = this._hass.states[id];
+      const name = s && s.attributes.friendly_name;
+      return { id, w: s ? num(s.state) : null, phase: name ? phaseOf(name) : null };
+    });
+    if (!items.length) return "";
+    const phases = items.every((item) => item.phase);
+    const chips = items
+      .map(
+        (item, i) =>
+          `<span class="mppt ${item.w ? "active" : ""}" data-entity="${esc(item.id)}">${
+            phases ? item.phase : `MPPT${i + 1}`
+          } · ${fmtW(item.w)}</span>`
+      )
       .join("");
-    if (!chips) return "";
     return `
-      <div class="section-title">Zon (MPPT)</div>
+      <div class="section-title">${phases ? "Zon (per fase)" : "Zon (MPPT)"}</div>
       <div class="mppt-row">${chips}</div>`;
   }
 
@@ -1731,9 +1848,24 @@ class AlphaEssPanel extends HTMLElement {
           <div class="kv"><span>Status</span><span class="${st.extra_pv_control_enabled ? "accent" : "muted"}">${
             st.extra_pv_control_enabled ? "Actief" : "Uit"
           }</span></div>
-          <div class="kv"><span>Modbus hub</span><span>${esc(st.extra_pv_modbus_hub || "Niet ingesteld")}</span></div>
+          ${this._extraPvSwitchRow(st)}
         </div>
       </section>`;
+  }
+
+  // The switch that turns the extra source off at negative prices, with
+  // its state -- or, set up before the switch, the Modbus hub.
+  _extraPvSwitchRow(st) {
+    if (st.extra_pv_switch) {
+      const s = this._hass.states[st.extra_pv_switch];
+      const state = !s ? "Niet gevonden" : s.state === "on" ? "Aan" : s.state === "off" ? "Uit" : "Niet beschikbaar";
+      return `<div class="kv" data-entity="${esc(st.extra_pv_switch)}"><span>${esc(
+        (s && s.attributes.friendly_name) || st.extra_pv_switch
+      )}</span><span class="${s && s.state === "on" ? "accent" : "muted"}">${state}</span></div>`;
+    }
+    return `<div class="kv"><span>Schakelaar</span><span>${esc(
+      st.extra_pv_modbus_hub ? `Modbus hub ${st.extra_pv_modbus_hub}` : "Niet ingesteld"
+    )}</span></div>`;
   }
 
   // Control tab: settings grouped in columns, operated in place -- toggles

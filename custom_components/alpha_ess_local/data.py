@@ -150,8 +150,8 @@ class Day:
     # not computed) -- recorded per hour for the panel's decision log.
     selection: str = ""
     opt_extra: float | None = None
-    # Which source a price/solar Day was read from (prices.PRICE_SOURCES /
-    # solar.SOLAR_SOURCES key), "" if none -- shown in the panel.
+    # Which source a price/solar Day was read from (the price entity's id /
+    # a solar.SOLAR_SOURCES key), "" if none -- shown in the panel.
     source: str = ""
     # True when the sources gave nothing on the last refresh and this is the
     # last known data for the same date, kept (prices don't change once

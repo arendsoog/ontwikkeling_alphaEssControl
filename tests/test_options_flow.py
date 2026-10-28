@@ -10,9 +10,6 @@ from custom_components.alpha_ess_local.config_flow import (
     OPTIONS_SECTIONS,
     SMA_PV_POWER_AGGREGATE_KEY,
     SMA_PV_POWER_STRING_KEY,
-    _extra_pv_candidates,
-    _house_load_candidates,
-    _peak_load_candidates,
 )
 from custom_components.alpha_ess_local.const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
@@ -21,17 +18,24 @@ from custom_components.alpha_ess_local.const import (
     CONF_EXTRA_PV_PANEL_COUNT,
     CONF_EXTRA_PV_PANEL_WP,
     CONF_EXTRA_PV_POWER_CAPACITY,
+    CONF_EXTRA_PV_POWER_ENTITIES,
     CONF_EXTRA_PV_POWER_ENTITY,
     CONF_FORECAST_SOLAR_ENTRIES,
     CONF_FRANK_ENERGIE_PRICE_ENTITY,
+    CONF_GRID_EXPORT_POWER_ENTITY,
+    CONF_GRID_IMPORT_POWER_ENTITY,
+    CONF_GRID_TARIFF_ENTITY,
     CONF_HOUSE_LOAD_POWER_ENTITY,
     CONF_NETWORK_USE_FEE_LOW,
     CONF_NETWORK_USE_FEE_NORMAL,
     CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
+    CONF_PRICE_ENTITIES,
+    CONF_PRICE_SOURCE_PRIMARY,
     CONF_PROVIDER_USE_FEE,
     CONF_PV_PANEL_COUNT,
     CONF_PV_PANEL_WP,
     CONF_PV_POWER,
+    CONF_SOLAR_FORECAST_ENTITIES,
     CONF_SOLAR_SOURCE_PRIMARY,
     CONF_SOLCAST_ENTRIES,
     DEFAULT_APPLY_VAT_ON_RETURN,
@@ -142,7 +146,7 @@ async def test_options_flow_shows_form_with_defaults(hass: HomeAssistant, mock_a
         DEFAULT_NETWORK_USE_FEE
     )
     assert _default_for(result["data_schema"], CONF_PROVIDER_USE_FEE) == DEFAULT_PROVIDER_USE_FEE
-    assert _suggested_value_for(result["data_schema"], CONF_ENTSOE_PRICE_ENTITY) is None
+    assert _suggested_value_for(result["data_schema"], CONF_PRICE_ENTITIES) == []
 
 
 async def test_options_flow_saves_and_updates_entry_options(hass: HomeAssistant, mock_api_client):
@@ -158,7 +162,7 @@ async def test_options_flow_saves_and_updates_entry_options(hass: HomeAssistant,
         hass,
         entry,
         "prices",
-        {CONF_ENTSOE_PRICE_ENTITY: "sensor.entsoe_average_electricity_price_today"},
+        {CONF_PRICE_ENTITIES: ["sensor.entsoe_average_electricity_price_today"]},
     )
     await _save_section(
         hass, entry, "control", {CONF_ALLOW_PROVIDER_CONTROL_HOURS: ["6", "7", "8", "16"]}
@@ -171,9 +175,7 @@ async def test_options_flow_saves_and_updates_entry_options(hass: HomeAssistant,
     assert entry.options[CONF_PV_PANEL_COUNT] == 20
     assert entry.options[CONF_PV_POWER] == 7300
     assert entry.options[CONF_ALLOW_PROVIDER_CONTROL_HOURS] == ["6", "7", "8", "16"]
-    assert (
-        entry.options[CONF_ENTSOE_PRICE_ENTITY] == "sensor.entsoe_average_electricity_price_today"
-    )
+    assert entry.options[CONF_PRICE_ENTITIES] == ["sensor.entsoe_average_electricity_price_today"]
     # untouched fields of a saved section are filled with their coded defaults
     assert entry.options[CONF_PROVIDER_USE_FEE] == DEFAULT_PROVIDER_USE_FEE
 
@@ -239,7 +241,11 @@ async def test_options_flow_computes_extra_pv_capacity_from_panel_fields(
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {CONF_EXTRA_PV_PANEL_WP: 405, CONF_EXTRA_PV_PANEL_COUNT: 12},
+        {
+            "measurement": {},
+            "installation": {CONF_EXTRA_PV_PANEL_WP: 405, CONF_EXTRA_PV_PANEL_COUNT: 12},
+            "control": {},
+        },
     )
     await hass.async_block_till_done()
 
@@ -249,46 +255,60 @@ async def test_options_flow_computes_extra_pv_capacity_from_panel_fields(
     assert entry.options[CONF_EXTRA_PV_POWER_CAPACITY] == 4860
 
 
-async def test_options_flow_omits_solar_checklists_when_no_source_integrations(
+async def test_options_flow_solar_note_when_no_forecast_integration(
     hass: HomeAssistant, mock_api_client
 ):
-    """No Forecast.Solar/Solcast entries -> those fields aren't shown at all."""
+    """No Forecast.Solar/Solcast locations: the note says so."""
     entry = await _create_entry(hass, mock_api_client)
 
     result = await _open_section(hass, entry, "solar_forecast")
 
-    keys = list(result["data_schema"].schema)
-    assert not any(key == CONF_FORECAST_SOLAR_ENTRIES for key in keys)
-    assert not any(key == CONF_SOLCAST_ENTRIES for key in keys)
     assert "Forecast.Solar" in result["description_placeholders"]["missing_source_note"]
     assert "Solcast" in result["description_placeholders"]["missing_source_note"]
 
 
-async def test_options_flow_shows_forecast_solar_checklist_with_real_entries(
+def _register_location(hass: HomeAssistant, domain: str, title: str) -> tuple[str, str]:
+    """A solar forecast location (config entry) with a couple of sensors;
+    returns its entry id and its "energy production today" sensor."""
+    config_entry = MockConfigEntry(domain=domain, title=title)
+    config_entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    registry.async_get_or_create(
+        "sensor", domain, f"{config_entry.entry_id}_power_production_now", config_entry=config_entry
+    )
+    today = registry.async_get_or_create(
+        "sensor",
+        domain,
+        f"{config_entry.entry_id}_energy_production_today",
+        config_entry=config_entry,
+    )
+    return config_entry.entry_id, today.entity_id
+
+
+async def test_options_flow_solar_offers_one_sensor_per_location(
     hass: HomeAssistant, mock_api_client
 ):
-    """A configured Forecast.Solar entry appears as a checklist option, by its title."""
-    forecast_solar_entry = MockConfigEntry(domain="forecast_solar", title="Achterkant")
-    forecast_solar_entry.add_to_hass(hass)
+    """Each location is offered by its "energy production today" sensor."""
+    _, back = _register_location(hass, "forecast_solar", "Achterkant")
+    _, home = _register_location(hass, "solcast_solar", "Home")
     entry = await _create_entry(hass, mock_api_client)
 
     result = await _open_section(hass, entry, "solar_forecast")
 
-    marker = next(k for k in result["data_schema"].schema if k == CONF_FORECAST_SOLAR_ENTRIES)
-    field_selector = result["data_schema"].schema[marker]
-    options = field_selector.config["options"]
-    assert options == [{"value": forecast_solar_entry.entry_id, "label": "Achterkant"}]
-    # Forecast.Solar is now configured, so only the Solcast half of the note remains.
-    assert "Forecast.Solar" not in result["description_placeholders"]["missing_source_note"]
-    assert "Solcast" in result["description_placeholders"]["missing_source_note"]
+    marker = next(k for k in result["data_schema"].schema if k == CONF_SOLAR_FORECAST_ENTITIES)
+    config = result["data_schema"].schema[marker].config
+    assert config["include_entities"] == [back, home]
+    assert config["multiple"] is True
+    assert config["reorder"] is True
+    assert result["description_placeholders"]["missing_source_note"] == ""
 
 
 async def test_options_flow_note_empty_when_both_sources_configured(
     hass: HomeAssistant, mock_api_client
 ):
     """No missing-source note once both Forecast.Solar and Solcast are configured."""
-    MockConfigEntry(domain="forecast_solar", title="Achterkant").add_to_hass(hass)
-    MockConfigEntry(domain="solcast_solar", title="Home").add_to_hass(hass)
+    _register_location(hass, "forecast_solar", "Achterkant")
+    _register_location(hass, "solcast_solar", "Home")
     _register_price_entity(hass, "entsoe", "entsoe_average_electricity_price_today", "prices_today")
     _register_price_entity(hass, "frank_energie", "frank_energie_prices", "prices")
     entry = await _create_entry(hass, mock_api_client)
@@ -300,165 +320,245 @@ async def test_options_flow_note_empty_when_both_sources_configured(
     assert result["description_placeholders"]["missing_source_note"] == ""
 
 
-async def test_options_flow_prices_note_lists_only_missing_price_sources(
+async def test_options_flow_price_entities_offers_only_price_sensors(
+    hass: HomeAssistant, mock_api_client
+):
+    """The picker lists the sensors with readable prices (not Frank Energie's
+    gas prices, nor other sensors), plus an already chosen one that's gone."""
+    frank = _register_price_entity(hass, "frank_energie", "frank_energie_prices", "prices")
+    nordpool = _register_price_entity(hass, "nordpool", "nordpool_kwh_nl_eur", "raw_today")
+    config_entry = MockConfigEntry(domain="frank_energie")
+    config_entry.add_to_hass(hass)
+    gas = er.async_get(hass).async_get_or_create(
+        "sensor", "frank_energie", "frank_energie.gas_market", config_entry=config_entry
+    )
+    hass.states.async_set(gas.entity_id, "1.1", {"prices": []})
+    hass.states.async_set("sensor.temperature", "20", {})
+    entry = await _create_entry(hass, mock_api_client)
+    hass.config_entries.async_update_entry(
+        entry, options={CONF_PRICE_ENTITIES: [nordpool, "sensor.gone"]}
+    )
+
+    result = await _open_section(hass, entry, "prices")
+
+    marker = next(k for k in result["data_schema"].schema if k == CONF_PRICE_ENTITIES)
+    config = result["data_schema"].schema[marker].config
+    assert sorted(config["include_entities"]) == sorted([frank, nordpool, "sensor.gone"])
+    assert config["multiple"] is True
+    assert config["reorder"] is True
+    assert _suggested_value_for(result["data_schema"], CONF_PRICE_ENTITIES) == [
+        nordpool,
+        "sensor.gone",
+    ]
+    assert result["description_placeholders"]["missing_source_note"] == ""
+
+
+async def test_options_flow_prices_prefills_and_replaces_the_old_pair(
+    hass: HomeAssistant, mock_api_client
+):
+    """Saved before the list existed: the form shows the old pair in its old
+    order, and saving stores the list and drops the old keys."""
+    entry = await _create_entry(hass, mock_api_client)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            CONF_ENTSOE_PRICE_ENTITY: "sensor.entsoe",
+            CONF_FRANK_ENERGIE_PRICE_ENTITY: "sensor.frank",
+            CONF_PRICE_SOURCE_PRIMARY: "frank_energie",
+        },
+    )
+
+    result = await _open_section(hass, entry, "prices")
+    assert _suggested_value_for(result["data_schema"], CONF_PRICE_ENTITIES) == [
+        "sensor.frank",
+        "sensor.entsoe",
+    ]
+
+    await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_PRICE_ENTITIES: ["sensor.frank", "sensor.entsoe"]}
+    )
+    await hass.async_block_till_done()
+
+    assert entry.options[CONF_PRICE_ENTITIES] == ["sensor.frank", "sensor.entsoe"]
+    for key in (
+        CONF_ENTSOE_PRICE_ENTITY,
+        CONF_FRANK_ENERGIE_PRICE_ENTITY,
+        CONF_PRICE_SOURCE_PRIMARY,
+    ):
+        assert key not in entry.options
+
+
+async def test_options_flow_prices_note_when_no_price_sensor_exists(
     hass: HomeAssistant, mock_api_client
 ):
     """Each section's note only covers its own sources -- no solar names on Prices."""
-    _register_price_entity(hass, "frank_energie", "frank_energie_prices", "prices")
     entry = await _create_entry(hass, mock_api_client)
 
     result = await _open_section(hass, entry, "prices")
 
-    keys = [str(key) for key in result["data_schema"].schema]
-    assert CONF_FRANK_ENERGIE_PRICE_ENTITY in keys
-    assert CONF_ENTSOE_PRICE_ENTITY not in keys
     note = result["description_placeholders"]["missing_source_note"]
     assert "ENTSO-E" in note
-    assert "Frank Energie" not in note
     assert "Solcast" not in note
 
 
-async def test_options_flow_solar_fields_in_forecast_solar_then_solcast_order(
+async def test_options_flow_solar_prefills_and_replaces_the_old_lists(
     hass: HomeAssistant, mock_api_client
 ):
-    MockConfigEntry(domain="forecast_solar", title="Achterkant").add_to_hass(hass)
-    MockConfigEntry(domain="solcast_solar", title="Home").add_to_hass(hass)
+    """Saved before the list existed: the form shows the old locations in
+    the old order, and saving stores the list and drops the old keys."""
+    back_id, back = _register_location(hass, "forecast_solar", "Achterkant")
+    front_id, front = _register_location(hass, "forecast_solar", "Voorkant")
+    home_id, home = _register_location(hass, "solcast_solar", "Home")
     entry = await _create_entry(hass, mock_api_client)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            CONF_FORECAST_SOLAR_ENTRIES: [back_id, front_id],
+            CONF_SOLCAST_ENTRIES: [home_id],
+            CONF_SOLAR_SOURCE_PRIMARY: "solcast",
+        },
+    )
+
+    result = await _open_section(hass, entry, "solar_forecast")
+    assert _suggested_value_for(result["data_schema"], CONF_SOLAR_FORECAST_ENTITIES) == [
+        home,
+        back,
+        front,
+    ]
+
+    await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_SOLAR_FORECAST_ENTITIES: [back, front, home]}
+    )
+    await hass.async_block_till_done()
+
+    assert entry.options[CONF_SOLAR_FORECAST_ENTITIES] == [back, front, home]
+    for key in (CONF_FORECAST_SOLAR_ENTRIES, CONF_SOLCAST_ENTRIES, CONF_SOLAR_SOURCE_PRIMARY):
+        assert key not in entry.options
+
+
+async def test_options_flow_solar_note_shows_the_summed_locations(
+    hass: HomeAssistant, mock_api_client
+):
+    """The form states how the list is read: one service's locations stay
+    summed together wherever they are in the list."""
+    _, back = _register_location(hass, "forecast_solar", "Achterkant")
+    _, front = _register_location(hass, "forecast_solar", "Voorkant")
+    _, home = _register_location(hass, "solcast_solar", "Home")
+    entry = await _create_entry(hass, mock_api_client)
+    hass.config_entries.async_update_entry(
+        entry, options={CONF_SOLAR_FORECAST_ENTITIES: [back, home, front]}
+    )
 
     result = await _open_section(hass, entry, "solar_forecast")
 
-    keys = [str(key) for key in result["data_schema"].schema]
-    # With both sources installed, their order (which is used first) too.
-    assert keys == [CONF_FORECAST_SOLAR_ENTRIES, CONF_SOLCAST_ENTRIES, CONF_SOLAR_SOURCE_PRIMARY]
-
-
-# --- house-load auto-detect (HomeWizard P1 / DSMR) --------------------------
-
-
-def test_house_load_candidates_empty_when_nothing_installed(hass: HomeAssistant):
-    assert _house_load_candidates(hass) == []
-
-
-def test_house_load_candidates_detects_homewizard_active_power(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="homewizard", title="P1 meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    entry = registry.async_get_or_create(
-        "sensor",
-        "homewizard",
-        "abc123_active_power_w",
-        config_entry=config_entry,
-        suggested_object_id="p1_meter_active_power",
+    assert result["description_placeholders"]["sources_note"] == (
+        "\n\n**In use now:** 1. Forecast.Solar: Achterkant + Voorkant (summed)"
+        " · 2. Solcast: Home (backup)"
     )
 
-    candidates = _house_load_candidates(hass)
-
-    assert candidates == [(entry.entity_id, "P1 meter")]
-
-
-def test_house_load_candidates_ignores_other_homewizard_sensors(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="homewizard", title="Socket")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    registry.async_get_or_create(
-        "sensor",
-        "homewizard",
-        "abc123_total_power_import_kwh",
-        config_entry=config_entry,
-    )
-
-    assert _house_load_candidates(hass) == []
+    result = await _open_section(hass, entry, "prices")
+    assert result["description_placeholders"]["sources_note"] == ""
 
 
-def test_house_load_candidates_detects_dsmr_pair(hass: HomeAssistant):
+# --- smart meter --------------------------------------------------------------
+
+
+def _register_dsmr(hass: HomeAssistant) -> tuple[str, dict[str, str]]:
+    """A DSMR config entry with its usage/delivery/tariff sensors."""
     config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
     config_entry.add_to_hass(hass)
     registry = er.async_get(hass)
-    registry.async_get_or_create(
-        "sensor",
-        "dsmr",
-        "serial123_current_electricity_usage",
-        config_entry=config_entry,
-    )
-    registry.async_get_or_create(
-        "sensor",
-        "dsmr",
-        "serial123_current_electricity_delivery",
-        config_entry=config_entry,
-    )
-
-    candidates = _house_load_candidates(hass)
-
-    assert candidates == [(f"dsmr:{config_entry.entry_id}", "Slimme meter")]
+    return config_entry.entry_id, {
+        name: registry.async_get_or_create(
+            "sensor", "dsmr", f"serial123_{suffix}", config_entry=config_entry
+        ).entity_id
+        for name, suffix in (
+            ("usage", "current_electricity_usage"),
+            ("delivery", "current_electricity_delivery"),
+            ("tariff", "electricity_active_tariff"),
+        )
+    }
 
 
-async def test_options_flow_house_load_field_is_checklist_when_detected(
+async def test_options_flow_meter_fields_are_free_entity_pickers(
     hass: HomeAssistant, mock_api_client
 ):
-    dsmr_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    dsmr_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_current_electricity_usage", config_entry=dsmr_entry
-    )
-    registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_current_electricity_delivery", config_entry=dsmr_entry
-    )
     entry = await _create_entry(hass, mock_api_client)
 
     result = await _open_section(hass, entry, "meter")
 
-    marker = next(k for k in result["data_schema"].schema if k == CONF_HOUSE_LOAD_POWER_ENTITY)
-    field_selector = result["data_schema"].schema[marker]
-    options = field_selector.config["options"]
-    assert options == [{"value": f"dsmr:{dsmr_entry.entry_id}", "label": "Slimme meter"}]
+    assert [str(key) for key in result["data_schema"].schema] == [
+        CONF_GRID_IMPORT_POWER_ENTITY,
+        CONF_GRID_EXPORT_POWER_ENTITY,
+        CONF_GRID_TARIFF_ENTITY,
+        CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
+    ]
+    for marker, field_selector in result["data_schema"].schema.items():
+        assert "options" not in field_selector.config, marker
+        assert _suggested_value_for(result["data_schema"], str(marker)) is None
 
 
-async def test_options_flow_house_load_field_falls_back_to_entity_selector(
+async def test_options_flow_meter_prefills_a_detected_dsmr_meter(
     hass: HomeAssistant, mock_api_client
 ):
-    """With nothing auto-detected, the field stays a manual pick-any-sensor selector."""
+    _, sensors = _register_dsmr(hass)
     entry = await _create_entry(hass, mock_api_client)
 
     result = await _open_section(hass, entry, "meter")
 
-    marker = next(k for k in result["data_schema"].schema if k == CONF_HOUSE_LOAD_POWER_ENTITY)
-    field_selector = result["data_schema"].schema[marker]
-    assert "options" not in field_selector.config
+    schema = result["data_schema"]
+    assert _suggested_value_for(schema, CONF_GRID_IMPORT_POWER_ENTITY) == sensors["usage"]
+    assert _suggested_value_for(schema, CONF_GRID_EXPORT_POWER_ENTITY) == sensors["delivery"]
+    assert _suggested_value_for(schema, CONF_GRID_TARIFF_ENTITY) == sensors["tariff"]
 
 
-# --- peak-load-this-month auto-detect (DSMR Belgian 5B meters) --------------
-
-
-def test_peak_load_candidates_empty_when_nothing_installed(hass: HomeAssistant):
-    assert _peak_load_candidates(hass) == []
-
-
-def test_peak_load_candidates_detects_belgian_maximum_demand_sensor(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    entry_reg = registry.async_get_or_create(
-        "sensor",
-        "dsmr",
-        "serial123_belgium_maximum_demand_current_month",
-        config_entry=config_entry,
+async def test_options_flow_meter_prefills_and_replaces_the_old_dsmr_source(
+    hass: HomeAssistant, mock_api_client
+):
+    """Saved the old way (one DSMR source): the form shows its sensors, and
+    saving stores them apart and drops the old key."""
+    dsmr_id, sensors = _register_dsmr(hass)
+    entry = await _create_entry(hass, mock_api_client)
+    hass.config_entries.async_update_entry(
+        entry, options={CONF_HOUSE_LOAD_POWER_ENTITY: f"dsmr:{dsmr_id}"}
     )
 
-    candidates = _peak_load_candidates(hass)
-
-    assert candidates == [(entry_reg.entity_id, "Slimme meter")]
-
-
-def test_peak_load_candidates_ignores_unrelated_dsmr_sensors(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_current_electricity_usage", config_entry=config_entry
+    result = await _open_section(hass, entry, "meter")
+    assert (
+        _suggested_value_for(result["data_schema"], CONF_GRID_EXPORT_POWER_ENTITY)
+        == (sensors["delivery"])
     )
 
-    assert _peak_load_candidates(hass) == []
+    await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_GRID_IMPORT_POWER_ENTITY: sensors["usage"],
+            CONF_GRID_EXPORT_POWER_ENTITY: sensors["delivery"],
+            CONF_GRID_TARIFF_ENTITY: sensors["tariff"],
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert entry.options[CONF_GRID_IMPORT_POWER_ENTITY] == sensors["usage"]
+    assert entry.options[CONF_GRID_EXPORT_POWER_ENTITY] == sensors["delivery"]
+    assert entry.options[CONF_GRID_TARIFF_ENTITY] == sensors["tariff"]
+    assert CONF_HOUSE_LOAD_POWER_ENTITY not in entry.options
+
+
+async def test_options_flow_meter_saved_empty_isnt_prefilled_again(
+    hass: HomeAssistant, mock_api_client
+):
+    """Cleared on purpose: reopening doesn't bring the detected meter back."""
+    _register_dsmr(hass)
+    entry = await _create_entry(hass, mock_api_client)
+    await _save_section(hass, entry, "meter", {})
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, CONF_GRID_IMPORT_POWER_ENTITY: None}
+    )
+
+    result = await _open_section(hass, entry, "meter")
+
+    assert _suggested_value_for(result["data_schema"], CONF_GRID_IMPORT_POWER_ENTITY) is None
 
 
 async def test_options_flow_peak_load_field_stays_a_free_entity_picker(
@@ -549,93 +649,119 @@ async def test_options_flow_peak_load_field_prefers_saved_value_over_detected_se
     )
 
 
-# --- extra-PV auto-detect (SMA Solar) ----------------------------------------
+# --- extra energy source -------------------------------------------------------
 
 
-def test_extra_pv_candidates_empty_when_nothing_installed(hass: HomeAssistant):
-    assert _extra_pv_candidates(hass) == []
+def _block(schema, name):
+    """A form block's (section's) inner schema."""
+    marker = next(k for k in schema.schema if k == name)
+    return schema.schema[marker].schema
 
 
-def test_extra_pv_candidates_prefers_aggregate_pv_power(hass: HomeAssistant):
+def _sma_sensors(hass: HomeAssistant, *keys: str) -> list[str]:
     config_entry = MockConfigEntry(domain="sma", title="SMA Sunny Boy")
     config_entry.add_to_hass(hass)
     registry = er.async_get(hass)
-    entry = registry.async_get_or_create(
-        "sensor",
-        "sma",
-        f"{config_entry.entry_id}-{SMA_PV_POWER_AGGREGATE_KEY}_0",
-        config_entry=config_entry,
-    )
-
-    candidates = _extra_pv_candidates(hass)
-
-    assert candidates == [(entry.entity_id, "SMA Sunny Boy")]
+    return [
+        registry.async_get_or_create(
+            "sensor", "sma", f"{config_entry.entry_id}-{key}", config_entry=config_entry
+        ).entity_id
+        for key in keys
+    ]
 
 
-def test_extra_pv_candidates_falls_back_to_string_sum_reference(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="sma", title="SMA Sunny Boy")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    registry.async_get_or_create(
-        "sensor",
-        "sma",
-        f"{config_entry.entry_id}-{SMA_PV_POWER_STRING_KEY}_0",
-        config_entry=config_entry,
-    )
-    registry.async_get_or_create(
-        "sensor",
-        "sma",
-        f"{config_entry.entry_id}-{SMA_PV_POWER_STRING_KEY}_1",
-        config_entry=config_entry,
-    )
-
-    candidates = _extra_pv_candidates(hass)
-
-    assert candidates == [(f"sma:{config_entry.entry_id}", "SMA Sunny Boy")]
-
-
-def test_extra_pv_candidates_ignores_unrelated_sma_sensors(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="sma", title="SMA Sunny Boy")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    registry.async_get_or_create(
-        "sensor", "sma", f"{config_entry.entry_id}-9999_deadbeef_0", config_entry=config_entry
-    )
-
-    assert _extra_pv_candidates(hass) == []
-
-
-async def test_options_flow_extra_pv_field_is_checklist_when_detected(
-    hass: HomeAssistant, mock_api_client
-):
-    sma_entry = MockConfigEntry(domain="sma", title="SMA Sunny Boy")
-    sma_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    entry_reg = registry.async_get_or_create(
-        "sensor",
-        "sma",
-        f"{sma_entry.entry_id}-{SMA_PV_POWER_AGGREGATE_KEY}_0",
-        config_entry=sma_entry,
-    )
+async def test_options_flow_extra_pv_in_three_blocks(hass: HomeAssistant, mock_api_client):
     entry = await _create_entry(hass, mock_api_client)
 
     result = await _open_section(hass, entry, "extra_pv")
 
-    marker = next(k for k in result["data_schema"].schema if k == CONF_EXTRA_PV_POWER_ENTITY)
-    field_selector = result["data_schema"].schema[marker]
-    options = field_selector.config["options"]
-    assert options == [{"value": entry_reg.entity_id, "label": "SMA Sunny Boy"}]
+    schema = result["data_schema"]
+    assert [str(key) for key in schema.schema] == ["measurement", "installation", "control"]
+    assert [str(key) for key in _block(schema, "measurement").schema] == [
+        "extra_pv_power_entities",
+        "extra_pv_string_entities",
+    ]
+    assert [str(key) for key in _block(schema, "control").schema] == [
+        "extra_pv_control_enabled",
+        "extra_pv_switch_entity",
+    ]
+    control = next(k for k in schema.schema if k == "control")
+    assert schema.schema[control].options["collapsed"] is True
 
 
-async def test_options_flow_ev_charger_section_saves_both_sensors(
+async def test_options_flow_extra_pv_prefills_a_detected_sma(hass: HomeAssistant, mock_api_client):
+    """The SMA integration's total PV power, else its strings."""
+    strings = _sma_sensors(hass, f"{SMA_PV_POWER_STRING_KEY}_0", f"{SMA_PV_POWER_STRING_KEY}_1")
+    entry = await _create_entry(hass, mock_api_client)
+
+    result = await _open_section(hass, entry, "extra_pv")
+
+    measurement = _block(result["data_schema"], "measurement")
+    assert _suggested_value_for(measurement, CONF_EXTRA_PV_POWER_ENTITIES) == strings
+
+
+async def test_options_flow_extra_pv_takes_over_the_old_settings(
     hass: HomeAssistant, mock_api_client
 ):
+    """The old single source pre-fills the power list; picking a switch
+    drops the old Modbus hub settings (kept as long as there's none)."""
+    (total,) = _sma_sensors(hass, f"{SMA_PV_POWER_AGGREGATE_KEY}_0")
+    entry = await _create_entry(hass, mock_api_client)
+    hub = {
+        "extra_pv_modbus_hub": "sma_tripower",
+        "extra_pv_modbus_slave": 3,
+        "extra_pv_modbus_address": 40016,
+    }
+    hass.config_entries.async_update_entry(
+        entry, options={CONF_EXTRA_PV_POWER_ENTITY: total, **hub}
+    )
+
+    result = await _open_section(hass, entry, "extra_pv")
+    measurement = _block(result["data_schema"], "measurement")
+    assert _suggested_value_for(measurement, CONF_EXTRA_PV_POWER_ENTITIES) == [total]
+
+    await _save_section(
+        hass,
+        entry,
+        "extra_pv",
+        {
+            "measurement": {CONF_EXTRA_PV_POWER_ENTITIES: [total]},
+            "installation": {},
+            "control": {},
+        },
+    )
+    assert entry.options[CONF_EXTRA_PV_POWER_ENTITIES] == [total]
+    assert CONF_EXTRA_PV_POWER_ENTITY not in entry.options
+    assert entry.options["extra_pv_modbus_hub"] == "sma_tripower"
+
+    await _save_section(
+        hass,
+        entry,
+        "extra_pv",
+        {
+            "measurement": {CONF_EXTRA_PV_POWER_ENTITIES: [total]},
+            "installation": {},
+            "control": {"extra_pv_switch_entity": "switch.sma_productie"},
+        },
+    )
+    assert entry.options["extra_pv_switch_entity"] == "switch.sma_productie"
+    for key in hub:
+        assert key not in entry.options
+
+
+async def test_options_flow_ev_charger_section_saves_the_lists(
+    hass: HomeAssistant, mock_api_client
+):
+    """EV chargers' power, energy and phase-current sensors, and other
+    consumers' power sensors -- any number of each."""
     entry = await _create_entry(hass, mock_api_client)
 
     result = await _open_section(hass, entry, "ev_charger")
     assert [str(key) for key in result["data_schema"].schema] == [
-        "ev_charger_power_entity",
-        "ev_charger_energy_entity",
+        "ev_charger_power_entities",
+        "ev_charger_energy_entities",
+        "ev_charger_phase_entities",
+        "excluded_load_entities",
     ]
 
     await _save_section(
@@ -643,10 +769,49 @@ async def test_options_flow_ev_charger_section_saves_both_sensors(
         entry,
         "ev_charger",
         {
+            "ev_charger_power_entities": ["sensor.laadpaal_vermogen"],
+            "ev_charger_energy_entities": ["sensor.laadpaal_energie_totaal"],
+            "ev_charger_phase_entities": ["sensor.laadpaal_vermogen_l1"],
+            "excluded_load_entities": ["sensor.warmtepomp_vermogen"],
+        },
+    )
+
+    assert entry.options["ev_charger_power_entities"] == ["sensor.laadpaal_vermogen"]
+    assert entry.options["ev_charger_energy_entities"] == ["sensor.laadpaal_energie_totaal"]
+    assert entry.options["ev_charger_phase_entities"] == ["sensor.laadpaal_vermogen_l1"]
+    assert entry.options["excluded_load_entities"] == ["sensor.warmtepomp_vermogen"]
+
+
+async def test_options_flow_ev_charger_section_takes_over_the_single_charger(
+    hass: HomeAssistant, mock_api_client
+):
+    """Saved before the lists: the one charger's sensors pre-fill the lists,
+    and saving drops the old keys."""
+    entry = await _create_entry(hass, mock_api_client)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
             "ev_charger_power_entity": "sensor.laadpaal_vermogen",
             "ev_charger_energy_entity": "sensor.laadpaal_energie_totaal",
         },
     )
 
-    assert entry.options["ev_charger_power_entity"] == "sensor.laadpaal_vermogen"
-    assert entry.options["ev_charger_energy_entity"] == "sensor.laadpaal_energie_totaal"
+    result = await _open_section(hass, entry, "ev_charger")
+    schema = result["data_schema"]
+    assert _suggested_value_for(schema, "ev_charger_power_entities") == ["sensor.laadpaal_vermogen"]
+    assert _suggested_value_for(schema, "ev_charger_energy_entities") == [
+        "sensor.laadpaal_energie_totaal"
+    ]
+
+    await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "ev_charger_power_entities": ["sensor.laadpaal_vermogen"],
+            "ev_charger_energy_entities": ["sensor.laadpaal_energie_totaal"],
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert "ev_charger_power_entity" not in entry.options
+    assert "ev_charger_energy_entity" not in entry.options
+    assert entry.options["ev_charger_power_entities"] == ["sensor.laadpaal_vermogen"]

@@ -26,8 +26,8 @@
                     "installation": "Installation",
                     "prices": "Prices",
                     "solar_forecast": "Solar forecast",
-                    "extra_pv": "Additional PV installation",
-                    "ev_charger": "EV charger",
+                    "extra_pv": "Additional energy sources",
+                    "ev_charger": "Excluded consumption",
                     "meter": "Smart meter",
                     "control": "Control"
                 }
@@ -44,7 +44,7 @@
             },
             "prices": {
                 "title": "Prices",
-                "description": "Supplier and network costs, VAT and the price source.{missing_source_note}",
+                "description": "Supplier and network costs, VAT and the price sources. Pick an entity with day-ahead prices (e.g. from ENTSO-E, Frank Energie or Nord Pool) and add more as backups with 'Add entity': the first one that has prices is used.{missing_source_note}",
                 "data": {
                     "provider_use_fee": "Provider use fee",
                     "provider_return_fee": "Provider return fee",
@@ -52,50 +52,85 @@
                     "apply_vat_on_return": "Apply VAT to feed-in price",
                     "network_use_fee_normal": "Network cost, normal tariff",
                     "network_use_fee_low": "Network cost, low/night tariff",
-                    "entsoe_price_entity": "ENTSO-E entity",
-                    "frank_energie_price_entity": "Frank Energie entity",
-                    "price_source_primary": "Price source order (2 = fallback when 1 has no prices)"
+                    "price_entities": "Price sources (in order; drag to change)"
                 }
             },
             "solar_forecast": {
                 "title": "Solar forecast",
-                "description": "Solar forecast locations. Per source the ticked locations are summed; one source is used, the second only when the first has no forecast.{missing_source_note}",
+                "description": "The solar forecast locations (e.g. Forecast.Solar or Solcast): pick one of each location's sensors and add more with 'Add entity'. Locations of the same service are summed (e.g. the front and back of the roof); the service on top is used, another service only as a backup. Locations of the same service stay together, wherever they are in the list.{sources_note}{missing_source_note}",
                 "data": {
-                    "forecast_solar_entries": "Forecast.Solar locations",
-                    "solcast_entries": "Solcast locations",
-                    "solar_source_primary": "Forecast order (2 = fallback when 1 has no forecast)"
+                    "solar_forecast_entities": "Locations (in order; drag to change)"
                 }
             },
             "extra_pv": {
-                "title": "Additional PV installation",
-                "description": "A second PV installation and its optional Modbus control that switches it off at negative prices.",
-                "data": {
-                    "extra_pv_power_entity": "Additional PV installation: power sensor",
-                    "extra_pv_string_entities": "Additional PV installation: power per string/MPPT (display only)",
-                    "extra_pv_panel_wp": "Additional PV installation: Wp per panel",
-                    "extra_pv_panel_count": "Additional PV installation: number of panels",
-                    "extra_pv_control_enabled": "Extra PV: enable negative-price control",
-                    "extra_pv_modbus_hub": "Extra PV: Modbus hub name (empty = disabled)",
-                    "extra_pv_modbus_slave": "Extra PV: Modbus slave ID",
-                    "extra_pv_modbus_address": "Extra PV: Modbus register address",
-                    "extra_pv_modbus_on_value": "Extra PV: register value for \"on\"",
-                    "extra_pv_modbus_off_value": "Extra PV: register value for \"off\" (curtail)"
+                "title": "Additional energy sources",
+                "description": "An energy source next to the AlphaESS, such as a second solar installation. Its power counts in the energy flow, the house load and learning the solar forecast.",
+                "sections": {
+                    "measurement": {
+                        "name": "Measurement",
+                        "data": {
+                            "extra_pv_power_entities": "Power",
+                            "extra_pv_string_entities": "Power per MPPT (string)"
+                        },
+                        "data_description": {
+                            "extra_pv_power_entities": "The power the source delivers right now, e.g. the inverter's 'AC power'. Several sensors are summed (a second inverter, micro inverters, or the power per string).",
+                            "extra_pv_string_entities": "Panel display only: the power per MPPT input of the inverter, i.e. per line of panels (string), e.g. 'DC power string 1' and 'string 2'. Empty with the SMA integration: its own strings."
+                        }
+                    },
+                    "installation": {
+                        "name": "Installation",
+                        "data": {
+                            "extra_pv_panel_wp": "Wp per panel",
+                            "extra_pv_panel_count": "Number of panels"
+                        },
+                        "data_description": {
+                            "extra_pv_panel_wp": "One panel's peak power.",
+                            "extra_pv_panel_count": "With Wp per panel the source's peak power: for the bar in the panel, and to estimate its power when the reading is gone."
+                        }
+                    },
+                    "control": {
+                        "name": "Control at negative prices",
+                        "data": {
+                            "extra_pv_control_enabled": "Enable control",
+                            "extra_pv_switch_entity": "Switch"
+                        },
+                        "data_description": {
+                            "extra_pv_control_enabled": "Turns the source off at negative prices and on again after. Only switches when battery control is on too.",
+                            "extra_pv_switch_entity": "A switch that turns the source on (producing) and off, e.g. a Modbus switch on the inverter's power register."
+                        }
+                    }
                 }
             },
             "ev_charger": {
-                "title": "EV charger",
-                "description": "Sensors of your EV charger, shown in the panel's energy flow. Display only, not used for control.",
+                "title": "Excluded consumption",
+                "description": "Consumers kept out of the learned house load because they're big and irregular. Their power is taken off the measured house load before the load per hour is learned. Not used for control. Add as many as you have with 'Add entity'.",
                 "data": {
-                    "ev_charger_power_entity": "EV charger: power sensor (W)",
-                    "ev_charger_energy_entity": "EV charger: total energy sensor (kWh)"
+                    "ev_charger_power_entities": "EV chargers: power",
+                    "ev_charger_energy_entities": "EV chargers: total energy",
+                    "ev_charger_phase_entities": "EV chargers: power per phase",
+                    "excluded_load_entities": "Other consumers: power"
+                },
+                "data_description": {
+                    "ev_charger_power_entities": "Each EV charger's charging power. Shown together in the panel's energy flow.",
+                    "ev_charger_energy_entities": "Each EV charger's total charged energy (an increasing kWh counter). Shown per charger in the panel's daily totals. Optional.",
+                    "ev_charger_phase_entities": "Each EV charger's power per phase (L1, L2, L3), for its card on the Inverters tab. Optional.",
+                    "excluded_load_entities": "The power of other big consumers, such as a heat pump. For the learning only, not in the panel."
                 }
             },
             "meter": {
                 "title": "Smart meter",
-                "description": "P1/smart-meter sensors for live house load and the monthly peak.",
+                "description": "Pick your smart (P1) meter's sensors here. They give the house load and the grid import the grid charge is regulated on. Without a meter the inverter's own grid reading is used.",
                 "data": {
-                    "house_load_power_entity": "House load power sensor (P1)",
-                    "peak_load_this_month_entity": "Peak load this month sensor (capaciteitstarief)"
+                    "grid_import_power_entity": "Grid import power",
+                    "grid_export_power_entity": "Grid export power",
+                    "grid_tariff_entity": "Active tariff (day/night)",
+                    "peak_load_this_month_entity": "Peak load this month (capacity tariff)"
+                },
+                "data_description": {
+                    "grid_import_power_entity": "The power drawn from the grid right now, e.g. DSMR's 'Power consumption'. If your meter has one sensor that is positive when importing and negative when exporting (like HomeWizard's 'Power'), pick it here and leave export empty.",
+                    "grid_export_power_entity": "The power fed into the grid right now, e.g. DSMR's 'Power production'. Leave empty when the sensor above is already positive and negative.",
+                    "grid_tariff_entity": "The current tariff, e.g. 'Active tariff', for the day or night network fee. Optional.",
+                    "peak_load_this_month_entity": "This month's highest 15-minute peak, e.g. 'Maximum demand current month' (Belgian meters only). The grid charge may go up to this peak. Optional."
                 }
             },
             "control": {

@@ -25,7 +25,6 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.alpha_ess_local import storage
-from custom_components.alpha_ess_local.config_flow import SMA_PV_POWER_STRING_KEY
 from custom_components.alpha_ess_local.const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_CONTROL_ENABLED,
@@ -42,6 +41,7 @@ from custom_components.alpha_ess_local.const import (
     DOMAIN,
 )
 from custom_components.alpha_ess_local.data import Charge, Day, Earning, FiveMin, Hour
+from custom_components.alpha_ess_local.extra_pv import SMA_PV_POWER_STRING_KEY
 from custom_components.alpha_ess_local.orchestrator import (
     DISPATCH_INTERVAL,
     DISPATCH_INTERVAL_GRID_CHARGE,
@@ -49,22 +49,16 @@ from custom_components.alpha_ess_local.orchestrator import (
     AlphaEssLocalDispatchCoordinator,
     AlphaEssLocalRealDataCoordinator,
     AlphaEssLocalScheduleCoordinator,
-    _dsmr_net_power,
-    _dsmr_tariff_indicator,
     _effective_max_grid_load_wh,
     _effective_use_fee,
     _entity_power,
-    _extra_pv_power,
     _forecast_rows,
     _grid_to_battery,
-    _house_load_power,
-    _house_load_tariff,
     _inverter_down,
     _keep_past_hours,
     _number_entity_value,
     _planning_tomorrow,
     _sample_hour,
-    _sma_pv_power,
     _solar_to_battery,
     _switch_entity_value,
     async_handle_daily_rollover,
@@ -74,6 +68,7 @@ from custom_components.alpha_ess_local.orchestrator import (
     hour_correction_from_mean,
     merge_day_sources,
     migrate_legacy_db_if_needed,
+    read_extra_pv_power,
     watch_for_source_recovery,
 )
 from custom_components.alpha_ess_local.protocol import DispatchMode, DispatchParam
@@ -1456,6 +1451,36 @@ async def test_real_data_coordinator_flags_an_hour_with_an_unknown_ev_charger(
     assert hour.estimated is True
 
 
+async def test_real_data_coordinator_leaves_all_excluded_consumers_out_of_the_house_load(
+    hass: HomeAssistant, freezer
+):
+    """The EV charger and other configured consumers (a heat pump) are
+    summed into the consumption kept out of the learned house load."""
+    freezer.move_to("2024-01-15 10:03:00")
+    hass.states.async_set("sensor.ev_power", "3000", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.heat_pump", "1.5", {"unit_of_measurement": "kW"})
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            "ev_charger_power_entity": "sensor.ev_power",
+            "excluded_load_entities": ["sensor.heat_pump"],
+        },
+    )
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={"pv_power": 0, "battery_power": 0, "grid_power": 5000}
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    data = await coordinator._async_update_data()
+
+    sample = data.day.hour[dt_util.now().hour].five_min[0]
+    assert sample.ev_power == 4500.0
+    assert data.day.hour[dt_util.now().hour].estimated is False
+
+
 async def test_real_data_coordinator_takes_no_sample_while_the_inverter_is_down(
     hass: HomeAssistant, freezer
 ):
@@ -2559,6 +2584,51 @@ async def test_extra_pv_control_enabled_writes_off_on_negative_price_when_batter
     assert calls[0].data == {"hub": "sma_tripower", "slave": 3, "address": 40016, "value": 0}
 
 
+async def test_extra_pv_switch_turned_off_on_negative_price_when_battery_full(
+    hass: HomeAssistant, freezer
+):
+    """With a switch picked it's switched instead of the Modbus register --
+    also when the old hub settings are still there."""
+    freezer.move_to("2024-01-15 14:00:00")
+    current_hour = dt_util.now().hour
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            CONF_USABLE_BATTERY_CAPACITY: 10000,
+            CONF_CONTROL_ENABLED: True,
+            **_EXTRA_PV_OPTIONS,
+            "extra_pv_switch_entity": "switch.sma_productie",
+        },
+    )
+    entry.add_to_hass(hass)
+    modbus_calls = async_mock_service(hass, "modbus", "write_register")
+    off_calls = async_mock_service(hass, "homeassistant", "turn_off")
+
+    day = _schedule_day_with_hour(current_hour, earning=Earning.EARNING_ON_USE, cutoff_soc=900)
+    schedule_coordinator = SimpleNamespace(data={"today": day})
+    client = _fake_client(
+        DispatchParam(
+            mode=DispatchMode.DEFAULT,
+            started=False,
+            power=0,
+            cutoff_soc=0,
+            duration=0,
+            para7=255,
+            pv_on=True,
+        )
+    )
+    modbus_coordinator = _fake_modbus_coordinator(client, battery_soc=95.0)
+    coordinator = AlphaEssLocalDispatchCoordinator(
+        hass, entry, modbus_coordinator, schedule_coordinator
+    )
+
+    await coordinator._async_update_data()
+
+    assert modbus_calls == []
+    assert len(off_calls) == 1
+    assert off_calls[0].data == {"entity_id": "switch.sma_productie"}
+
+
 async def test_unreachable_extra_pv_does_not_stop_the_battery_dispatch(
     hass: HomeAssistant, freezer
 ):
@@ -2973,107 +3043,6 @@ def test_switch_entity_value_falls_back_when_unavailable(hass: HomeAssistant):
     assert _switch_entity_value(hass, entry, "discharge_enabled", True) is True
 
 
-def test_dsmr_net_power_subtracts_delivery_from_usage(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    usage = registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_current_electricity_usage", config_entry=config_entry
-    )
-    delivery = registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_current_electricity_delivery", config_entry=config_entry
-    )
-    hass.states.async_set(usage.entity_id, "0.5", {"unit_of_measurement": "kW"})
-    hass.states.async_set(delivery.entity_id, "0.1", {"unit_of_measurement": "kW"})
-
-    assert _dsmr_net_power(hass, config_entry.entry_id) == 400.0  # 500W use - 100W feed-in
-
-
-def test_dsmr_net_power_none_when_siblings_missing(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-
-    assert _dsmr_net_power(hass, config_entry.entry_id) is None
-
-
-def test_house_load_power_resolves_plain_entity_id(hass: HomeAssistant):
-    hass.states.async_set("sensor.p1_power", "250", {"unit_of_measurement": "W"})
-    assert _house_load_power(hass, "sensor.p1_power") == 250.0
-
-
-def test_house_load_power_resolves_dsmr_reference(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    usage = registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_current_electricity_usage", config_entry=config_entry
-    )
-    delivery = registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_current_electricity_delivery", config_entry=config_entry
-    )
-    hass.states.async_set(usage.entity_id, "0.5", {"unit_of_measurement": "kW"})
-    hass.states.async_set(delivery.entity_id, "0.0", {"unit_of_measurement": "kW"})
-
-    assert _house_load_power(hass, f"dsmr:{config_entry.entry_id}") == 500.0
-
-
-def test_house_load_power_none_when_unset():
-    assert _house_load_power(None, None) is None
-
-
-def test_dsmr_tariff_indicator_reads_active_tariff_state(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    tariff = registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_electricity_active_tariff", config_entry=config_entry
-    )
-    hass.states.async_set(tariff.entity_id, "low")
-
-    assert _dsmr_tariff_indicator(hass, config_entry.entry_id) == "low"
-
-
-def test_dsmr_tariff_indicator_none_when_unavailable(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    tariff = registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_electricity_active_tariff", config_entry=config_entry
-    )
-    hass.states.async_set(tariff.entity_id, "unavailable")
-
-    assert _dsmr_tariff_indicator(hass, config_entry.entry_id) is None
-
-
-def test_dsmr_tariff_indicator_none_when_sibling_missing(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-
-    assert _dsmr_tariff_indicator(hass, config_entry.entry_id) is None
-
-
-def test_house_load_tariff_resolves_dsmr_reference(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="dsmr", title="Slimme meter")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    tariff = registry.async_get_or_create(
-        "sensor", "dsmr", "serial123_electricity_active_tariff", config_entry=config_entry
-    )
-    hass.states.async_set(tariff.entity_id, "normal")
-
-    assert _house_load_tariff(hass, f"dsmr:{config_entry.entry_id}") == "normal"
-
-
-def test_house_load_tariff_none_for_plain_entity_id(hass: HomeAssistant):
-    # HomeWizard P1/plain-entity house-load sources have no known
-    # tariff-indicator convention here -- explicitly out of scope.
-    assert _house_load_tariff(hass, "sensor.p1_power") is None
-
-
-def test_house_load_tariff_none_when_unset():
-    assert _house_load_tariff(None, None) is None
-
-
 def test_effective_use_fee_adds_normal_network_fee_for_normal_tariff():
     assert _effective_use_fee(0.02, "normal", 0.05, 0.03) == pytest.approx(0.07)
 
@@ -3089,57 +3058,43 @@ def test_effective_use_fee_adds_nothing_when_tariff_unknown():
 # --- extra-PV resolution (SMA Solar) -----------------------------------------
 
 
-def test_sma_pv_power_sums_string_entities(hass: HomeAssistant):
+def _sma_strings(hass: HomeAssistant, watts: list[str]) -> str:
+    """An SMA config entry with per-string power sensors reading `watts`."""
     config_entry = MockConfigEntry(domain="sma", title="SMA Sunny Boy")
     config_entry.add_to_hass(hass)
     registry = er.async_get(hass)
-    string_a = registry.async_get_or_create(
-        "sensor",
-        "sma",
-        f"{config_entry.entry_id}-{SMA_PV_POWER_STRING_KEY}_0",
-        config_entry=config_entry,
-    )
-    string_b = registry.async_get_or_create(
-        "sensor",
-        "sma",
-        f"{config_entry.entry_id}-{SMA_PV_POWER_STRING_KEY}_1",
-        config_entry=config_entry,
-    )
-    hass.states.async_set(string_a.entity_id, "300", {"unit_of_measurement": "W"})
-    hass.states.async_set(string_b.entity_id, "450", {"unit_of_measurement": "W"})
-
-    assert _sma_pv_power(hass, config_entry.entry_id) == 750.0
+    for index, value in enumerate(watts):
+        string = registry.async_get_or_create(
+            "sensor",
+            "sma",
+            f"{config_entry.entry_id}-{SMA_PV_POWER_STRING_KEY}_{index}",
+            config_entry=config_entry,
+        )
+        hass.states.async_set(string.entity_id, value, {"unit_of_measurement": "W"})
+    return config_entry.entry_id
 
 
-def test_sma_pv_power_none_when_no_strings(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="sma", title="SMA Sunny Boy")
-    config_entry.add_to_hass(hass)
+def test_read_extra_pv_power_sums_the_picked_sensors(hass: HomeAssistant):
+    hass.states.async_set("sensor.inverter_a", "500", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.inverter_b", "0.25", {"unit_of_measurement": "kW"})
+    hass.states.async_set("sensor.inverter_c", "unavailable")
+    options = {"extra_pv_power_entities": ["sensor.inverter_a", "sensor.inverter_b"]}
 
-    assert _sma_pv_power(hass, config_entry.entry_id) is None
+    assert read_extra_pv_power(hass, options) == 750.0
+    # A sensor without a reading is left out; none at all gives None.
+    options["extra_pv_power_entities"].append("sensor.inverter_c")
+    assert read_extra_pv_power(hass, options) == 750.0
+    assert read_extra_pv_power(hass, {"extra_pv_power_entities": ["sensor.inverter_c"]}) is None
+    assert read_extra_pv_power(hass, {}) is None
 
 
-def test_extra_pv_power_resolves_plain_entity_id(hass: HomeAssistant):
+def test_read_extra_pv_power_reads_the_old_single_source(hass: HomeAssistant):
+    """Saved before the list: a sensor, or "sma:<entry>" for the SMA strings."""
     hass.states.async_set("sensor.pv_power", "500", {"unit_of_measurement": "W"})
-    assert _extra_pv_power(hass, "sensor.pv_power") == 500.0
+    sma = _sma_strings(hass, ["300", "450"])
 
-
-def test_extra_pv_power_resolves_sma_reference(hass: HomeAssistant):
-    config_entry = MockConfigEntry(domain="sma", title="SMA Sunny Boy")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    string_a = registry.async_get_or_create(
-        "sensor",
-        "sma",
-        f"{config_entry.entry_id}-{SMA_PV_POWER_STRING_KEY}_0",
-        config_entry=config_entry,
-    )
-    hass.states.async_set(string_a.entity_id, "300", {"unit_of_measurement": "W"})
-
-    assert _extra_pv_power(hass, f"sma:{config_entry.entry_id}") == 300.0
-
-
-def test_extra_pv_power_none_when_unset():
-    assert _extra_pv_power(None, None) is None
+    assert read_extra_pv_power(hass, {"extra_pv_power_entity": "sensor.pv_power"}) == 500.0
+    assert read_extra_pv_power(hass, {"extra_pv_power_entity": f"sma:{sma}"}) == 750.0
 
 
 # --- closed-loop grid-charge regulation ---------------------------------------
