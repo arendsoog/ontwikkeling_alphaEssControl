@@ -164,6 +164,18 @@ CONF_EXCLUDED_LOAD_ENTITIES = "excluded_load_entities"
 # Each EV charger is a subentry of this type, with its power and energy
 # sensor and its power per phase (see consumers.py).
 SUBENTRY_EV_CHARGER = "ev_charger"
+# Each other consumer (a heat pump, ...) is a subentry of this type, with
+# its power and total-energy sensor; their power sensors are read together
+# under CONF_EXCLUDED_LOAD_ENTITIES.
+SUBENTRY_CONSUMER = "consumer"
+CONF_CONSUMER_POWER_ENTITY = "consumer_power_entity"
+CONF_CONSUMER_ENERGY_ENTITY = "consumer_energy_entity"
+# Each other consumer (a heat pump, ...) is a subentry of this type, with
+# its power and total-energy sensor; their power sensors are read together
+# under CONF_EXCLUDED_LOAD_ENTITIES.
+SUBENTRY_CONSUMER = "consumer"
+CONF_CONSUMER_POWER_ENTITY = "consumer_power_entity"
+CONF_CONSUMER_ENERGY_ENTITY = "consumer_energy_entity"
 
 # Options flow: scheduler tuning (config.ini [Daily])
 CONF_ALLOW_PROVIDER_CONTROL_HOURS = "allow_provider_control_hours"

@@ -8,9 +8,14 @@ from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.alpha_ess_local import async_migrate_entry
-from custom_components.alpha_ess_local.const import DOMAIN, SUBENTRY_EV_CHARGER
+from custom_components.alpha_ess_local.const import (
+    DOMAIN,
+    SUBENTRY_CONSUMER,
+    SUBENTRY_EV_CHARGER,
+)
 from custom_components.alpha_ess_local.consumers import (
     consumer_options,
+    consumers_from_options,
     ev_charger_cards,
     ev_charger_energy_entities,
     ev_charger_groups,
@@ -18,6 +23,7 @@ from custom_components.alpha_ess_local.consumers import (
     ev_chargers,
     ev_chargers_from_options,
     excluded_power_entities,
+    other_consumers,
 )
 
 
@@ -256,7 +262,7 @@ async def test_migrate_moves_the_chargers_into_subentries(hass: HomeAssistant):
 
     assert await async_migrate_entry(hass, entry)
 
-    assert entry.minor_version == 3
+    assert entry.minor_version == 4
     assert entry.options == {"pv_power": 9800}
     assert ev_chargers(entry) == [
         {
@@ -264,4 +270,86 @@ async def test_migrate_moves_the_chargers_into_subentries(hass: HomeAssistant):
             "ev_charger_power_entity": "sensor.laadpaal_vermogen",
             "ev_charger_energy_entity": "sensor.laadpaal_energie",
         }
+    ]
+
+
+# --- other consumers as subentries ------------------------------------------------
+
+
+async def test_add_consumer(hass: HomeAssistant):
+    entry = _entry(hass)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_CONSUMER), context={"source": SOURCE_USER}
+    )
+    assert [str(key) for key in result["data_schema"].schema] == [
+        "name",
+        "consumer_power_entity",
+        "consumer_energy_entity",
+    ]
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            "name": "Warmtepomp",
+            "consumer_power_entity": "sensor.warmtepomp_vermogen",
+            "consumer_energy_entity": "sensor.warmtepomp_energie",
+        },
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert other_consumers(entry) == [
+        {
+            "name": "Warmtepomp",
+            "consumer_power_entity": "sensor.warmtepomp_vermogen",
+            "consumer_energy_entity": "sensor.warmtepomp_energie",
+        }
+    ]
+
+
+async def test_consumer_options_reads_the_consumers(hass: HomeAssistant):
+    entry = _entry(hass)
+    for title, power in (("Warmtepomp", "sensor.warmtepomp"), ("Boiler", "sensor.boiler")):
+        hass.config_entries.async_add_subentry(
+            entry,
+            ConfigSubentry(
+                data={"consumer_power_entity": power},
+                subentry_type=SUBENTRY_CONSUMER,
+                title=title,
+                unique_id=None,
+            ),
+        )
+    _add_charger(hass, entry, "Oprit", {"ev_charger_power_entity": "sensor.oprit_power"})
+
+    assert excluded_power_entities(consumer_options(entry)) == [
+        "sensor.oprit_power",
+        "sensor.warmtepomp",
+        "sensor.boiler",
+    ]
+
+
+def test_consumers_from_options_named_after_their_sensor(hass: HomeAssistant):
+    hass.states.async_set("sensor.warmtepomp", "500", {"friendly_name": "Warmtepomp vermogen"})
+
+    consumers, rest = consumers_from_options(
+        hass, {"excluded_load_entities": ["sensor.warmtepomp", "sensor.gone"], "pv_power": 1}
+    )
+
+    assert consumers == [
+        ("Warmtepomp vermogen", {"consumer_power_entity": "sensor.warmtepomp"}),
+        ("sensor.gone", {"consumer_power_entity": "sensor.gone"}),
+    ]
+    assert rest == {"pv_power": 1}
+
+
+async def test_migrate_moves_the_consumers_into_subentries(hass: HomeAssistant):
+    entry = _entry(
+        hass, {"excluded_load_entities": ["sensor.warmtepomp"], "pv_power": 9800}, minor_version=3
+    )
+
+    assert await async_migrate_entry(hass, entry)
+
+    assert entry.minor_version == 4
+    assert entry.options == {"pv_power": 9800}
+    assert other_consumers(entry) == [
+        {"name": "sensor.warmtepomp", "consumer_power_entity": "sensor.warmtepomp"}
     ]

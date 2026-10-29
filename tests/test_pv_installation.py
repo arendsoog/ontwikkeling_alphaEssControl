@@ -271,7 +271,7 @@ async def test_migrate_moves_the_installation_into_a_subentry(hass: HomeAssistan
 
     assert await async_migrate_entry(hass, entry)
 
-    assert entry.minor_version == 3
+    assert entry.minor_version == 4
     assert entry.options == {"pv_power": 9800}
     assert pv_installations(entry) == [
         {
@@ -290,5 +290,5 @@ async def test_migrate_without_an_installation(hass: HomeAssistant):
 
     assert await async_migrate_entry(hass, entry)
 
-    assert entry.minor_version == 3
+    assert entry.minor_version == 4
     assert entry.subentries == {}

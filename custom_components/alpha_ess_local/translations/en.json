@@ -26,7 +26,6 @@
                     "installation": "Installation",
                     "prices": "Prices",
                     "solar_forecast": "Solar forecast",
-                    "ev_charger": "Consumption sources",
                     "meter": "P1 meter",
                     "control": "Control"
                 }
@@ -59,16 +58,6 @@
                 "description": "The solar forecast locations (e.g. Forecast.Solar or Solcast): pick one of each location's sensors and add more with 'Add entity'. Locations of the same service are summed (e.g. the front and back of the roof); the service on top is used, another service only as a backup. Locations of the same service stay together, wherever they are in the list.{sources_note}{missing_source_note}",
                 "data": {
                     "solar_forecast_entities": "Locations (in order; drag to change)"
-                }
-            },
-            "ev_charger": {
-                "title": "Consumption sources",
-                "description": "Big, irregular consumers such as a heat pump. Their power is taken off the measured house load before the load per hour is learned. Not used for the control. EV chargers are added on the integration's page, with 'Add EV charger'.",
-                "data": {
-                    "excluded_load_entities": "Other consumers: power"
-                },
-                "data_description": {
-                    "excluded_load_entities": "The power of other big consumers, such as a heat pump. For the learning only, not in the panel."
                 }
             },
             "meter": {
@@ -241,6 +230,45 @@
             },
             "abort": {
                 "reconfigure_successful": "The EV charger was saved."
+            }
+        },
+        "consumer": {
+            "initiate_flow": {
+                "user": "Add consumer"
+            },
+            "entry_type": "Consumer",
+            "step": {
+                "user": {
+                    "title": "Add consumer",
+                    "description": "A big, irregular consumer such as a heat pump. Its power is taken off the measured house load before the load per hour is learned. Not used for the control.",
+                    "data": {
+                        "name": "Name",
+                        "consumer_power_entity": "Power",
+                        "consumer_energy_entity": "Total used"
+                    },
+                    "data_description": {
+                        "name": "What the consumer is called, in the list of consumers.",
+                        "consumer_power_entity": "The power the consumer uses right now.",
+                        "consumer_energy_entity": "The total used energy (a rising counter in kWh). Optional."
+                    }
+                },
+                "reconfigure": {
+                    "title": "Change consumer",
+                    "description": "A big, irregular consumer such as a heat pump. Its power is taken off the measured house load before the load per hour is learned. Not used for the control.",
+                    "data": {
+                        "name": "Name",
+                        "consumer_power_entity": "Power",
+                        "consumer_energy_entity": "Total used"
+                    },
+                    "data_description": {
+                        "name": "What the consumer is called, in the list of consumers.",
+                        "consumer_power_entity": "The power the consumer uses right now.",
+                        "consumer_energy_entity": "The total used energy (a rising counter in kWh). Optional."
+                    }
+                }
+            },
+            "abort": {
+                "reconfigure_successful": "The consumer was saved."
             }
         }
     },

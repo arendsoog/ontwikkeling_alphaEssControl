@@ -26,7 +26,6 @@
                     "installation": "Installatie",
                     "prices": "Prijzen",
                     "solar_forecast": "Zonnevoorspelling",
-                    "ev_charger": "Verbruiksbronnen",
                     "meter": "P1-meter",
                     "control": "Sturing"
                 }
@@ -59,16 +58,6 @@
                 "description": "De locaties voor de zonnevoorspelling (bijvoorbeeld Forecast.Solar of Solcast): kies per locatie een sensor ervan en voeg er met 'Entiteit toevoegen' meer toe. Locaties van dezelfde dienst worden opgeteld (bijvoorbeeld voor- en achterkant van het dak); de dienst die bovenaan staat wordt gebruikt, een andere dienst alleen als reserve. Locaties van dezelfde dienst blijven samen, waar ze ook in de lijst staan.{sources_note}{missing_source_note}",
                 "data": {
                     "solar_forecast_entities": "Locaties (in volgorde; sleep om te wijzigen)"
-                }
-            },
-            "ev_charger": {
-                "title": "Verbruiksbronnen",
-                "description": "Grote, onregelmatige verbruikers zoals een warmtepomp. Hun vermogen wordt van het gemeten huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd. Niet gebruikt voor de sturing. EV-laders voeg je toe op de pagina van de integratie, met 'EV-lader toevoegen'.",
-                "data": {
-                    "excluded_load_entities": "Overige verbruikers: vermogen"
-                },
-                "data_description": {
-                    "excluded_load_entities": "Het vermogen van andere grote verbruikers, zoals een warmtepomp. Alleen voor het leren, niet in het paneel."
                 }
             },
             "meter": {
@@ -241,6 +230,45 @@
             },
             "abort": {
                 "reconfigure_successful": "De EV-lader is opgeslagen."
+            }
+        },
+        "consumer": {
+            "initiate_flow": {
+                "user": "Verbruiker toevoegen"
+            },
+            "entry_type": "Verbruiker",
+            "step": {
+                "user": {
+                    "title": "Verbruiker toevoegen",
+                    "description": "Een grote, onregelmatige verbruiker zoals een warmtepomp. Zijn vermogen wordt van het gemeten huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd. Niet gebruikt voor de sturing.",
+                    "data": {
+                        "name": "Naam",
+                        "consumer_power_entity": "Vermogen",
+                        "consumer_energy_entity": "Totaal verbruikt"
+                    },
+                    "data_description": {
+                        "name": "Hoe de verbruiker heet, in de lijst van verbruikers.",
+                        "consumer_power_entity": "Het vermogen dat de verbruiker nu gebruikt.",
+                        "consumer_energy_entity": "Het totaal verbruikte energie (een oplopende teller in kWh). Optioneel."
+                    }
+                },
+                "reconfigure": {
+                    "title": "Verbruiker wijzigen",
+                    "description": "Een grote, onregelmatige verbruiker zoals een warmtepomp. Zijn vermogen wordt van het gemeten huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd. Niet gebruikt voor de sturing.",
+                    "data": {
+                        "name": "Naam",
+                        "consumer_power_entity": "Vermogen",
+                        "consumer_energy_entity": "Totaal verbruikt"
+                    },
+                    "data_description": {
+                        "name": "Hoe de verbruiker heet, in de lijst van verbruikers.",
+                        "consumer_power_entity": "Het vermogen dat de verbruiker nu gebruikt.",
+                        "consumer_energy_entity": "Het totaal verbruikte energie (een oplopende teller in kWh). Optioneel."
+                    }
+                }
+            },
+            "abort": {
+                "reconfigure_successful": "De verbruiker is opgeslagen."
             }
         }
     },

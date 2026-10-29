@@ -617,19 +617,3 @@ async def test_options_flow_peak_load_field_prefers_saved_value_over_detected_se
         _suggested_value_for(result["data_schema"], CONF_PEAK_LOAD_THIS_MONTH_ENTITY)
         == "sensor.my_own_peak_sensor"
     )
-
-
-async def test_options_flow_consumers_section_saves_the_other_consumers(
-    hass: HomeAssistant, mock_api_client
-):
-    """Only the other consumers' power sensors -- EV chargers are subentries."""
-    entry = await _create_entry(hass, mock_api_client)
-
-    result = await _open_section(hass, entry, "ev_charger")
-    assert [str(key) for key in result["data_schema"].schema] == ["excluded_load_entities"]
-
-    await _save_section(
-        hass, entry, "ev_charger", {"excluded_load_entities": ["sensor.warmtepomp_vermogen"]}
-    )
-
-    assert entry.options["excluded_load_entities"] == ["sensor.warmtepomp_vermogen"]

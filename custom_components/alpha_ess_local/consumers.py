@@ -6,14 +6,15 @@ their power is taken off the measured house load first. Two groups:
   power sensor (summed in the panel's energy flow) and, optionally, a
   total-energy counter (its kWh today in the panel) and a power sensor per
   phase (its card in the panel);
-- other consumers (a heat pump, ...), in the options: a power sensor each,
-  for the learning only.
+- other consumers (a heat pump, ...), each a subentry too ("Add
+  consumer"): a power sensor, for the learning only, and optionally a
+  total-energy counter.
 
-The rest of the integration reads the chargers folded into the options by
+The rest of the integration reads them folded into the options by
 `consumer_options`, under the same keys as the lists the options had
 before the subentries. Those lists -- and older still, one charger's own
-power/energy fields -- move into one subentry per charger when the entry
-is migrated (`ev_chargers_from_options`).
+power/energy fields -- move into one subentry per charger/consumer when the
+entry is migrated (`ev_chargers_from_options`, `consumers_from_options`).
 """
 
 from __future__ import annotations
@@ -27,12 +28,14 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from .const import (
+    CONF_CONSUMER_POWER_ENTITY,
     CONF_EV_CHARGER_ENERGY_ENTITIES,
     CONF_EV_CHARGER_ENERGY_ENTITY,
     CONF_EV_CHARGER_PHASE_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXCLUDED_LOAD_ENTITIES,
+    SUBENTRY_CONSUMER,
     SUBENTRY_EV_CHARGER,
 )
 
@@ -103,21 +106,34 @@ def excluded_power_entities(options: Mapping[str, Any]) -> list[str]:
     )
 
 
-def ev_chargers(entry: ConfigEntry) -> list[Mapping[str, Any]]:
-    """The EV chargers' settings, each with its name under "name"."""
+def _subentries(entry: ConfigEntry, subentry_type: str) -> list[Mapping[str, Any]]:
     return [
         {**subentry.data, "name": subentry.title}
         for subentry in entry.subentries.values()
-        if subentry.subentry_type == SUBENTRY_EV_CHARGER
+        if subentry.subentry_type == subentry_type
     ]
 
 
+def ev_chargers(entry: ConfigEntry) -> list[Mapping[str, Any]]:
+    """The EV chargers' settings, each with its name under "name"."""
+    return _subentries(entry, SUBENTRY_EV_CHARGER)
+
+
+def other_consumers(entry: ConfigEntry) -> list[Mapping[str, Any]]:
+    """The other consumers' settings, each with its name under "name"."""
+    return _subentries(entry, SUBENTRY_CONSUMER)
+
+
 def consumer_options(entry: ConfigEntry) -> dict[str, Any]:
-    """The entry's options with its EV chargers folded in under the list
-    keys. Without chargers the options as they are (an entry not migrated
-    yet still has them there)."""
-    chargers = ev_chargers(entry)
+    """The entry's options with its EV chargers and other consumers folded
+    in under the list keys. Without any, the options as they are (an entry
+    not migrated yet still has them there)."""
     options = dict(entry.options)
+    if consumers := other_consumers(entry):
+        options[CONF_EXCLUDED_LOAD_ENTITIES] = _unique(
+            [consumer.get(CONF_CONSUMER_POWER_ENTITY) for consumer in consumers]
+        )
+    chargers = ev_chargers(entry)
     if not chargers:
         return options
     for key in (CONF_EV_CHARGER_POWER_ENTITY, CONF_EV_CHARGER_ENERGY_ENTITY):
@@ -187,3 +203,23 @@ def ev_chargers_from_options(
             data[CONF_EV_CHARGER_PHASE_ENTITIES] = group["phases"]
         chargers.append((group["name"] or default_name, data))
     return chargers, rest
+
+
+def consumers_from_options(
+    hass: HomeAssistant, options: Mapping[str, Any]
+) -> tuple[list[tuple[str, dict[str, Any]]], dict[str, Any]]:
+    """Split the other consumers from options saved before the subentries:
+    per power sensor a consumer named after it, and the options left."""
+    registry = er.async_get(hass)
+    consumers = []
+    for entity_id in _unique(list(options.get(CONF_EXCLUDED_LOAD_ENTITIES) or [])):
+        state = hass.states.get(entity_id)
+        reg_entry = registry.async_get(entity_id)
+        name = (
+            (state.name if state else None)
+            or (reg_entry and (reg_entry.name or reg_entry.original_name))
+            or entity_id
+        )
+        consumers.append((name, {CONF_CONSUMER_POWER_ENTITY: entity_id}))
+    rest = {k: v for k, v in options.items() if k != CONF_EXCLUDED_LOAD_ENTITIES}
+    return consumers, rest

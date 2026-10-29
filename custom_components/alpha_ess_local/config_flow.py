@@ -22,12 +22,13 @@ from .api import (
 from .const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_APPLY_VAT_ON_RETURN,
+    CONF_CONSUMER_ENERGY_ENTITY,
+    CONF_CONSUMER_POWER_ENTITY,
     CONF_CONTROL_ENABLED,
     CONF_ENTSOE_PRICE_ENTITY,
     CONF_EV_CHARGER_ENERGY_ENTITY,
     CONF_EV_CHARGER_PHASE_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITY,
-    CONF_EXCLUDED_LOAD_ENTITIES,
     CONF_EXTRA_PV_ENERGY_ENTITY,
     CONF_EXTRA_PV_PANEL_COUNT,
     CONF_EXTRA_PV_PANEL_WP,
@@ -69,6 +70,7 @@ from .const import (
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
+    SUBENTRY_CONSUMER,
     SUBENTRY_EV_CHARGER,
     SUBENTRY_PV_INSTALLATION,
 )
@@ -446,20 +448,25 @@ def _sensor_selector(device_class: str, *, multiple: bool = False) -> selector.E
     )
 
 
-def _consumers_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """Other consumers left out of the learned house load (a heat pump,
-    ...), picked one by one -- see consumers.py. EV chargers are subentries."""
-    return [
-        (
+def _consumer_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.Schema:
+    """Another consumer left out of the learned house load (a heat pump,
+    ...): its name, power and total-energy sensor -- see consumers.py."""
+    name = options.get(CONF_NAME) or (
+        "Verbruiker" if hass.config.language.startswith("nl") else "Consumer"
+    )
+    return vol.Schema(
+        {
+            vol.Required(CONF_NAME, default=name): selector.TextSelector(),
             vol.Optional(
-                CONF_EXCLUDED_LOAD_ENTITIES,
-                description={
-                    "suggested_value": list(options.get(CONF_EXCLUDED_LOAD_ENTITIES) or [])
-                },
-            ),
-            _sensor_selector("power", multiple=True),
-        ),
-    ], []
+                CONF_CONSUMER_POWER_ENTITY,
+                description={"suggested_value": options.get(CONF_CONSUMER_POWER_ENTITY)},
+            ): _sensor_selector("power"),
+            vol.Optional(
+                CONF_CONSUMER_ENERGY_ENTITY,
+                description={"suggested_value": options.get(CONF_CONSUMER_ENERGY_ENTITY)},
+            ): _sensor_selector("energy"),
+        }
+    )
 
 
 def _ev_charger_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.Schema:
@@ -590,7 +597,6 @@ OPTIONS_SECTIONS = {
     "prices": _prices_fields,
     "solar_forecast": _solar_forecast_fields,
     "meter": _meter_fields,
-    "ev_charger": _consumers_fields,
     "control": _control_fields,
 }
 
@@ -603,7 +609,6 @@ _SUPERSEDED_KEYS = {
         CONF_PRICE_SOURCE_PRIMARY,
     },
     "meter": {CONF_HOUSE_LOAD_POWER_ENTITY},
-    "ev_charger": {CONF_EV_CHARGER_POWER_ENTITY, CONF_EV_CHARGER_ENERGY_ENTITY},
     "solar_forecast": {
         CONF_FORECAST_SOLAR_ENTRIES,
         CONF_SOLCAST_ENTRIES,
@@ -648,8 +653,8 @@ class AlphaEssLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
     # 1.2: the PV installation moved from the options to a subentry; 1.3:
-    # each EV charger too.
-    MINOR_VERSION = 3
+    # each EV charger too; 1.4: each other consumer too.
+    MINOR_VERSION = 4
 
     @staticmethod
     def async_get_options_flow(
@@ -663,10 +668,12 @@ class AlphaEssLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_supported_subentry_types(
         cls, config_entry: config_entries.ConfigEntry
     ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
-        """PV installations and EV chargers are added one by one, as subentries."""
+        """PV installations, EV chargers and other consumers are added one by
+        one, as subentries."""
         return {
             SUBENTRY_PV_INSTALLATION: PvInstallationSubentryFlow,
             SUBENTRY_EV_CHARGER: EvChargerSubentryFlow,
+            SUBENTRY_CONSUMER: ConsumerSubentryFlow,
         }
 
     async def async_step_user(
@@ -737,11 +744,6 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         return self._async_section("solar_forecast", user_input)
-
-    async def async_step_ev_charger(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        return self._async_section("ev_charger", user_input)
 
     async def async_step_meter(
         self, user_input: dict[str, Any] | None = None
@@ -841,3 +843,10 @@ class EvChargerSubentryFlow(_SubentryFlow):
 
     def _schema(self, current: Mapping[str, Any]) -> vol.Schema:
         return _ev_charger_schema(self.hass, current)
+
+
+class ConsumerSubentryFlow(_SubentryFlow):
+    """Add or change one other consumer (see consumers.py)."""
+
+    def _schema(self, current: Mapping[str, Any]) -> vol.Schema:
+        return _consumer_schema(self.hass, current)
