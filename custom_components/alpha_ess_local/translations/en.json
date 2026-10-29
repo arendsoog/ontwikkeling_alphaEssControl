@@ -26,9 +26,9 @@
                     "installation": "Installation",
                     "prices": "Prices",
                     "solar_forecast": "Solar forecast",
-                    "extra_pv": "Additional energy sources",
-                    "ev_charger": "Excluded consumption",
-                    "meter": "Smart meter",
+                    "extra_pv": "Energy sources",
+                    "ev_charger": "Consumption sources",
+                    "meter": "P1 meter",
                     "control": "Control"
                 }
             },
@@ -63,7 +63,7 @@
                 }
             },
             "extra_pv": {
-                "title": "Additional energy sources",
+                "title": "Energy sources",
                 "description": "An energy source next to the AlphaESS, such as a second solar installation. Its power counts in the energy flow, the house load and learning the solar forecast.",
                 "sections": {
                     "measurement": {
@@ -102,7 +102,7 @@
                 }
             },
             "ev_charger": {
-                "title": "Excluded consumption",
+                "title": "Consumption sources",
                 "description": "Consumers kept out of the learned house load because they're big and irregular. Their power is taken off the measured house load before the load per hour is learned. Not used for control. Add as many as you have with 'Add entity'.",
                 "data": {
                     "ev_charger_power_entities": "EV chargers: power",
@@ -118,7 +118,7 @@
                 }
             },
             "meter": {
-                "title": "Smart meter",
+                "title": "P1 meter",
                 "description": "Pick your smart (P1) meter's sensors here. They give the house load and the grid import the grid charge is regulated on. Without a meter the inverter's own grid reading is used.",
                 "data": {
                     "grid_import_power_entity": "Grid import power",

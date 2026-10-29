@@ -96,7 +96,7 @@ Pick one sensor of each forecast location, such as Forecast.Solar's "Estimated e
 
 The form shows how it reads your list, for example "1. Forecast.Solar: Front + Back (summed)".
 
-### Smart meter
+### P1 meter
 
 | Field | What to pick |
 |---|---|
@@ -107,7 +107,7 @@ The form shows how it reads your list, for example "1. Forecast.Solar: Front + B
 
 A DSMR or HomeWizard meter is filled in automatically. Without a meter, the inverter's own grid reading is used.
 
-### Additional energy sources
+### Energy sources
 
 Something next to the AlphaESS that produces power, such as a second solar installation with its own inverter.
 
@@ -119,7 +119,7 @@ Something next to the AlphaESS that produces power, such as a second solar insta
 
 Its power counts in the energy flow, the house consumption and the learning of the solar forecast.
 
-### Excluded consumption
+### Consumption sources
 
 Big, irregular consumers would spoil the learned consumption per hour, so their power is subtracted from the house consumption first.
 
@@ -210,7 +210,7 @@ The overrides apply to the current hour and stay until you clear them.
 
 ### Switching off an SMA at negative prices
 
-Home Assistant's [Modbus](https://www.home-assistant.io/integrations/modbus/) integration can make a switch that writes the SMA's power limit. Add it under your SMA hub in `modbus.yaml`, restart Home Assistant, and pick `switch.sma_production` under **Additional energy sources → Control at negative prices**:
+Home Assistant's [Modbus](https://www.home-assistant.io/integrations/modbus/) integration can make a switch that writes the SMA's power limit. Add it under your SMA hub in `modbus.yaml`, restart Home Assistant, and pick `switch.sma_production` under **Energy sources → Control at negative prices**:
 
 ```yaml
 - name: sma_tripower

@@ -26,9 +26,9 @@
                     "installation": "Installatie",
                     "prices": "Prijzen",
                     "solar_forecast": "Zonnevoorspelling",
-                    "extra_pv": "Extra energiebronnen",
-                    "ev_charger": "Niet-meegeteld verbruik",
-                    "meter": "Slimme meter",
+                    "extra_pv": "Energiebronnen",
+                    "ev_charger": "Verbruiksbronnen",
+                    "meter": "P1-meter",
                     "control": "Sturing"
                 }
             },
@@ -63,7 +63,7 @@
                 }
             },
             "extra_pv": {
-                "title": "Extra energiebronnen",
+                "title": "Energiebronnen",
                 "description": "Een energiebron naast de AlphaESS, zoals een tweede zonne-installatie. Het vermogen telt mee in de energiestroom, het huisverbruik en het leren van de zonnevoorspelling.",
                 "sections": {
                     "measurement": {
@@ -102,7 +102,7 @@
                 }
             },
             "ev_charger": {
-                "title": "Niet-meegeteld verbruik",
+                "title": "Verbruiksbronnen",
                 "description": "Verbruikers die buiten het geleerde huisverbruik blijven, omdat ze groot en onregelmatig zijn. Hun vermogen wordt van het gemeten huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd. Niet gebruikt voor de sturing. Voeg met 'Entiteit toevoegen' er zoveel toe als je hebt.",
                 "data": {
                     "ev_charger_power_entities": "EV-laders: vermogen",
@@ -118,7 +118,7 @@
                 }
             },
             "meter": {
-                "title": "Slimme meter",
+                "title": "P1-meter",
                 "description": "Kies hier de sensoren van je slimme meter (P1). Daarmee berekent de app het huisverbruik en regelt hij het laden van het net. Zonder meter gebruikt de app de netmeting van de omvormer.",
                 "data": {
                     "grid_import_power_entity": "Vermogen afname van het net",
