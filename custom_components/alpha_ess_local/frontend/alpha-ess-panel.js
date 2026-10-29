@@ -1249,7 +1249,7 @@ class AlphaEssPanel extends HTMLElement {
       sourcesRow("Netmeting", meter && meter.meters, "huisverbruik, dag/nachttarief, regelen van netladen"),
       sourcesRow("Grens netladen", meter && meter.caps, "de hoogste geldt (maandpiek in hele kW)"),
       row(
-        "Extra PV-sturing negatieve prijzen",
+        "PV-sturing negatieve prijzen",
         !st ? "–" : st.extra_pv_unreachable ? "Niet bereikbaar" : st.extra_pv_control_enabled ? "Actief" : "Uit",
         !st ? "" : st.extra_pv_unreachable ? "error" : tone(st.extra_pv_control_enabled)
       ),
@@ -1908,8 +1908,8 @@ class AlphaEssPanel extends HTMLElement {
         toggle({
           option: "extra_pv_control_enabled",
           icon: "mdi:solar-panel",
-          label: "Extra PV-sturing negatieve prijzen",
-          info: "Schakelt de extra PV-installatie uit bij negatieve prijzen, zodra de batterij haar doel-SOC heeft bereikt.",
+          label: "PV-sturing negatieve prijzen",
+          info: "Schakelt de PV-installatie uit bij negatieve prijzen, zodra de batterij haar doel-SOC heeft bereikt.",
         }),
       ].join("") || '<div class="empty">Status laden…</div>'
     );
