@@ -14,6 +14,7 @@ from homeassistant.helpers.event import async_track_time_change
 
 from .api import AlphaEssLocalApiClient, AlphaEssLocalApiClientError
 from .const import (
+    CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_CONTROL_ENABLED,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
@@ -47,7 +48,12 @@ PLATFORMS: list[Platform] = [Platform.NUMBER, Platform.SENSOR, Platform.SWITCH]
 # change to only these takes effect without a reload. Reloading would drop
 # all entities for several seconds -- and blank the panel that toggled them.
 LIVE_OPTIONS = frozenset(
-    {CONF_CONTROL_ENABLED, CONF_EXTRA_PV_CONTROL_ENABLED, CONF_PERSIST_DAILY_CHARGE_LIMIT}
+    {
+        CONF_ALLOW_PROVIDER_CONTROL_HOURS,
+        CONF_CONTROL_ENABLED,
+        CONF_EXTRA_PV_CONTROL_ENABLED,
+        CONF_PERSIST_DAILY_CHARGE_LIMIT,
+    }
 )
 
 # Manual dispatch-override services — port of ReadConfigMinute's C/D/P/N

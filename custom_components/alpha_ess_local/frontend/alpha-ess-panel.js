@@ -853,6 +853,8 @@ class AlphaEssPanel extends HTMLElement {
     root.addEventListener("click", (ev) => {
       const sw = ev.composedPath().find((el) => el.classList && el.classList.contains("switch"));
       if (sw) this._toggle(sw);
+      const hour = ev.composedPath().find((el) => el.dataset && el.dataset.hour !== undefined);
+      if (hour) this._toggleHour(hour);
     });
     root.addEventListener("pointerdown", (ev) => {
       if (ev.composedPath().some((el) => el.dataset && el.dataset.number)) this._dragging = true;
@@ -1931,6 +1933,7 @@ class AlphaEssPanel extends HTMLElement {
           label: "PV-sturing negatieve prijzen",
           info: "Schakelt de PV-installatie uit bij negatieve prijzen, zodra de batterij haar doel-SOC heeft bereikt.",
         }),
+        this._providerHours(st),
       ].join("") || '<div class="empty">Status laden…</div>'
     );
 
@@ -2034,6 +2037,41 @@ class AlphaEssPanel extends HTMLElement {
     return rows
       ? `<div class="section-title">Limieten</div><p class="hint">Geldt vanaf het volgende hele uur, als de planning opnieuw rekent.</p><div class="limits">${rows}</div>`
       : "";
+  }
+
+  // The hours the energy provider may override the schedule in: one button
+  // per hour, on = allowed.
+  _providerHours(st) {
+    if (!st || !Array.isArray(st.allow_provider_control_hours)) return "";
+    const allowed = new Set(st.allow_provider_control_hours);
+    const hours = Array.from({ length: 24 }, (_, h) => {
+      const on = allowed.has(h);
+      return `<button class="hour ${on ? "on" : ""}" data-hour="${h}" aria-pressed="${on}">${pad2(h)}</button>`;
+    }).join("");
+    return `
+      <div class="ctl">
+        ${this._ctlLabel({
+          icon: "mdi:clock-outline",
+          label: "Uren waarin de leverancier het schema mag overschrijven",
+          info: "In deze uren laat de sturing het staan als je energieleverancier de batterij zelf aanstuurt (bijvoorbeeld bij onbalans). Buiten deze uren zet de sturing het schema terug.",
+        })}
+        <div class="hour-grid">${hours}</div>
+      </div>`;
+  }
+
+  async _toggleHour(el) {
+    const hour = Number(el.dataset.hour);
+    const current = (this._status && this._status.allow_provider_control_hours) || [];
+    const hours = current.includes(hour) ? current.filter((h) => h !== hour) : [...current, hour].sort((a, b) => a - b);
+    try {
+      await this._hass.callWS({ type: `${DOMAIN}/set_provider_hours`, hours });
+      // Applies live (no reload): show it right away.
+      if (this._status) this._status = { ...this._status, allow_provider_control_hours: hours };
+      this._renderAll();
+      this._loadStatus();
+    } catch (err) {
+      window.alert(`Mislukt: ${err.message || err}`);
+    }
   }
 
   _ctlLabel(spec) {
@@ -2987,6 +3025,19 @@ const STYLE = `
   /* control tab */
   .ctl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px 48px; align-items: start; }
   .ctl { padding: 10px 0 14px; }
+  .hour-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin-top: 10px; }
+  .hour {
+    padding: 5px 0;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+  }
+  .hour.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .limits { display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px; }
   @media (max-width: 700px) { .limits { grid-template-columns: 1fr; } }
   .ctl-label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 15px; font-weight: 300; }

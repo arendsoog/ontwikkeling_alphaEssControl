@@ -20,6 +20,7 @@ from custom_components.alpha_ess_local.frontend import (
     SETTABLE_OPTIONS,
     _is_our_panel,
     _ws_set_option,
+    _ws_set_provider_hours,
     day_details,
     extra_pv_string_entities,
     source_list,
@@ -232,6 +233,25 @@ def test_set_option_requires_admin(hass):
         )
 
     connection.send_result.assert_not_called()
+
+
+def test_set_provider_hours_stores_them_as_the_form_does(hass):
+    entry = MockConfigEntry(domain=DOMAIN, options={"allow_provider_control_hours": ["3"]})
+    entry.add_to_hass(hass)
+    connection = _ws_connection()
+
+    with patch.object(hass.config_entries, "async_loaded_entries", return_value=[entry]):
+        _ws_set_provider_hours(hass, connection, {"id": 1, "type": "x", "hours": [17, 3, 17]})
+
+    assert entry.options == {"allow_provider_control_hours": ["3", "17"]}
+    connection.send_result.assert_called_once_with(1, {"hours": [3, 17]})
+
+
+def test_set_provider_hours_requires_admin(hass):
+    connection = _ws_connection(is_admin=False)
+
+    with pytest.raises(Unauthorized):
+        _ws_set_provider_hours(hass, connection, {"id": 1, "type": "x", "hours": [3]})
 
 
 # --- price/solar source order ---------------------------------------------------

@@ -23,6 +23,7 @@ from homeassistant.util import dt as dt_util
 
 from .. import storage
 from ..const import (
+    CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
     CONF_EXTRA_PV_CONTROL_ENABLED,
@@ -38,6 +39,7 @@ from ..const import (
     CONF_PV_POWER,
     CONF_USABLE_BATTERY_CAPACITY,
     CONF_VAT_PERCENTAGE,
+    DEFAULT_ALLOW_PROVIDER_CONTROL_HOURS,
     DEFAULT_APPLY_VAT_ON_RETURN,
     DEFAULT_CONTROL_ENABLED,
     DEFAULT_EXTRA_PV_CONTROL_ENABLED,
@@ -120,6 +122,12 @@ def _ws_panel_status(
             ),
             "persist_daily_charge_limit": options.get(
                 CONF_PERSIST_DAILY_CHARGE_LIMIT, DEFAULT_PERSIST_DAILY_CHARGE_LIMIT
+            ),
+            "allow_provider_control_hours": sorted(
+                int(hour)
+                for hour in options.get(
+                    CONF_ALLOW_PROVIDER_CONTROL_HOURS, DEFAULT_ALLOW_PROVIDER_CONTROL_HOURS
+                )
             ),
             "usable_battery_capacity": options.get(CONF_USABLE_BATTERY_CAPACITY, 0),
             "inverter_nominal_power": options.get(CONF_INVERTER_NOMINAL_POWER, 0),
@@ -303,6 +311,32 @@ def _ws_set_option(
 
 @websocket_api.websocket_command(
     {
+        vol.Required("type"): f"{DOMAIN}/set_provider_hours",
+        vol.Required("hours"): [vol.All(int, vol.Range(min=0, max=23))],
+    }
+)
+@websocket_api.require_admin
+@callback
+def _ws_set_provider_hours(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Set the hours the energy provider may override the schedule in --
+    stored as the options form stores them (hour numbers as text)."""
+    entries = hass.config_entries.async_loaded_entries(DOMAIN)
+    if not entries:
+        connection.send_error(msg["id"], "not_loaded", "AlphaESSControl is not loaded")
+        return
+    entry = entries[0]
+    hours = sorted(set(msg["hours"]))
+    hass.config_entries.async_update_entry(
+        entry,
+        options={**entry.options, CONF_ALLOW_PROVIDER_CONTROL_HOURS: [str(h) for h in hours]},
+    )
+    connection.send_result(msg["id"], {"hours": hours})
+
+
+@websocket_api.websocket_command(
+    {
         vol.Required("type"): f"{DOMAIN}/history",
         vol.Required("start"): cv.date,
         vol.Required("end"): cv.date,
@@ -435,6 +469,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         websocket_api.async_register_command(hass, _ws_panel_status)
         websocket_api.async_register_command(hass, _ws_today_power)
         websocket_api.async_register_command(hass, _ws_set_option)
+        websocket_api.async_register_command(hass, _ws_set_provider_hours)
         websocket_api.async_register_command(hass, _ws_history)
         hass.data[_DATA_REGISTERED] = True
 
