@@ -1033,7 +1033,7 @@ class AlphaEssPanel extends HTMLElement {
         key: "ev",
         color: SCENE_COLOR.ev,
         value: fmtW(ev),
-        name: this._evPowerIds().length > 1 ? "LAADPALEN" : "LAADPAAL",
+        name: this._evPowerIds().length > 1 ? "EV-LADERS" : "EV-LADER",
         entity: this._evPowerIds()[0],
         sub: this._evTodayTotalKwh() === null ? "" : `${fmtNum(this._evTodayTotalKwh(), 2)} kWh vandaag`,
       },
@@ -1106,7 +1106,7 @@ class AlphaEssPanel extends HTMLElement {
       const state = this._hass.states[id];
       const name = state && state.attributes.friendly_name;
       rows.push({
-        label: evIds.length > 1 ? `Geladen: ${name || id}` : "Laadpaal geladen",
+        label: evIds.length > 1 ? `Geladen: ${name || id}` : "EV-lader geladen",
         value: this._evTodayKwh(id),
         color: SCENE_COLOR.ev,
         entityId: id,
@@ -1552,7 +1552,7 @@ class AlphaEssPanel extends HTMLElement {
       if (v !== null) power = (power || 0) + (s.attributes.unit_of_measurement === "kW" ? v * 1000 : v);
     }
     const charging = power !== null && power > 50;
-    const name = group.name || (count > 1 ? `Laadpaal ${index + 1}` : "Laadpaal");
+    const name = group.name || (count > 1 ? `EV-lader ${index + 1}` : "EV-lader");
     const energy = group.energy.map((id) => ({
       label: group.energy.length > 1 ? (this._hass.states[id] || {}).attributes?.friendly_name || id : "Geladen",
       value: this._evTodayKwh(id),
