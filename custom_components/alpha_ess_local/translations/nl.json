@@ -124,11 +124,13 @@
                         "measurement": {
                             "name": "Meting",
                             "data": {
-                                "extra_pv_power_entities": "Vermogen",
+                                "extra_pv_power_entity": "Vermogen",
+                                "extra_pv_energy_entity": "Totaal opgewekt",
                                 "extra_pv_string_entities": "Vermogen per MPPT (string)"
                             },
                             "data_description": {
-                                "extra_pv_power_entities": "Het vermogen dat de bron nu levert, bijvoorbeeld 'AC-vermogen' van de omvormer. Meerdere sensoren worden opgeteld (een tweede omvormer, micro-omvormers, of het vermogen per string).",
+                                "extra_pv_power_entity": "Het vermogen dat de installatie nu levert, bijvoorbeeld 'AC-vermogen' van de omvormer.",
+                                "extra_pv_energy_entity": "De totaal opgewekte energie van de installatie (een oplopende teller in kWh), bijvoorbeeld 'Totale opbrengst' van de omvormer. Voor 'Opgewekt vandaag' in het paneel. Optioneel: zonder teller rekent het paneel het uit het vermogen.",
                                 "extra_pv_string_entities": "Alleen voor het paneel: het vermogen per MPPT-ingang van de omvormer, dus per lijn panelen (string), bijvoorbeeld 'DC-vermogen string 1' en 'string 2'. Leeg bij de SMA-integratie: haar eigen strings."
                             }
                         },
@@ -167,11 +169,13 @@
                         "measurement": {
                             "name": "Meting",
                             "data": {
-                                "extra_pv_power_entities": "Vermogen",
+                                "extra_pv_power_entity": "Vermogen",
+                                "extra_pv_energy_entity": "Totaal opgewekt",
                                 "extra_pv_string_entities": "Vermogen per MPPT (string)"
                             },
                             "data_description": {
-                                "extra_pv_power_entities": "Het vermogen dat de bron nu levert, bijvoorbeeld 'AC-vermogen' van de omvormer. Meerdere sensoren worden opgeteld (een tweede omvormer, micro-omvormers, of het vermogen per string).",
+                                "extra_pv_power_entity": "Het vermogen dat de installatie nu levert, bijvoorbeeld 'AC-vermogen' van de omvormer.",
+                                "extra_pv_energy_entity": "De totaal opgewekte energie van de installatie (een oplopende teller in kWh), bijvoorbeeld 'Totale opbrengst' van de omvormer. Voor 'Opgewekt vandaag' in het paneel. Optioneel: zonder teller rekent het paneel het uit het vermogen.",
                                 "extra_pv_string_entities": "Alleen voor het paneel: het vermogen per MPPT-ingang van de omvormer, dus per lijn panelen (string), bijvoorbeeld 'DC-vermogen string 1' en 'string 2'. Leeg bij de SMA-integratie: haar eigen strings."
                             }
                         },

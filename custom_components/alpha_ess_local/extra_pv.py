@@ -2,8 +2,9 @@
 
 Each is a subentry of the config entry ("Add PV installation"), picked by
 its sensors and a switch:
-- its power: one or more power sensors, summed (a second inverter, micro
-  inverters, or an inverter's power per string);
+- its power: its inverter's power sensor (migrated installations may have
+  several, summed);
+- its total production in kWh, for the panel's daily total;
 - its power per string, MPPT or phase, for the panel only;
 - its panels (Wp and count), for its peak power;
 - a switch that turns it off at negative prices (on = producing): any
@@ -31,6 +32,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
 from .const import (
+    CONF_EXTRA_PV_ENERGY_ENTITIES,
+    CONF_EXTRA_PV_ENERGY_ENTITY,
     CONF_EXTRA_PV_MODBUS_HUB,
     CONF_EXTRA_PV_PANEL_COUNT,
     CONF_EXTRA_PV_PANEL_WP,
@@ -157,7 +160,10 @@ def extra_pv_options(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
         return list(dict.fromkeys(e for group in entities for e in group or [] if e))
 
     options[CONF_EXTRA_PV_POWER_ENTITIES] = joined(
-        i.get(CONF_EXTRA_PV_POWER_ENTITIES) for i in installations
+        extra_pv_power_entities(hass, i) for i in installations
+    )
+    options[CONF_EXTRA_PV_ENERGY_ENTITIES] = joined(
+        [i.get(CONF_EXTRA_PV_ENERGY_ENTITY)] for i in installations
     )
     options[CONF_EXTRA_PV_STRING_ENTITIES] = joined(
         extra_pv_string_entities(hass, i) for i in installations
@@ -195,7 +201,12 @@ def installation_from_options(
     if not (power or switch or options.get(CONF_EXTRA_PV_MODBUS_HUB)):
         return None, rest
     installation: dict[str, Any] = {
-        CONF_EXTRA_PV_POWER_ENTITIES: power,
+        # One sensor in the single field; an old SMA source's strings summed.
+        **(
+            {CONF_EXTRA_PV_POWER_ENTITY: power[0]}
+            if len(power) == 1
+            else {CONF_EXTRA_PV_POWER_ENTITIES: power}
+        ),
         CONF_EXTRA_PV_STRING_ENTITIES: list(options.get(CONF_EXTRA_PV_STRING_ENTITIES) or []),
         CONF_EXTRA_PV_PANEL_WP: options.get(CONF_EXTRA_PV_PANEL_WP, 0),
         CONF_EXTRA_PV_PANEL_COUNT: options.get(CONF_EXTRA_PV_PANEL_COUNT, 0),

@@ -63,8 +63,8 @@ def _suggested(schema, key):
 
 async def test_add_installation_form(hass: HomeAssistant):
     """A name, and three blocks -- the switch's collapsed; a detected SMA
-    pre-fills the power."""
-    strings = _sma_sensors(hass, f"{SMA_PV_POWER_STRING_KEY}_0", f"{SMA_PV_POWER_STRING_KEY}_1")
+    pre-fills the power with its total."""
+    total, _ = _sma_sensors(hass, f"{SMA_PV_POWER_AGGREGATE_KEY}_0", f"{SMA_PV_POWER_STRING_KEY}_0")
     entry = _entry(hass)
 
     result = await hass.config_entries.subentries.async_init(
@@ -79,13 +79,27 @@ async def test_add_installation_form(hass: HomeAssistant):
         "control",
     ]
     assert [str(key) for key in _block(schema, "measurement").schema] == [
-        "extra_pv_power_entities",
+        "extra_pv_power_entity",
+        "extra_pv_energy_entity",
         "extra_pv_string_entities",
     ]
     assert [str(key) for key in _block(schema, "control").schema] == ["extra_pv_switch_entity"]
     control = next(k for k in schema.schema if k == "control")
     assert schema.schema[control].options["collapsed"] is True
-    assert _suggested(_block(schema, "measurement"), "extra_pv_power_entities") == strings
+    assert _suggested(_block(schema, "measurement"), "extra_pv_power_entity") == total
+
+
+async def test_add_installation_not_prefilled_with_sma_strings(hass: HomeAssistant):
+    """Without the SMA's total its strings aren't the installation's power."""
+    _sma_sensors(hass, f"{SMA_PV_POWER_STRING_KEY}_0", f"{SMA_PV_POWER_STRING_KEY}_1")
+    entry = _entry(hass)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_PV_INSTALLATION), context={"source": SOURCE_USER}
+    )
+
+    measurement = _block(result["data_schema"], "measurement")
+    assert _suggested(measurement, "extra_pv_power_entity") is None
 
 
 async def test_add_installation_creates_a_subentry(hass: HomeAssistant):
@@ -98,7 +112,10 @@ async def test_add_installation_creates_a_subentry(hass: HomeAssistant):
         result["flow_id"],
         {
             "name": "Garage",
-            "measurement": {"extra_pv_power_entities": ["sensor.sma_ac"]},
+            "measurement": {
+                "extra_pv_power_entity": "sensor.sma_ac",
+                "extra_pv_energy_entity": "sensor.sma_total_yield",
+            },
             "installation": {"extra_pv_panel_wp": 305, "extra_pv_panel_count": 31},
             "control": {"extra_pv_switch_entity": "switch.sma_productie"},
         },
@@ -108,7 +125,8 @@ async def test_add_installation_creates_a_subentry(hass: HomeAssistant):
     assert pv_installations(entry) == [
         {
             "name": "Garage",
-            "extra_pv_power_entities": ["sensor.sma_ac"],
+            "extra_pv_power_entity": "sensor.sma_ac",
+            "extra_pv_energy_entity": "sensor.sma_total_yield",
             "extra_pv_panel_wp": 305,
             "extra_pv_panel_count": 31,
             "extra_pv_switch_entity": "switch.sma_productie",
@@ -119,7 +137,7 @@ async def test_add_installation_creates_a_subentry(hass: HomeAssistant):
 async def test_change_installation(hass: HomeAssistant):
     entry = _entry(hass)
     subentry_id = _add_installation(
-        hass, entry, "PV-installatie", {"extra_pv_power_entities": ["sensor.sma_ac"]}
+        hass, entry, "PV-installatie", {"extra_pv_power_entities": ["sensor.sma_ac", "sensor.b"]}
     )
 
     result = await hass.config_entries.subentries.async_init(
@@ -130,13 +148,13 @@ async def test_change_installation(hass: HomeAssistant):
         "name"
     ] == ("PV-installatie")
     measurement = _block(result["data_schema"], "measurement")
-    assert _suggested(measurement, "extra_pv_power_entities") == ["sensor.sma_ac"]
+    assert _suggested(measurement, "extra_pv_power_entity") == "sensor.sma_ac"
 
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
         {
             "name": "Garage",
-            "measurement": {"extra_pv_power_entities": ["sensor.sma_ac", "sensor.micro"]},
+            "measurement": {"extra_pv_power_entity": "sensor.micro"},
             "installation": {},
             "control": {},
         },
@@ -147,7 +165,7 @@ async def test_change_installation(hass: HomeAssistant):
     assert pv_installations(entry) == [
         {
             "name": "Garage",
-            "extra_pv_power_entities": ["sensor.sma_ac", "sensor.micro"],
+            "extra_pv_power_entity": "sensor.micro",
             "extra_pv_panel_wp": 0,
             "extra_pv_panel_count": 0,
         }
@@ -164,7 +182,8 @@ async def test_extra_pv_options_fold_the_installations_together(hass: HomeAssist
         entry,
         "Garage",
         {
-            "extra_pv_power_entities": ["sensor.sma_ac"],
+            "extra_pv_power_entity": "sensor.sma_ac",
+            "extra_pv_energy_entity": "sensor.sma_total_yield",
             "extra_pv_string_entities": ["sensor.sma_dc_1"],
             "extra_pv_panel_wp": 305,
             "extra_pv_panel_count": 31,
@@ -190,6 +209,7 @@ async def test_extra_pv_options_fold_the_installations_together(hass: HomeAssist
         "sensor.micro_1",
         "sensor.micro_2",
     ]
+    assert options["extra_pv_energy_entities"] == ["sensor.sma_total_yield"]
     assert options["extra_pv_string_entities"] == ["sensor.sma_dc_1"]
     assert options["extra_pv_power_capacity"] == 305 * 31 + 400 * 4
     assert extra_pv_switches(options) == ["switch.sma_productie"]
@@ -226,7 +246,7 @@ def test_installation_from_options_resolves_the_old_sma_source(hass: HomeAssista
     )
 
     assert installation == {
-        "extra_pv_power_entities": [total],
+        "extra_pv_power_entity": total,
         "extra_pv_string_entities": [],
         "extra_pv_panel_wp": 305,
         "extra_pv_panel_count": 31,
@@ -256,7 +276,7 @@ async def test_migrate_moves_the_installation_into_a_subentry(hass: HomeAssistan
     assert pv_installations(entry) == [
         {
             "name": "PV-installatie",
-            "extra_pv_power_entities": ["sensor.sma_ac"],
+            "extra_pv_power_entity": "sensor.sma_ac",
             "extra_pv_string_entities": [],
             "extra_pv_panel_wp": 305,
             "extra_pv_panel_count": 31,

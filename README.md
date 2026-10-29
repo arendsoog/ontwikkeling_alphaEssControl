@@ -112,7 +112,8 @@ A DSMR or HomeWizard meter is filled in automatically. Without a meter, the inve
 A solar installation next to the AlphaESS, with its own inverter. These aren't in the options menu: on the integration's page, click **Add PV installation**, give it a name, and fill in:
 
 - **Measurement**
-  - **Power:** one or more power sensors, added up (a second inverter, micro inverters, or the power per string).
+  - **Power:** the inverter's power sensor, such as its AC power.
+  - **Total produced:** its total-production counter in kWh, for "Produced today" on the dashboard. Optional: without it, the dashboard works it out from the power.
   - **Power per MPPT (string):** for the dashboard only. An SMA integration is detected and filled in automatically.
 - **Installation:** Wp per panel and number of panels, used to estimate its power when its reading is gone (an SMA asleep at night or out of reach).
 - **Control at negative prices:** a **switch** that turns the source off and on (on = producing). Any switch works: a Modbus switch, a relay, an `input_boolean`, ... See [Switching off an SMA at negative prices](#switching-off-an-sma-at-negative-prices).

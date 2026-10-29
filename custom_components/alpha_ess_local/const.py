@@ -97,6 +97,10 @@ CONF_EXTRA_PV_PANEL_COUNT = "extra_pv_panel_count"
 # under CONF_EXTRA_PV_SWITCH_ENTITIES.
 SUBENTRY_PV_INSTALLATION = "pv_installation"
 CONF_EXTRA_PV_SWITCH_ENTITIES = "extra_pv_switch_entities"
+# An installation's total-production counter (kWh), for the panel's daily
+# total; all installations' listed under CONF_EXTRA_PV_ENERGY_ENTITIES.
+CONF_EXTRA_PV_ENERGY_ENTITY = "extra_pv_energy_entity"
+CONF_EXTRA_PV_ENERGY_ENTITIES = "extra_pv_energy_entities"
 
 # Options flow: extra-PV price-based on/off control. A Modbus write to a
 # *different* device (e.g. a second SMA inverter) via HA's core `modbus`

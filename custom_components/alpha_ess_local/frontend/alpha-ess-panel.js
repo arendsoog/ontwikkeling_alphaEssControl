@@ -596,7 +596,7 @@ class AlphaEssPanel extends HTMLElement {
       // option toggles and settings don't vanish until the next refresh.
       console.debug("alpha-ess-panel: panel_status failed", err);
     }
-    const evEnergy = this._evEnergyIds().join(",");
+    const evEnergy = [...this._evEnergyIds(), ...this._pvEnergyIds()].join(",");
     if (evEnergy !== this._loadedEvEnergy) {
       this._loadedEvEnergy = evEnergy;
       if (evEnergy) this._loadHistory();
@@ -613,6 +613,11 @@ class AlphaEssPanel extends HTMLElement {
     return (this._status && this._status.ev_charger_energy_entities) || [];
   }
 
+  // The PV installations' total-production counters (kWh).
+  _pvEnergyIds() {
+    return (this._status && this._status.extra_pv_energy_entities) || [];
+  }
+
   async _loadHistory() {
     if (!this._hass || !this._entities) return;
     const keys = ["battery_soc", "pv_power", "total_pv_power", "grid_power", "battery_power", "extra_pv_power"];
@@ -621,7 +626,11 @@ class AlphaEssPanel extends HTMLElement {
     ];
     const counterIds = [
       ...new Set(
-        [...this._devices.flatMap((d) => Object.values(COUNTERS).map((k) => d.entities[k])), ...this._evEnergyIds()].filter(
+        [
+          ...this._devices.flatMap((d) => Object.values(COUNTERS).map((k) => d.entities[k])),
+          ...this._evEnergyIds(),
+          ...this._pvEnergyIds(),
+        ].filter(
           Boolean
         )
       ),
@@ -1818,9 +1827,15 @@ class AlphaEssPanel extends HTMLElement {
     const capacity = num(st.extra_pv_power_capacity);
     const usage = capacity && power ? Math.min(100, (power / capacity) * 100) : 0;
     const dayStart = startOfDay().getTime();
-    const todayKwh = this._todayPower
-      ? this._todayPower.extra_pv_wh / 1000
-      : integrateWh(this._historyOf(e, "extra_pv_power"), dayStart, Date.now()) / 1000;
+    // From the installations' production counters when all are known, else
+    // the power summed over the day.
+    const counters = this._pvEnergyIds().map((id) => this._dailyTotalsById(id)[dayStart] ?? null);
+    const todayKwh =
+      counters.length && counters.every((v) => v !== null)
+        ? counters.reduce((sum, v) => sum + v, 0)
+        : this._todayPower
+          ? this._todayPower.extra_pv_wh / 1000
+          : integrateWh(this._historyOf(e, "extra_pv_power"), dayStart, Date.now()) / 1000;
     const producing = power !== null && power > 15;
 
     return `
@@ -1841,7 +1856,7 @@ class AlphaEssPanel extends HTMLElement {
         ${this._mpptSection(st.extra_pv_string_entities || [])}
 
         <div class="section-title">Energie vandaag</div>
-        ${this._energyRows([{ label: "Opgewekt", value: this._history ? todayKwh : null, color: COLOR.solar, entity: e.extra_pv_power }])}
+        ${this._energyRows([{ label: "Opgewekt", value: this._history ? todayKwh : null, color: COLOR.solar, entity: this._pvEnergyIds()[0] || e.extra_pv_power }])}
 
         <div class="section-title">Sturing bij negatieve prijzen</div>
         <div class="kv-grid">

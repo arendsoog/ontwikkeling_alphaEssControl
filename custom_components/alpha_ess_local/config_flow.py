@@ -30,6 +30,7 @@ from .const import (
     CONF_EV_CHARGER_POWER_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXCLUDED_LOAD_ENTITIES,
+    CONF_EXTRA_PV_ENERGY_ENTITY,
     CONF_EXTRA_PV_PANEL_COUNT,
     CONF_EXTRA_PV_PANEL_WP,
     CONF_EXTRA_PV_POWER_ENTITIES,
@@ -368,28 +369,38 @@ def _pv_installation_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> 
     three blocks -- its measurement, its panels, and the switch that turns
     it off at negative prices (collapsed). See extra_pv.py.
 
-    The power is pre-filled with the saved sensors, or for a new one with a
-    detected SMA integration's.
+    The power is pre-filled with the saved sensor (the first, when migrated
+    with several), or for a new one with a detected SMA integration's total.
     """
     if CONF_EXTRA_PV_POWER_ENTITIES in options or options.get(CONF_EXTRA_PV_POWER_ENTITY):
-        power = extra_pv_power_entities(hass, options)
+        power = next(iter(extra_pv_power_entities(hass, options)), None)
     else:
-        power = detected_extra_pv_power_entities(hass)
+        detected = detected_extra_pv_power_entities(hass)
+        power = detected[0] if len(detected) == 1 else None
 
-    def entities(key: str, value: Any, device_class: str) -> tuple[Any, Any]:
+    def entities(key: str, value: Any, device_class: str, *, multiple: bool) -> tuple[Any, Any]:
         return (
             vol.Optional(key, description={"suggested_value": value}),
             selector.EntitySelector(
                 selector.EntitySelectorConfig(
-                    domain="sensor", device_class=device_class, multiple=True
+                    domain="sensor", device_class=device_class, multiple=multiple
                 )
             ),
         )
 
     measurement = [
-        entities(CONF_EXTRA_PV_POWER_ENTITIES, power, "power"),
+        entities(CONF_EXTRA_PV_POWER_ENTITY, power, "power", multiple=False),
         entities(
-            CONF_EXTRA_PV_STRING_ENTITIES, options.get(CONF_EXTRA_PV_STRING_ENTITIES), "power"
+            CONF_EXTRA_PV_ENERGY_ENTITY,
+            options.get(CONF_EXTRA_PV_ENERGY_ENTITY),
+            "energy",
+            multiple=False,
+        ),
+        entities(
+            CONF_EXTRA_PV_STRING_ENTITIES,
+            options.get(CONF_EXTRA_PV_STRING_ENTITIES),
+            "power",
+            multiple=True,
         ),
     ]
     installation = [
