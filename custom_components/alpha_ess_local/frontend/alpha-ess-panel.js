@@ -88,7 +88,7 @@ const LIVE_KEYS = ["battery_soc", "pv_power", "total_pv_power", "grid_power", "b
 
 const TABS = [
   { key: "overview", label: "Overzicht", icon: "mdi:view-dashboard-outline" },
-  { key: "devices", label: "Omvormers", icon: "mdi:solar-power-variant-outline" },
+  { key: "devices", label: "Installaties", icon: "mdi:solar-power-variant-outline" },
   { key: "control", label: "Bediening", icon: "mdi:tune-variant" },
   { key: "history", label: "Historie", icon: "mdi:history" },
 ];
@@ -1827,7 +1827,7 @@ class AlphaEssPanel extends HTMLElement {
       <section class="card device">
         <div class="device-head">
           <ha-icon icon="mdi:solar-panel"></ha-icon>
-          <div class="device-name">Extra PV-installatie</div>
+          <div class="device-name">PV-installatie</div>
           <div class="spacer"></div>
           <span class="${producing ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : producing ? "Produceert" : "Rust"}</span>
         </div>

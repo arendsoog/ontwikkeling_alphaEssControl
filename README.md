@@ -145,7 +145,7 @@ The integration adds **AlphaESS Control** to the sidebar, with four tabs.
   - today's and this week's energy, and today's power and state of charge;
   - the day's prices, solar and plan, with a decision log of what was planned per hour and why;
   - the integration status: which price/solar source is in use, which grid meter, and which grid-charge limit applies.
-- **Inverters:** one card per AlphaESS (power, MPPTs, battery health, lifetime totals), a card for the additional energy source with its switch, and one card per EV charger.
+- **Installations:** one card per AlphaESS (power, MPPTs, battery health, lifetime totals), a card for the additional energy source with its switch, and one card per EV charger.
 - **Control:** the switches and sliders below, and buttons to override the plan for the current hour.
 - **History:** energy and savings per day, week, month or year.
 

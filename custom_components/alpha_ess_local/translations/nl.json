@@ -113,7 +113,7 @@
                 "data_description": {
                     "ev_charger_power_entities": "Het laadvermogen van elke laadpaal. Samen getoond in de energiestroom van het paneel.",
                     "ev_charger_energy_entities": "De totaal geladen energie van elke laadpaal (een oplopende teller in kWh). Per laadpaal getoond in de dagtotalen van het paneel. Optioneel.",
-                    "ev_charger_phase_entities": "Het vermogen per fase (L1, L2, L3) van elke laadpaal, voor de kaart van de laadpaal op het tabblad Omvormers. Optioneel.",
+                    "ev_charger_phase_entities": "Het vermogen per fase (L1, L2, L3) van elke laadpaal, voor de kaart van de laadpaal op het tabblad Installaties. Optioneel.",
                     "excluded_load_entities": "Het vermogen van andere grote verbruikers, zoals een warmtepomp. Alleen voor het leren, niet in het paneel."
                 }
             },
