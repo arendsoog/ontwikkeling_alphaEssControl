@@ -18,8 +18,10 @@ from .const import (
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
     DOMAIN,
+    SUBENTRY_EV_CHARGER,
     SUBENTRY_PV_INSTALLATION,
 )
+from .consumers import ev_chargers_from_options
 from .coordinator import (
     AlphaEssLocalDataUpdateCoordinator,
     AlphaEssLocalPricesCoordinator,
@@ -209,9 +211,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry) -> bool:
-    """1.1 -> 1.2: the PV installation in the options becomes a subentry."""
+    """1.1 -> 1.2: the PV installation in the options becomes a subentry.
+    1.2 -> 1.3: so does each EV charger."""
     if entry.version > 1:
         return False
+    dutch = hass.config.language.startswith("nl")
     if entry.minor_version < 2:
         installation, options = installation_from_options(hass, entry.options)
         if installation is not None:
@@ -220,13 +224,23 @@ async def async_migrate_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEnt
                 ConfigSubentry(
                     data=installation,
                     subentry_type=SUBENTRY_PV_INSTALLATION,
-                    title="PV-installatie"
-                    if hass.config.language.startswith("nl")
-                    else "PV installation",
+                    title="PV-installatie" if dutch else "PV installation",
                     unique_id=None,
                 ),
             )
         hass.config_entries.async_update_entry(entry, options=options, minor_version=2)
+    if entry.minor_version < 3:
+        chargers, options = ev_chargers_from_options(
+            hass, entry.options, "EV-lader" if dutch else "EV charger"
+        )
+        for title, data in chargers:
+            hass.config_entries.async_add_subentry(
+                entry,
+                ConfigSubentry(
+                    data=data, subentry_type=SUBENTRY_EV_CHARGER, title=title, unique_id=None
+                ),
+            )
+        hass.config_entries.async_update_entry(entry, options=options, minor_version=3)
     return True
 
 

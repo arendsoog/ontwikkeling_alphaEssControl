@@ -1,15 +1,19 @@
 """Consumers left out of the learned house load (EV chargers, a heat pump, ...).
 
 Big, irregular consumers would make the learned load per hour wrong, so
-their power is taken off the measured house load first. Two groups, each
-picked by their sensors in the options, any number of each:
-- EV chargers: a power sensor (summed in the panel's energy flow) and,
-  optionally, a total-energy counter (its kWh today in the panel) and a
-  power sensor per phase (its card in the panel);
-- other consumers (a heat pump, ...): a power sensor, for the learning only.
+their power is taken off the measured house load first. Two groups:
+- EV chargers, each a subentry of the config entry ("Add EV charger"): a
+  power sensor (summed in the panel's energy flow) and, optionally, a
+  total-energy counter (its kWh today in the panel) and a power sensor per
+  phase (its card in the panel);
+- other consumers (a heat pump, ...), in the options: a power sensor each,
+  for the learning only.
 
-Before these lists, one EV charger had its own power/energy fields; those
-are read along until the section is saved again (which drops them).
+The rest of the integration reads the chargers folded into the options by
+`consumer_options`, under the same keys as the lists the options had
+before the subentries. Those lists -- and older still, one charger's own
+power/energy fields -- move into one subentry per charger when the entry
+is migrated (`ev_chargers_from_options`).
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -28,6 +33,7 @@ from .const import (
     CONF_EV_CHARGER_POWER_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXCLUDED_LOAD_ENTITIES,
+    SUBENTRY_EV_CHARGER,
 )
 
 
@@ -95,3 +101,89 @@ def excluded_power_entities(options: Mapping[str, Any]) -> list[str]:
     return _unique(
         [*ev_charger_power_entities(options), *(options.get(CONF_EXCLUDED_LOAD_ENTITIES) or [])]
     )
+
+
+def ev_chargers(entry: ConfigEntry) -> list[Mapping[str, Any]]:
+    """The EV chargers' settings, each with its name under "name"."""
+    return [
+        {**subentry.data, "name": subentry.title}
+        for subentry in entry.subentries.values()
+        if subentry.subentry_type == SUBENTRY_EV_CHARGER
+    ]
+
+
+def consumer_options(entry: ConfigEntry) -> dict[str, Any]:
+    """The entry's options with its EV chargers folded in under the list
+    keys. Without chargers the options as they are (an entry not migrated
+    yet still has them there)."""
+    chargers = ev_chargers(entry)
+    options = dict(entry.options)
+    if not chargers:
+        return options
+    for key in (CONF_EV_CHARGER_POWER_ENTITY, CONF_EV_CHARGER_ENERGY_ENTITY):
+        options.pop(key, None)
+    options[CONF_EV_CHARGER_POWER_ENTITIES] = _unique(
+        [e for charger in chargers for e in ev_charger_power_entities(charger)]
+    )
+    options[CONF_EV_CHARGER_ENERGY_ENTITIES] = _unique(
+        [e for charger in chargers for e in ev_charger_energy_entities(charger)]
+    )
+    options[CONF_EV_CHARGER_PHASE_ENTITIES] = _unique(
+        [e for charger in chargers for e in ev_charger_phase_entities(charger)]
+    )
+    return options
+
+
+def ev_charger_cards(hass: HomeAssistant, entry: ConfigEntry) -> list[dict[str, Any]]:
+    """The EV chargers' sensors per charger, for the panel's cards: one per
+    subentry, named after it (an entry not migrated yet: grouped by device)."""
+    chargers = ev_chargers(entry)
+    if not chargers:
+        return ev_charger_groups(hass, entry.options)
+    return [
+        {
+            "name": charger["name"],
+            "power": ev_charger_power_entities(charger),
+            "energy": ev_charger_energy_entities(charger),
+            "phases": ev_charger_phase_entities(charger),
+        }
+        for charger in chargers
+    ]
+
+
+# The EV chargers' settings in the options before the subentries.
+_EV_CHARGER_OPTION_KEYS = (
+    CONF_EV_CHARGER_POWER_ENTITY,
+    CONF_EV_CHARGER_ENERGY_ENTITY,
+    CONF_EV_CHARGER_POWER_ENTITIES,
+    CONF_EV_CHARGER_ENERGY_ENTITIES,
+    CONF_EV_CHARGER_PHASE_ENTITIES,
+)
+
+
+def ev_chargers_from_options(
+    hass: HomeAssistant, options: Mapping[str, Any], default_name: str
+) -> tuple[list[tuple[str, dict[str, Any]]], dict[str, Any]]:
+    """Split the EV chargers from options saved before the subentries: per
+    charger (grouped by device, as the panel showed them) its name and
+    settings, and the options left."""
+    rest = {k: v for k, v in options.items() if k not in _EV_CHARGER_OPTION_KEYS}
+    chargers = []
+    for group in ev_charger_groups(hass, options):
+        if not (group["power"] or group["energy"]):
+            continue
+        data: dict[str, Any] = {}
+        for key, single, many in (
+            ("power", CONF_EV_CHARGER_POWER_ENTITY, CONF_EV_CHARGER_POWER_ENTITIES),
+            ("energy", CONF_EV_CHARGER_ENERGY_ENTITY, CONF_EV_CHARGER_ENERGY_ENTITIES),
+        ):
+            # One sensor in the single field; several (one device with two
+            # power sensors) kept as a list.
+            if len(group[key]) == 1:
+                data[single] = group[key][0]
+            elif group[key]:
+                data[many] = group[key]
+        if group["phases"]:
+            data[CONF_EV_CHARGER_PHASE_ENTITIES] = group["phases"]
+        chargers.append((group["name"] or default_name, data))
+    return chargers, rest

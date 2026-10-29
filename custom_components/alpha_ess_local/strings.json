@@ -63,17 +63,11 @@
             },
             "ev_charger": {
                 "title": "Consumption sources",
-                "description": "Consumers kept out of the learned house load because they're big and irregular. Their power is taken off the measured house load before the load per hour is learned. Not used for control. Add as many as you have with 'Add entity'.",
+                "description": "Big, irregular consumers such as a heat pump. Their power is taken off the measured house load before the load per hour is learned. Not used for the control. EV chargers are added on the integration's page, with 'Add EV charger'.",
                 "data": {
-                    "ev_charger_power_entities": "EV chargers: power",
-                    "ev_charger_energy_entities": "EV chargers: total energy",
-                    "ev_charger_phase_entities": "EV chargers: power per phase",
                     "excluded_load_entities": "Other consumers: power"
                 },
                 "data_description": {
-                    "ev_charger_power_entities": "Each EV charger's charging power. Shown together in the panel's energy flow.",
-                    "ev_charger_energy_entities": "Each EV charger's total charged energy (an increasing kWh counter). Shown per charger in the panel's daily totals. Optional.",
-                    "ev_charger_phase_entities": "Each EV charger's power per phase (L1, L2, L3), for its card on the Installations tab. Optional.",
                     "excluded_load_entities": "The power of other big consumers, such as a heat pump. For the learning only, not in the panel."
                 }
             },
@@ -204,6 +198,49 @@
             },
             "abort": {
                 "reconfigure_successful": "The PV installation was saved."
+            }
+        },
+        "ev_charger": {
+            "initiate_flow": {
+                "user": "Add EV charger"
+            },
+            "entry_type": "EV charger",
+            "step": {
+                "user": {
+                    "title": "Add EV charger",
+                    "description": "An EV charger. Its power stays out of the learned house load and is shown in the panel: in the energy flow and on its own card on the Installations tab.",
+                    "data": {
+                        "name": "Name",
+                        "ev_charger_power_entity": "Power",
+                        "ev_charger_energy_entity": "Total charged",
+                        "ev_charger_phase_entities": "Power per phase"
+                    },
+                    "data_description": {
+                        "name": "What the EV charger is called, in the panel and in the list of EV chargers.",
+                        "ev_charger_power_entity": "The EV charger's charging power right now.",
+                        "ev_charger_energy_entity": "The total charged energy (a rising counter in kWh), for 'charged today' in the panel. Optional.",
+                        "ev_charger_phase_entities": "The power per phase (L1, L2, L3), for the EV charger's card. Optional."
+                    }
+                },
+                "reconfigure": {
+                    "title": "Change EV charger",
+                    "description": "An EV charger. Its power stays out of the learned house load and is shown in the panel: in the energy flow and on its own card on the Installations tab.",
+                    "data": {
+                        "name": "Name",
+                        "ev_charger_power_entity": "Power",
+                        "ev_charger_energy_entity": "Total charged",
+                        "ev_charger_phase_entities": "Power per phase"
+                    },
+                    "data_description": {
+                        "name": "What the EV charger is called, in the panel and in the list of EV chargers.",
+                        "ev_charger_power_entity": "The EV charger's charging power right now.",
+                        "ev_charger_energy_entity": "The total charged energy (a rising counter in kWh), for 'charged today' in the panel. Optional.",
+                        "ev_charger_phase_entities": "The power per phase (L1, L2, L3), for the EV charger's card. Optional."
+                    }
+                }
+            },
+            "abort": {
+                "reconfigure_successful": "The EV charger was saved."
             }
         }
     },

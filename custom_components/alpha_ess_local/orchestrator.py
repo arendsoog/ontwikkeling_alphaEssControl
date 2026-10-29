@@ -79,7 +79,7 @@ from .const import (
     DOMAIN,
     LOGGER,
 )
-from .consumers import excluded_power_entities
+from .consumers import consumer_options, excluded_power_entities
 from .data import (
     MAX_FIVE_MINS,
     MAX_HOURS,
@@ -986,7 +986,7 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         # ev_power.
         readings = [
             _entity_power(self.hass, entity)
-            for entity in excluded_power_entities(self.config_entry.options)
+            for entity in excluded_power_entities(consumer_options(self.config_entry))
         ]
         ev_power = sum(reading for reading in readings if reading is not None)
         ev_missing = any(reading is None for reading in readings)

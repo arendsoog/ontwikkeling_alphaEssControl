@@ -161,6 +161,9 @@ CONF_EV_CHARGER_POWER_ENTITIES = "ev_charger_power_entities"
 CONF_EV_CHARGER_ENERGY_ENTITIES = "ev_charger_energy_entities"
 CONF_EV_CHARGER_PHASE_ENTITIES = "ev_charger_phase_entities"
 CONF_EXCLUDED_LOAD_ENTITIES = "excluded_load_entities"
+# Each EV charger is a subentry of this type, with its power and energy
+# sensor and its power per phase (see consumers.py).
+SUBENTRY_EV_CHARGER = "ev_charger"
 
 # Options flow: scheduler tuning (config.ini [Daily])
 CONF_ALLOW_PROVIDER_CONTROL_HOURS = "allow_provider_control_hours"

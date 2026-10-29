@@ -126,8 +126,8 @@ Its power counts in the energy flow, the house consumption and the learning of t
 
 Big, irregular consumers would spoil the learned consumption per hour, so their power is subtracted from the house consumption first.
 
-- **EV chargers:** power (summed in the dashboard's energy flow), total energy counter (kWh today, per charger) and power per phase (on the charger's card). Any number of chargers; sensors are grouped per device into one card per charger.
-- **Other consumers:** power only, for example a heat pump. Used for the learning only.
+- **EV chargers:** like PV installations, these aren't in the options menu. On the integration's page, click **Add EV charger** for each charger, give it a name, and pick its power (summed in the dashboard's energy flow), its total energy counter (kWh today) and its power per phase (on the charger's card). Each charger gets its own card on the dashboard.
+- **Other consumers** (options menu, **Consumption sources**): power only, for example a heat pump. Used for the learning only.
 
 Nothing here is used to control anything.
 

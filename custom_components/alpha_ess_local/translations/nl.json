@@ -63,17 +63,11 @@
             },
             "ev_charger": {
                 "title": "Verbruiksbronnen",
-                "description": "Verbruikers die buiten het geleerde huisverbruik blijven, omdat ze groot en onregelmatig zijn. Hun vermogen wordt van het gemeten huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd. Niet gebruikt voor de sturing. Voeg met 'Entiteit toevoegen' er zoveel toe als je hebt.",
+                "description": "Grote, onregelmatige verbruikers zoals een warmtepomp. Hun vermogen wordt van het gemeten huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd. Niet gebruikt voor de sturing. EV-laders voeg je toe op de pagina van de integratie, met 'EV-lader toevoegen'.",
                 "data": {
-                    "ev_charger_power_entities": "EV-laders: vermogen",
-                    "ev_charger_energy_entities": "EV-laders: energie totaal",
-                    "ev_charger_phase_entities": "EV-laders: vermogen per fase",
                     "excluded_load_entities": "Overige verbruikers: vermogen"
                 },
                 "data_description": {
-                    "ev_charger_power_entities": "Het laadvermogen van elke EV-lader. Samen getoond in de energiestroom van het paneel.",
-                    "ev_charger_energy_entities": "De totaal geladen energie van elke EV-lader (een oplopende teller in kWh). Per EV-lader getoond in de dagtotalen van het paneel. Optioneel.",
-                    "ev_charger_phase_entities": "Het vermogen per fase (L1, L2, L3) van elke EV-lader, voor de kaart van de EV-lader op het tabblad Installaties. Optioneel.",
                     "excluded_load_entities": "Het vermogen van andere grote verbruikers, zoals een warmtepomp. Alleen voor het leren, niet in het paneel."
                 }
             },
@@ -204,6 +198,49 @@
             },
             "abort": {
                 "reconfigure_successful": "De PV-installatie is opgeslagen."
+            }
+        },
+        "ev_charger": {
+            "initiate_flow": {
+                "user": "EV-lader toevoegen"
+            },
+            "entry_type": "EV-lader",
+            "step": {
+                "user": {
+                    "title": "EV-lader toevoegen",
+                    "description": "Een EV-lader. Zijn vermogen blijft buiten het geleerde huisverbruik en wordt getoond in het paneel: in de energiestroom en op een eigen kaart op het tabblad Installaties.",
+                    "data": {
+                        "name": "Naam",
+                        "ev_charger_power_entity": "Vermogen",
+                        "ev_charger_energy_entity": "Totaal geladen",
+                        "ev_charger_phase_entities": "Vermogen per fase"
+                    },
+                    "data_description": {
+                        "name": "Hoe de EV-lader heet, in het paneel en in de lijst van EV-laders.",
+                        "ev_charger_power_entity": "Het laadvermogen van de EV-lader nu.",
+                        "ev_charger_energy_entity": "De totaal geladen energie (een oplopende teller in kWh), voor 'geladen vandaag' in het paneel. Optioneel.",
+                        "ev_charger_phase_entities": "Het vermogen per fase (L1, L2, L3), voor de kaart van de EV-lader. Optioneel."
+                    }
+                },
+                "reconfigure": {
+                    "title": "EV-lader wijzigen",
+                    "description": "Een EV-lader. Zijn vermogen blijft buiten het geleerde huisverbruik en wordt getoond in het paneel: in de energiestroom en op een eigen kaart op het tabblad Installaties.",
+                    "data": {
+                        "name": "Naam",
+                        "ev_charger_power_entity": "Vermogen",
+                        "ev_charger_energy_entity": "Totaal geladen",
+                        "ev_charger_phase_entities": "Vermogen per fase"
+                    },
+                    "data_description": {
+                        "name": "Hoe de EV-lader heet, in het paneel en in de lijst van EV-laders.",
+                        "ev_charger_power_entity": "Het laadvermogen van de EV-lader nu.",
+                        "ev_charger_energy_entity": "De totaal geladen energie (een oplopende teller in kWh), voor 'geladen vandaag' in het paneel. Optioneel.",
+                        "ev_charger_phase_entities": "Het vermogen per fase (L1, L2, L3), voor de kaart van de EV-lader. Optioneel."
+                    }
+                }
+            },
+            "abort": {
+                "reconfigure_successful": "De EV-lader is opgeslagen."
             }
         }
     },

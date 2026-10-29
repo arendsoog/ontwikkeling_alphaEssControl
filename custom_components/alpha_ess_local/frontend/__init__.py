@@ -50,8 +50,9 @@ from ..const import (
     LOGGER,
 )
 from ..consumers import (
+    consumer_options,
+    ev_charger_cards,
     ev_charger_energy_entities,
-    ev_charger_groups,
     ev_charger_power_entities,
 )
 from ..data import MAX_FIVE_MINS, Charge, Day
@@ -135,9 +136,9 @@ def _ws_panel_status(
                 CONF_NETWORK_USE_FEE_NORMAL, DEFAULT_NETWORK_USE_FEE
             ),
             "network_use_fee_low": options.get(CONF_NETWORK_USE_FEE_LOW, DEFAULT_NETWORK_USE_FEE),
-            "ev_charger_power_entities": ev_charger_power_entities(options),
-            "ev_charger_energy_entities": ev_charger_energy_entities(options),
-            "ev_chargers": ev_charger_groups(hass, options),
+            "ev_charger_power_entities": ev_charger_power_entities(consumer_options(entry)),
+            "ev_charger_energy_entities": ev_charger_energy_entities(consumer_options(entry)),
+            "ev_chargers": ev_charger_cards(hass, entry),
             "extra_pv_configured": bool(extra_pv_power_entities(hass, pv_options)),
             "extra_pv_names": [i["name"] for i in pv_installations(entry)],
             "extra_pv_string_entities": extra_pv_string_entities(hass, pv_options),

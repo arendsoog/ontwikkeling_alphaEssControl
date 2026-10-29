@@ -24,10 +24,8 @@ from .const import (
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
     CONF_ENTSOE_PRICE_ENTITY,
-    CONF_EV_CHARGER_ENERGY_ENTITIES,
     CONF_EV_CHARGER_ENERGY_ENTITY,
     CONF_EV_CHARGER_PHASE_ENTITIES,
-    CONF_EV_CHARGER_POWER_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXCLUDED_LOAD_ENTITIES,
     CONF_EXTRA_PV_ENERGY_ENTITY,
@@ -71,6 +69,7 @@ from .const import (
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
+    SUBENTRY_EV_CHARGER,
     SUBENTRY_PV_INSTALLATION,
 )
 from .consumers import (
@@ -441,33 +440,56 @@ def _pv_installation_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> 
     )
 
 
-def _ev_charger_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """Consumers left out of the learned house load: EV chargers (also shown
-    in the panel) and other consumers (a heat pump, ...), any number of
-    each, picked one by one -- see consumers.py."""
+def _sensor_selector(device_class: str, *, multiple: bool = False) -> selector.EntitySelector:
+    return selector.EntitySelector(
+        selector.EntitySelectorConfig(domain="sensor", device_class=device_class, multiple=multiple)
+    )
 
-    def entities_field(key: str, suggested: list[str], device_class: str) -> tuple[Any, Any]:
-        return (
-            vol.Optional(key, description={"suggested_value": suggested}),
-            selector.EntitySelector(
-                selector.EntitySelectorConfig(
-                    domain="sensor", device_class=device_class, multiple=True
-                )
-            ),
-        )
 
+def _consumers_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
+    """Other consumers left out of the learned house load (a heat pump,
+    ...), picked one by one -- see consumers.py. EV chargers are subentries."""
     return [
-        entities_field(CONF_EV_CHARGER_POWER_ENTITIES, ev_charger_power_entities(options), "power"),
-        entities_field(
-            CONF_EV_CHARGER_ENERGY_ENTITIES, ev_charger_energy_entities(options), "energy"
-        ),
-        entities_field(CONF_EV_CHARGER_PHASE_ENTITIES, ev_charger_phase_entities(options), "power"),
-        entities_field(
-            CONF_EXCLUDED_LOAD_ENTITIES,
-            list(options.get(CONF_EXCLUDED_LOAD_ENTITIES) or []),
-            "power",
+        (
+            vol.Optional(
+                CONF_EXCLUDED_LOAD_ENTITIES,
+                description={
+                    "suggested_value": list(options.get(CONF_EXCLUDED_LOAD_ENTITIES) or [])
+                },
+            ),
+            _sensor_selector("power", multiple=True),
         ),
     ], []
+
+
+def _ev_charger_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.Schema:
+    """An EV charger: its name, power and total-energy sensor, and its
+    power per phase -- see consumers.py. A migrated charger with several
+    power/energy sensors shows its first."""
+
+    def first(entities: list[str]) -> str | None:
+        return entities[0] if entities else None
+
+    name = options.get(CONF_NAME) or (
+        "EV-lader" if hass.config.language.startswith("nl") else "EV charger"
+    )
+    return vol.Schema(
+        {
+            vol.Required(CONF_NAME, default=name): selector.TextSelector(),
+            vol.Optional(
+                CONF_EV_CHARGER_POWER_ENTITY,
+                description={"suggested_value": first(ev_charger_power_entities(options))},
+            ): _sensor_selector("power"),
+            vol.Optional(
+                CONF_EV_CHARGER_ENERGY_ENTITY,
+                description={"suggested_value": first(ev_charger_energy_entities(options))},
+            ): _sensor_selector("energy"),
+            vol.Optional(
+                CONF_EV_CHARGER_PHASE_ENTITIES,
+                description={"suggested_value": ev_charger_phase_entities(options)},
+            ): _sensor_selector("power", multiple=True),
+        }
+    )
 
 
 def _meter_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
@@ -568,7 +590,7 @@ OPTIONS_SECTIONS = {
     "prices": _prices_fields,
     "solar_forecast": _solar_forecast_fields,
     "meter": _meter_fields,
-    "ev_charger": _ev_charger_fields,
+    "ev_charger": _consumers_fields,
     "control": _control_fields,
 }
 
@@ -625,8 +647,9 @@ class AlphaEssLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for AlphaESSControl."""
 
     VERSION = 1
-    # 1.2: the PV installation moved from the options to a subentry.
-    MINOR_VERSION = 2
+    # 1.2: the PV installation moved from the options to a subentry; 1.3:
+    # each EV charger too.
+    MINOR_VERSION = 3
 
     @staticmethod
     def async_get_options_flow(
@@ -640,8 +663,11 @@ class AlphaEssLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_supported_subentry_types(
         cls, config_entry: config_entries.ConfigEntry
     ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
-        """PV installations are added one by one, as subentries."""
-        return {SUBENTRY_PV_INSTALLATION: PvInstallationSubentryFlow}
+        """PV installations and EV chargers are added one by one, as subentries."""
+        return {
+            SUBENTRY_PV_INSTALLATION: PvInstallationSubentryFlow,
+            SUBENTRY_EV_CHARGER: EvChargerSubentryFlow,
+        }
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -765,8 +791,11 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
         )
 
 
-class PvInstallationSubentryFlow(config_entries.ConfigSubentryFlow):
-    """Add or change one PV installation (see extra_pv.py)."""
+class _SubentryFlow(config_entries.ConfigSubentryFlow):
+    """Add or change one subentry: a name and the fields `_schema` builds."""
+
+    def _schema(self, current: Mapping[str, Any]) -> vol.Schema:
+        raise NotImplementedError
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -784,7 +813,7 @@ class PvInstallationSubentryFlow(config_entries.ConfigSubentryFlow):
     def _async_installation(
         self, step_id: str, user_input: dict[str, Any] | None, current: Mapping[str, Any]
     ) -> config_entries.SubentryFlowResult:
-        schema = _pv_installation_schema(self.hass, current)
+        schema = self._schema(current)
         if user_input is None:
             return self.async_show_form(step_id=step_id, data_schema=schema)
 
@@ -798,3 +827,17 @@ class PvInstallationSubentryFlow(config_entries.ConfigSubentryFlow):
             self._get_entry(), self._get_reconfigure_subentry(), title=name, data=data
         )
         return self.async_abort(reason="reconfigure_successful")
+
+
+class PvInstallationSubentryFlow(_SubentryFlow):
+    """Add or change one PV installation (see extra_pv.py)."""
+
+    def _schema(self, current: Mapping[str, Any]) -> vol.Schema:
+        return _pv_installation_schema(self.hass, current)
+
+
+class EvChargerSubentryFlow(_SubentryFlow):
+    """Add or change one EV charger (see consumers.py)."""
+
+    def _schema(self, current: Mapping[str, Any]) -> vol.Schema:
+        return _ev_charger_schema(self.hass, current)
