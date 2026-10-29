@@ -20,11 +20,9 @@ from .api import (
     AlphaEssLocalApiClientError,
 )
 from .const import (
-    CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONSUMER_ENERGY_ENTITY,
     CONF_CONSUMER_POWER_ENTITY,
-    CONF_CONTROL_ENABLED,
     CONF_ENTSOE_PRICE_ENTITY,
     CONF_EV_CHARGER_ENERGY_ENTITY,
     CONF_EV_CHARGER_PHASE_ENTITIES,
@@ -46,7 +44,6 @@ from .const import (
     CONF_NETWORK_USE_FEE_LOW,
     CONF_NETWORK_USE_FEE_NORMAL,
     CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
-    CONF_PERSIST_DAILY_CHARGE_LIMIT,
     CONF_PRICE_ENTITIES,
     CONF_PRICE_SOURCE_PRIMARY,
     CONF_PROVIDER_RETURN_FEE,
@@ -59,11 +56,8 @@ from .const import (
     CONF_SOLCAST_ENTRIES,
     CONF_USABLE_BATTERY_CAPACITY,
     CONF_VAT_PERCENTAGE,
-    DEFAULT_ALLOW_PROVIDER_CONTROL_HOURS,
     DEFAULT_APPLY_VAT_ON_RETURN,
-    DEFAULT_CONTROL_ENABLED,
     DEFAULT_NETWORK_USE_FEE,
-    DEFAULT_PERSIST_DAILY_CHARGE_LIMIT,
     DEFAULT_PORT,
     DEFAULT_PROVIDER_RETURN_FEE,
     DEFAULT_PROVIDER_USE_FEE,
@@ -551,53 +545,12 @@ def _meter_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFi
     ], []
 
 
-def _control_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """Scheduler/dispatch behaviour, including the master control switch."""
-    return [
-        (
-            vol.Optional(
-                CONF_ALLOW_PROVIDER_CONTROL_HOURS,
-                default=options.get(
-                    CONF_ALLOW_PROVIDER_CONTROL_HOURS, DEFAULT_ALLOW_PROVIDER_CONTROL_HOURS
-                ),
-            ),
-            selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=[str(hour) for hour in range(24)],
-                    multiple=True,
-                    mode=selector.SelectSelectorMode.DROPDOWN,
-                )
-            ),
-        ),
-        (
-            vol.Optional(
-                CONF_PERSIST_DAILY_CHARGE_LIMIT,
-                default=options.get(
-                    CONF_PERSIST_DAILY_CHARGE_LIMIT, DEFAULT_PERSIST_DAILY_CHARGE_LIMIT
-                ),
-            ),
-            selector.BooleanSelector(),
-        ),
-        (
-            # Master switch for real writes to the inverter — off means the
-            # dispatch coordinator only ever computes and logs its decision.
-            # Deliberately last in the form and defaulting off.
-            vol.Optional(
-                CONF_CONTROL_ENABLED,
-                default=options.get(CONF_CONTROL_ENABLED, DEFAULT_CONTROL_ENABLED),
-            ),
-            selector.BooleanSelector(),
-        ),
-    ], []
-
-
 # Options menu sections, in menu order: step_id -> field builder.
 OPTIONS_SECTIONS = {
     "installation": _installation_fields,
     "prices": _prices_fields,
     "solar_forecast": _solar_forecast_fields,
     "meter": _meter_fields,
-    "control": _control_fields,
 }
 
 # Options a section's newer field replaced: dropped when that section is
@@ -749,11 +702,6 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         return self._async_section("meter", user_input)
-
-    async def async_step_control(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        return self._async_section("control", user_input)
 
     def _async_section(
         self, section: str, user_input: dict[str, Any] | None

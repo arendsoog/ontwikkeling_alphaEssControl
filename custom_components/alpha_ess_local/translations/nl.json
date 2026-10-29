@@ -26,8 +26,7 @@
                     "installation": "Installatie",
                     "prices": "Prijzen",
                     "solar_forecast": "Zonnevoorspelling",
-                    "meter": "P1-meter",
-                    "control": "Sturing"
+                    "meter": "P1-meter"
                 }
             },
             "installation": {
@@ -74,15 +73,6 @@
                     "grid_export_power_entity": "Het vermogen dat je nu aan het net levert, bijvoorbeeld 'Energieproductie' van DSMR. Leeg laten als de sensor hierboven al plus en min geeft.",
                     "grid_tariff_entity": "Het tarief van dit moment, bijvoorbeeld 'Actief tarief'. Daarmee rekent de app de netkosten voor dag of nacht. Optioneel.",
                     "peak_load_this_month_entity": "De hoogste kwartierpiek van deze maand, bijvoorbeeld 'Maximale vraag huidige maand' (alleen Belgische meters). Het laden van het net mag tot deze piek gaan. Optioneel."
-                }
-            },
-            "control": {
-                "title": "Sturing",
-                "description": "Gedrag van de planner en de hoofdschakelaar voor batterijsturing.",
-                "data": {
-                    "allow_provider_control_hours": "Uren waarin de leverancier het schema mag overschrijven",
-                    "persist_daily_charge_limit": "Hooguit één volle batterij per dag, zon en net samen (uit: geen daggrens, alleen ontladen voor eigen verbruik)",
-                    "control_enabled": "Batterijsturing inschakelen (schrijft echte commando's naar de omvormer)"
                 }
             }
         }

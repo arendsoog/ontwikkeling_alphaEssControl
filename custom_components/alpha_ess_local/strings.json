@@ -26,8 +26,7 @@
                     "installation": "Installation",
                     "prices": "Prices",
                     "solar_forecast": "Solar forecast",
-                    "meter": "P1 meter",
-                    "control": "Control"
+                    "meter": "P1 meter"
                 }
             },
             "installation": {
@@ -74,15 +73,6 @@
                     "grid_export_power_entity": "The power fed into the grid right now, e.g. DSMR's 'Power production'. Leave empty when the sensor above is already positive and negative.",
                     "grid_tariff_entity": "The current tariff, e.g. 'Active tariff', for the day or night network fee. Optional.",
                     "peak_load_this_month_entity": "This month's highest 15-minute peak, e.g. 'Maximum demand current month' (Belgian meters only). The grid charge may go up to this peak. Optional."
-                }
-            },
-            "control": {
-                "title": "Control",
-                "description": "Scheduler behaviour and the master switch for battery control.",
-                "data": {
-                    "allow_provider_control_hours": "Hours where the provider may override the schedule",
-                    "persist_daily_charge_limit": "At most one full battery a day, solar and grid together (off: no daily limit; discharge for own use only)",
-                    "control_enabled": "Enable battery control (writes real commands to the inverter)"
                 }
             }
         }

@@ -135,11 +135,14 @@ Nothing here is used to control anything.
 
 ### Control
 
-- **Enable battery control:** the master switch. Off: the integration only plans and logs. On: it sends commands to the inverter.
+These are set on the dashboard's **Controls** tab, not in the options menu; a change applies right away.
+
+- **Battery control:** the master switch. Off: the integration only plans and logs. On: it sends commands to the inverter.
+- **PV control at negative prices:** switches the PV installations off at negative prices, once the battery has reached its target SOC.
+- **Hours the provider may override the schedule:** if your energy provider can control your battery remotely, the hours in which that overrides the plan. Click an hour to turn it on or off.
 - **At most one full battery a day:**
   - On: the battery takes in at most one full battery per day (sun and grid together), and gives at most one full battery per day (house and grid together).
   - Off: there's no daily limit, and scheduled discharging is only done for your own use.
-- **Hours the provider may control the battery:** if your energy provider can control your battery remotely, the hours in which that overrides the plan.
 
 ## The dashboard
 
@@ -241,7 +244,7 @@ An SMA that's asleep reports "no value" as the lowest 32-bit number (−21474836
 
 - **No prices.** Check that your price sensor has the day's prices in its attributes: `prices_today`/`prices_tomorrow` (ENTSO-e), `prices` (Frank Energie) or `raw_today`/`raw_tomorrow` (Nord Pool, HACS). Only sensors with those attributes are offered in the price list. Tomorrow's prices are usually published around noon or 1 PM.
 - **The inverter doesn't answer.** Check that Modbus TCP is enabled on the inverter and that no other client is connected to it at the same time. While it doesn't answer, the log says "inverter not answering".
-- **It doesn't control the battery.** Check that **Enable battery control** is on (Configure → Control) and that no manual override is active. The decision log on the dashboard shows what was planned for every hour and why.
+- **It doesn't control the battery.** Check that **Battery control** is on (dashboard → Controls) and that no manual override is active. The decision log on the dashboard shows what was planned for every hour and why.
 - **Debug logging.** Add this to `configuration.yaml`:
 
   ```yaml

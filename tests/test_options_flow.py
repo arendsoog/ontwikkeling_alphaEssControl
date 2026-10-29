@@ -10,7 +10,6 @@ from custom_components.alpha_ess_local.config_flow import (
     OPTIONS_SECTIONS,
 )
 from custom_components.alpha_ess_local.const import (
-    CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_APPLY_VAT_ON_RETURN,
     CONF_ENTSOE_PRICE_ENTITY,
     CONF_FORECAST_SOLAR_ENTRIES,
@@ -157,9 +156,6 @@ async def test_options_flow_saves_and_updates_entry_options(hass: HomeAssistant,
         "prices",
         {CONF_PRICE_ENTITIES: ["sensor.entsoe_average_electricity_price_today"]},
     )
-    await _save_section(
-        hass, entry, "control", {CONF_ALLOW_PROVIDER_CONTROL_HOURS: ["6", "7", "8", "16"]}
-    )
 
     # the raw per-panel inputs are kept (so the form can be reopened and
     # edited), and the single total wattage other readers consume is
@@ -167,7 +163,6 @@ async def test_options_flow_saves_and_updates_entry_options(hass: HomeAssistant,
     assert entry.options[CONF_PV_PANEL_WP] == 365
     assert entry.options[CONF_PV_PANEL_COUNT] == 20
     assert entry.options[CONF_PV_POWER] == 7300
-    assert entry.options[CONF_ALLOW_PROVIDER_CONTROL_HOURS] == ["6", "7", "8", "16"]
     assert entry.options[CONF_PRICE_ENTITIES] == ["sensor.entsoe_average_electricity_price_today"]
     # untouched fields of a saved section are filled with their coded defaults
     assert entry.options[CONF_PROVIDER_USE_FEE] == DEFAULT_PROVIDER_USE_FEE
