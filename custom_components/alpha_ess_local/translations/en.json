@@ -91,12 +91,10 @@
                     "control": {
                         "name": "Control at negative prices",
                         "data": {
-                            "extra_pv_control_enabled": "Enable control",
                             "extra_pv_switch_entity": "Switch"
                         },
                         "data_description": {
-                            "extra_pv_control_enabled": "Turns the source off at negative prices and on again after. Only switches when battery control is on too.",
-                            "extra_pv_switch_entity": "A switch that turns the source on (producing) and off, e.g. a Modbus switch on the inverter's power register."
+                            "extra_pv_switch_entity": "A switch that turns the source on (producing) and off, e.g. a Modbus switch on the inverter's power register. The control itself is turned on and off in the panel, under Controls."
                         }
                     }
                 }

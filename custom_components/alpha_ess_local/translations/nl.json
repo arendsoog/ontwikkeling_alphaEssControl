@@ -91,12 +91,10 @@
                     "control": {
                         "name": "Sturing bij negatieve prijzen",
                         "data": {
-                            "extra_pv_control_enabled": "Sturing inschakelen",
                             "extra_pv_switch_entity": "Schakelaar"
                         },
                         "data_description": {
-                            "extra_pv_control_enabled": "Zet de bron uit bij negatieve prijzen en weer aan daarna. Schakelt alleen als ook de batterijsturing aan staat.",
-                            "extra_pv_switch_entity": "Een schakelaar die de bron aan (produceren) en uit zet, bijvoorbeeld een Modbus-schakelaar op het vermogensregister van de omvormer."
+                            "extra_pv_switch_entity": "Een schakelaar die de bron aan (produceren) en uit zet, bijvoorbeeld een Modbus-schakelaar op het vermogensregister van de omvormer. De sturing zelf zet je aan en uit in het paneel, onder Bediening."
                         }
                     }
                 }

@@ -115,7 +115,7 @@ Something next to the AlphaESS that produces power, such as a second solar insta
   - **Power:** one or more power sensors, added up (a second inverter, micro inverters, or the power per string).
   - **Power per MPPT (string):** for the dashboard only. An SMA integration is detected and filled in automatically.
 - **Installation:** Wp per panel and number of panels, used to estimate its power when its reading is gone (an SMA asleep at night or out of reach).
-- **Control at negative prices:** a **switch** that turns the source off and on (on = producing), and the toggle to enable this control. Any switch works: a Modbus switch, a relay, an `input_boolean`, ... See [Switching off an SMA at negative prices](#switching-off-an-sma-at-negative-prices).
+- **Control at negative prices:** a **switch** that turns the source off and on (on = producing). Any switch works: a Modbus switch, a relay, an `input_boolean`, ... See [Switching off an SMA at negative prices](#switching-off-an-sma-at-negative-prices).
 
 Its power counts in the energy flow, the house consumption and the learning of the solar forecast.
 
@@ -226,7 +226,7 @@ Home Assistant's [Modbus](https://www.home-assistant.io/integrations/modbus/) in
       command_off: 0    # switched off
 ```
 
-Check your SMA model's Modbus register list before you rely on it. Then test the switch once in daylight and watch the SMA's power drop to 0.
+Check your SMA model's Modbus register list before you rely on it. Then test the switch once in daylight and watch the SMA's power drop to 0. The control itself is turned on with **PV control at negative prices** on the dashboard's **Controls** tab.
 
 ### SMA readings at night
 

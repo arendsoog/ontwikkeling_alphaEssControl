@@ -30,7 +30,6 @@ from .const import (
     CONF_EV_CHARGER_POWER_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXCLUDED_LOAD_ENTITIES,
-    CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_EXTRA_PV_MODBUS_ADDRESS,
     CONF_EXTRA_PV_MODBUS_HUB,
     CONF_EXTRA_PV_MODBUS_OFF_VALUE,
@@ -69,7 +68,6 @@ from .const import (
     DEFAULT_ALLOW_PROVIDER_CONTROL_HOURS,
     DEFAULT_APPLY_VAT_ON_RETURN,
     DEFAULT_CONTROL_ENABLED,
-    DEFAULT_EXTRA_PV_CONTROL_ENABLED,
     DEFAULT_NETWORK_USE_FEE,
     DEFAULT_PERSIST_DAILY_CHARGE_LIMIT,
     DEFAULT_PORT,
@@ -411,18 +409,9 @@ def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sectio
             _count_selector(),
         ),
     ]
+    # Turning the control on/off (CONF_EXTRA_PV_CONTROL_ENABLED) is the
+    # panel's toggle, not a field here.
     control = [
-        (
-            # Its own toggle, separate from CONF_CONTROL_ENABLED, so the
-            # switch can be picked once and paused/resumed. Defaults off.
-            vol.Optional(
-                CONF_EXTRA_PV_CONTROL_ENABLED,
-                default=options.get(
-                    CONF_EXTRA_PV_CONTROL_ENABLED, DEFAULT_EXTRA_PV_CONTROL_ENABLED
-                ),
-            ),
-            selector.BooleanSelector(),
-        ),
         (
             vol.Optional(
                 CONF_EXTRA_PV_SWITCH_ENTITY,

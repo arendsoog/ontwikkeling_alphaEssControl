@@ -681,10 +681,7 @@ async def test_options_flow_extra_pv_in_three_blocks(hass: HomeAssistant, mock_a
         "extra_pv_power_entities",
         "extra_pv_string_entities",
     ]
-    assert [str(key) for key in _block(schema, "control").schema] == [
-        "extra_pv_control_enabled",
-        "extra_pv_switch_entity",
-    ]
+    assert [str(key) for key in _block(schema, "control").schema] == ["extra_pv_switch_entity"]
     control = next(k for k in schema.schema if k == "control")
     assert schema.schema[control].options["collapsed"] is True
 
