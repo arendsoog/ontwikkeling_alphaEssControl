@@ -26,7 +26,6 @@
                     "installation": "Installation",
                     "prices": "Prices",
                     "solar_forecast": "Solar forecast",
-                    "extra_pv": "Energy sources",
                     "ev_charger": "Consumption sources",
                     "meter": "P1 meter",
                     "control": "Control"
@@ -60,43 +59,6 @@
                 "description": "The solar forecast locations (e.g. Forecast.Solar or Solcast): pick one of each location's sensors and add more with 'Add entity'. Locations of the same service are summed (e.g. the front and back of the roof); the service on top is used, another service only as a backup. Locations of the same service stay together, wherever they are in the list.{sources_note}{missing_source_note}",
                 "data": {
                     "solar_forecast_entities": "Locations (in order; drag to change)"
-                }
-            },
-            "extra_pv": {
-                "title": "Energy sources",
-                "description": "An energy source next to the AlphaESS, such as a second solar installation. Its power counts in the energy flow, the house load and learning the solar forecast.",
-                "sections": {
-                    "measurement": {
-                        "name": "Measurement",
-                        "data": {
-                            "extra_pv_power_entities": "Power",
-                            "extra_pv_string_entities": "Power per MPPT (string)"
-                        },
-                        "data_description": {
-                            "extra_pv_power_entities": "The power the source delivers right now, e.g. the inverter's 'AC power'. Several sensors are summed (a second inverter, micro inverters, or the power per string).",
-                            "extra_pv_string_entities": "Panel display only: the power per MPPT input of the inverter, i.e. per line of panels (string), e.g. 'DC power string 1' and 'string 2'. Empty with the SMA integration: its own strings."
-                        }
-                    },
-                    "installation": {
-                        "name": "Installation",
-                        "data": {
-                            "extra_pv_panel_wp": "Wp per panel",
-                            "extra_pv_panel_count": "Number of panels"
-                        },
-                        "data_description": {
-                            "extra_pv_panel_wp": "One panel's peak power.",
-                            "extra_pv_panel_count": "With Wp per panel the source's peak power: for the bar in the panel, and to estimate its power when the reading is gone."
-                        }
-                    },
-                    "control": {
-                        "name": "Control at negative prices",
-                        "data": {
-                            "extra_pv_switch_entity": "Switch"
-                        },
-                        "data_description": {
-                            "extra_pv_switch_entity": "A switch that turns the source on (producing) and off, e.g. a Modbus switch on the inverter's power register. The control itself is turned on and off in the panel, under Controls."
-                        }
-                    }
                 }
             },
             "ev_charger": {
@@ -142,25 +104,158 @@
             }
         }
     },
+    "config_subentries": {
+        "pv_installation": {
+            "initiate_flow": {
+                "user": "Add PV installation"
+            },
+            "entry_type": "PV installation",
+            "step": {
+                "user": {
+                    "title": "Add PV installation",
+                    "description": "A solar installation next to the AlphaESS, with its own inverter. Its power counts in the energy flow, the house load and the learning of the solar forecast. Several installations are added up.",
+                    "data": {
+                        "name": "Name"
+                    },
+                    "data_description": {
+                        "name": "What the installation is called, in the panel and in the list of installations."
+                    },
+                    "sections": {
+                        "measurement": {
+                            "name": "Measurement",
+                            "data": {
+                                "extra_pv_power_entities": "Power",
+                                "extra_pv_string_entities": "Power per MPPT (string)"
+                            },
+                            "data_description": {
+                                "extra_pv_power_entities": "The power the source delivers right now, e.g. the inverter's 'AC power'. Several sensors are summed (a second inverter, micro inverters, or the power per string).",
+                                "extra_pv_string_entities": "Panel display only: the power per MPPT input of the inverter, i.e. per line of panels (string), e.g. 'DC power string 1' and 'string 2'. Empty with the SMA integration: its own strings."
+                            }
+                        },
+                        "installation": {
+                            "name": "Installation",
+                            "data": {
+                                "extra_pv_panel_wp": "Wp per panel",
+                                "extra_pv_panel_count": "Number of panels"
+                            },
+                            "data_description": {
+                                "extra_pv_panel_wp": "One panel's peak power.",
+                                "extra_pv_panel_count": "With Wp per panel the source's peak power: for the bar in the panel, and to estimate its power when the reading is gone."
+                            }
+                        },
+                        "control": {
+                            "name": "Control at negative prices",
+                            "data": {
+                                "extra_pv_switch_entity": "Switch"
+                            },
+                            "data_description": {
+                                "extra_pv_switch_entity": "A switch that turns the source on (producing) and off, e.g. a Modbus switch on the inverter's power register. The control itself is turned on and off in the panel, under Controls."
+                            }
+                        }
+                    }
+                },
+                "reconfigure": {
+                    "title": "Change PV installation",
+                    "description": "A solar installation next to the AlphaESS, with its own inverter. Its power counts in the energy flow, the house load and the learning of the solar forecast. Several installations are added up.",
+                    "data": {
+                        "name": "Name"
+                    },
+                    "data_description": {
+                        "name": "What the installation is called, in the panel and in the list of installations."
+                    },
+                    "sections": {
+                        "measurement": {
+                            "name": "Measurement",
+                            "data": {
+                                "extra_pv_power_entities": "Power",
+                                "extra_pv_string_entities": "Power per MPPT (string)"
+                            },
+                            "data_description": {
+                                "extra_pv_power_entities": "The power the source delivers right now, e.g. the inverter's 'AC power'. Several sensors are summed (a second inverter, micro inverters, or the power per string).",
+                                "extra_pv_string_entities": "Panel display only: the power per MPPT input of the inverter, i.e. per line of panels (string), e.g. 'DC power string 1' and 'string 2'. Empty with the SMA integration: its own strings."
+                            }
+                        },
+                        "installation": {
+                            "name": "Installation",
+                            "data": {
+                                "extra_pv_panel_wp": "Wp per panel",
+                                "extra_pv_panel_count": "Number of panels"
+                            },
+                            "data_description": {
+                                "extra_pv_panel_wp": "One panel's peak power.",
+                                "extra_pv_panel_count": "With Wp per panel the source's peak power: for the bar in the panel, and to estimate its power when the reading is gone."
+                            }
+                        },
+                        "control": {
+                            "name": "Control at negative prices",
+                            "data": {
+                                "extra_pv_switch_entity": "Switch"
+                            },
+                            "data_description": {
+                                "extra_pv_switch_entity": "A switch that turns the source on (producing) and off, e.g. a Modbus switch on the inverter's power register. The control itself is turned on and off in the panel, under Controls."
+                            }
+                        }
+                    }
+                }
+            },
+            "abort": {
+                "reconfigure_successful": "The PV installation was saved."
+            }
+        }
+    },
     "entity": {
         "sensor": {
-            "battery_soc": { "name": "Battery state of charge" },
-            "pv_power": { "name": "PV power roof" },
-            "pv1_power": { "name": "PV1 power" },
-            "pv2_power": { "name": "PV2 power" },
-            "pv3_power": { "name": "PV3 power" },
-            "grid_power": { "name": "Grid power" },
-            "battery_power": { "name": "Battery power" },
-            "total_energy_feed_to_grid": { "name": "Total energy fed to grid" },
-            "total_energy_consume_from_grid": { "name": "Total energy consumed from grid" },
-            "pv_total_energy_feed_to_grid": { "name": "PV total energy fed to grid" },
-            "pv_total_energy_consume_from_grid": { "name": "PV total energy consumed from grid" },
-            "pv_total_energy": { "name": "PV total energy" },
-            "battery_total_energy_charge": { "name": "Battery total energy charge" },
-            "battery_total_energy_discharge": { "name": "Battery total energy discharge" },
-            "price_current_hour": { "name": "Current hour price" },
-            "price_lowest_today": { "name": "Lowest price today" },
-            "price_highest_today": { "name": "Highest price today" },
+            "battery_soc": {
+                "name": "Battery state of charge"
+            },
+            "pv_power": {
+                "name": "PV power roof"
+            },
+            "pv1_power": {
+                "name": "PV1 power"
+            },
+            "pv2_power": {
+                "name": "PV2 power"
+            },
+            "pv3_power": {
+                "name": "PV3 power"
+            },
+            "grid_power": {
+                "name": "Grid power"
+            },
+            "battery_power": {
+                "name": "Battery power"
+            },
+            "total_energy_feed_to_grid": {
+                "name": "Total energy fed to grid"
+            },
+            "total_energy_consume_from_grid": {
+                "name": "Total energy consumed from grid"
+            },
+            "pv_total_energy_feed_to_grid": {
+                "name": "PV total energy fed to grid"
+            },
+            "pv_total_energy_consume_from_grid": {
+                "name": "PV total energy consumed from grid"
+            },
+            "pv_total_energy": {
+                "name": "PV total energy"
+            },
+            "battery_total_energy_charge": {
+                "name": "Battery total energy charge"
+            },
+            "battery_total_energy_discharge": {
+                "name": "Battery total energy discharge"
+            },
+            "price_current_hour": {
+                "name": "Current hour price"
+            },
+            "price_lowest_today": {
+                "name": "Lowest price today"
+            },
+            "price_highest_today": {
+                "name": "Highest price today"
+            },
             "price_earning_status": {
                 "name": "Earning status",
                 "state": {
@@ -169,43 +264,109 @@
                     "earning_on_use": "Earning on use"
                 }
             },
-            "solar_forecast_current_hour": { "name": "Solar forecast current hour" },
-            "solar_forecast_today": { "name": "Solar forecast today" },
-            "solar_forecast_tomorrow": { "name": "Solar forecast tomorrow" },
-            "schedule_current_hour_action": { "name": "Schedule current hour action" },
-            "schedule_next_hour_action": { "name": "Schedule next hour action" },
-            "schedule_remaining_solar_surplus_today": { "name": "Remaining solar surplus today" },
-            "schedule_today_plan": { "name": "Today's plan" },
-            "extra_pv_power": { "name": "PV power extra" },
-            "total_pv_power": { "name": "PV power total" },
-            "house_load_today": { "name": "Today house consumption" },
-            "solar_energy_today": { "name": "Today solar energy" },
-            "solar_to_battery_today": { "name": "Today solar to battery" },
-            "grid_to_battery_today": { "name": "Today grid to battery" },
-            "yesterday_savings": { "name": "Yesterday's savings" },
-            "dispatch_current_mode": { "name": "Dispatch current mode" },
-            "battery_voltage": { "name": "Battery voltage" },
-            "battery_current": { "name": "Battery current" },
-            "battery_min_cell_voltage": { "name": "Battery lowest cell voltage" },
-            "battery_max_cell_voltage": { "name": "Battery highest cell voltage" },
-            "battery_cell_voltage_delta": { "name": "Battery cell voltage spread" },
-            "battery_min_cell_temperature": { "name": "Battery lowest cell temperature" },
-            "battery_max_cell_temperature": { "name": "Battery highest cell temperature" },
-            "battery_soh": { "name": "Battery state of health" },
-            "battery_capacity": { "name": "Battery nominal capacity" },
-            "battery_module_count": { "name": "Battery modules" },
-            "battery_cycles": { "name": "Battery cycles (estimated)" },
-            "inverter_temperature": { "name": "Inverter temperature" }
+            "solar_forecast_current_hour": {
+                "name": "Solar forecast current hour"
+            },
+            "solar_forecast_today": {
+                "name": "Solar forecast today"
+            },
+            "solar_forecast_tomorrow": {
+                "name": "Solar forecast tomorrow"
+            },
+            "schedule_current_hour_action": {
+                "name": "Schedule current hour action"
+            },
+            "schedule_next_hour_action": {
+                "name": "Schedule next hour action"
+            },
+            "schedule_remaining_solar_surplus_today": {
+                "name": "Remaining solar surplus today"
+            },
+            "schedule_today_plan": {
+                "name": "Today's plan"
+            },
+            "extra_pv_power": {
+                "name": "PV power extra"
+            },
+            "total_pv_power": {
+                "name": "PV power total"
+            },
+            "house_load_today": {
+                "name": "Today house consumption"
+            },
+            "solar_energy_today": {
+                "name": "Today solar energy"
+            },
+            "solar_to_battery_today": {
+                "name": "Today solar to battery"
+            },
+            "grid_to_battery_today": {
+                "name": "Today grid to battery"
+            },
+            "yesterday_savings": {
+                "name": "Yesterday's savings"
+            },
+            "dispatch_current_mode": {
+                "name": "Dispatch current mode"
+            },
+            "battery_voltage": {
+                "name": "Battery voltage"
+            },
+            "battery_current": {
+                "name": "Battery current"
+            },
+            "battery_min_cell_voltage": {
+                "name": "Battery lowest cell voltage"
+            },
+            "battery_max_cell_voltage": {
+                "name": "Battery highest cell voltage"
+            },
+            "battery_cell_voltage_delta": {
+                "name": "Battery cell voltage spread"
+            },
+            "battery_min_cell_temperature": {
+                "name": "Battery lowest cell temperature"
+            },
+            "battery_max_cell_temperature": {
+                "name": "Battery highest cell temperature"
+            },
+            "battery_soh": {
+                "name": "Battery state of health"
+            },
+            "battery_capacity": {
+                "name": "Battery nominal capacity"
+            },
+            "battery_module_count": {
+                "name": "Battery modules"
+            },
+            "battery_cycles": {
+                "name": "Battery cycles (estimated)"
+            },
+            "inverter_temperature": {
+                "name": "Inverter temperature"
+            }
         },
         "number": {
-            "max_soc_positive_price": { "name": "Max SOC on positive-price hours" },
-            "max_soc_negative_price": { "name": "Max SOC on negative-price hours" },
-            "min_soc_discharge": { "name": "Min SOC on battery discharge" },
-            "daily_min_profit": { "name": "Minimum daily profit for optimized schedule" },
-            "max_grid_load": { "name": "Max grid-charge load" }
+            "max_soc_positive_price": {
+                "name": "Max SOC on positive-price hours"
+            },
+            "max_soc_negative_price": {
+                "name": "Max SOC on negative-price hours"
+            },
+            "min_soc_discharge": {
+                "name": "Min SOC on battery discharge"
+            },
+            "daily_min_profit": {
+                "name": "Minimum daily profit for optimized schedule"
+            },
+            "max_grid_load": {
+                "name": "Max grid-charge load"
+            }
         },
         "switch": {
-            "discharge_enabled": { "name": "Allow scheduled discharge to grid" }
+            "discharge_enabled": {
+                "name": "Allow scheduled discharge to grid"
+            }
         }
     },
     "services": {

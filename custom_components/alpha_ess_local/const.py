@@ -91,6 +91,12 @@ CONF_EXTRA_PV_SWITCH_ENTITY = "extra_pv_switch_entity"
 CONF_EXTRA_PV_POWER_CAPACITY = "extra_pv_power_capacity"
 CONF_EXTRA_PV_PANEL_WP = "extra_pv_panel_wp"
 CONF_EXTRA_PV_PANEL_COUNT = "extra_pv_panel_count"
+# Each PV installation is a subentry of this type, holding the power, string
+# and switch entities and the panels above (see extra_pv.py). The rest of the
+# integration reads them together under the option keys, the switches listed
+# under CONF_EXTRA_PV_SWITCH_ENTITIES.
+SUBENTRY_PV_INSTALLATION = "pv_installation"
+CONF_EXTRA_PV_SWITCH_ENTITIES = "extra_pv_switch_entities"
 
 # Options flow: extra-PV price-based on/off control. A Modbus write to a
 # *different* device (e.g. a second SMA inverter) via HA's core `modbus`

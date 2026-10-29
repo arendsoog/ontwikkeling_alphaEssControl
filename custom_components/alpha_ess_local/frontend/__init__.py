@@ -54,7 +54,13 @@ from ..consumers import (
     ev_charger_power_entities,
 )
 from ..data import MAX_FIVE_MINS, Charge, Day
-from ..extra_pv import extra_pv_power_entities, extra_pv_string_entities, extra_pv_switch
+from ..extra_pv import (
+    extra_pv_options,
+    extra_pv_power_entities,
+    extra_pv_string_entities,
+    extra_pv_switches,
+    pv_installations,
+)
 from ..orchestrator import get_db_path, grid_meter_status
 from ..prices import configured_price_entities
 from ..schedule import set_charging_msg
@@ -95,6 +101,7 @@ def _ws_panel_status(
         _today_source(runtime.prices_coordinator),
     )
     solar = configured_solar_sources(hass, options)
+    pv_options = extra_pv_options(hass, entry)
     solar_sources = source_list(
         {source: solar_source_name(source) for source, _ in solar},
         {source: _entry_titles(hass, entry_ids) for source, entry_ids in solar},
@@ -130,10 +137,11 @@ def _ws_panel_status(
             "ev_charger_power_entities": ev_charger_power_entities(options),
             "ev_charger_energy_entities": ev_charger_energy_entities(options),
             "ev_chargers": ev_charger_groups(hass, options),
-            "extra_pv_configured": bool(extra_pv_power_entities(hass, options)),
-            "extra_pv_string_entities": extra_pv_string_entities(hass, options),
-            "extra_pv_power_capacity": options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0),
-            "extra_pv_switch": extra_pv_switch(options),
+            "extra_pv_configured": bool(extra_pv_power_entities(hass, pv_options)),
+            "extra_pv_names": [i["name"] for i in pv_installations(entry)],
+            "extra_pv_string_entities": extra_pv_string_entities(hass, pv_options),
+            "extra_pv_power_capacity": pv_options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0),
+            "extra_pv_switches": extra_pv_switches(pv_options),
             "extra_pv_modbus_hub": options.get(CONF_EXTRA_PV_MODBUS_HUB) or None,
             "extra_pv_unreachable": runtime.dispatch_coordinator.extra_pv_unreachable,
             "manual_override": None if override is None else set_charging_msg(override),

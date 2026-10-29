@@ -8,18 +8,11 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.alpha_ess_local.config_flow import (
     OPTIONS_SECTIONS,
-    SMA_PV_POWER_AGGREGATE_KEY,
-    SMA_PV_POWER_STRING_KEY,
 )
 from custom_components.alpha_ess_local.const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_APPLY_VAT_ON_RETURN,
     CONF_ENTSOE_PRICE_ENTITY,
-    CONF_EXTRA_PV_PANEL_COUNT,
-    CONF_EXTRA_PV_PANEL_WP,
-    CONF_EXTRA_PV_POWER_CAPACITY,
-    CONF_EXTRA_PV_POWER_ENTITIES,
-    CONF_EXTRA_PV_POWER_ENTITY,
     CONF_FORECAST_SOLAR_ENTRIES,
     CONF_FRANK_ENERGIE_PRICE_ENTITY,
     CONF_GRID_EXPORT_POWER_ENTITY,
@@ -230,29 +223,6 @@ async def test_options_flow_saves_vat_exemption_and_network_fee_fields(
     assert entry.options[CONF_APPLY_VAT_ON_RETURN] is False
     assert entry.options[CONF_NETWORK_USE_FEE_NORMAL] == pytest.approx(0.0564)
     assert entry.options[CONF_NETWORK_USE_FEE_LOW] == pytest.approx(0.0512)
-
-
-async def test_options_flow_computes_extra_pv_capacity_from_panel_fields(
-    hass: HomeAssistant, mock_api_client
-):
-    """Extra-PV capacity is likewise computed from Wp-per-panel * panel count."""
-    entry = await _create_entry(hass, mock_api_client)
-    result = await _open_section(hass, entry, "extra_pv")
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "measurement": {},
-            "installation": {CONF_EXTRA_PV_PANEL_WP: 405, CONF_EXTRA_PV_PANEL_COUNT: 12},
-            "control": {},
-        },
-    )
-    await hass.async_block_till_done()
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options[CONF_EXTRA_PV_PANEL_WP] == 405
-    assert entry.options[CONF_EXTRA_PV_PANEL_COUNT] == 12
-    assert entry.options[CONF_EXTRA_PV_POWER_CAPACITY] == 4860
 
 
 async def test_options_flow_solar_note_when_no_forecast_integration(
@@ -647,103 +617,6 @@ async def test_options_flow_peak_load_field_prefers_saved_value_over_detected_se
         _suggested_value_for(result["data_schema"], CONF_PEAK_LOAD_THIS_MONTH_ENTITY)
         == "sensor.my_own_peak_sensor"
     )
-
-
-# --- extra energy source -------------------------------------------------------
-
-
-def _block(schema, name):
-    """A form block's (section's) inner schema."""
-    marker = next(k for k in schema.schema if k == name)
-    return schema.schema[marker].schema
-
-
-def _sma_sensors(hass: HomeAssistant, *keys: str) -> list[str]:
-    config_entry = MockConfigEntry(domain="sma", title="SMA Sunny Boy")
-    config_entry.add_to_hass(hass)
-    registry = er.async_get(hass)
-    return [
-        registry.async_get_or_create(
-            "sensor", "sma", f"{config_entry.entry_id}-{key}", config_entry=config_entry
-        ).entity_id
-        for key in keys
-    ]
-
-
-async def test_options_flow_extra_pv_in_three_blocks(hass: HomeAssistant, mock_api_client):
-    entry = await _create_entry(hass, mock_api_client)
-
-    result = await _open_section(hass, entry, "extra_pv")
-
-    schema = result["data_schema"]
-    assert [str(key) for key in schema.schema] == ["measurement", "installation", "control"]
-    assert [str(key) for key in _block(schema, "measurement").schema] == [
-        "extra_pv_power_entities",
-        "extra_pv_string_entities",
-    ]
-    assert [str(key) for key in _block(schema, "control").schema] == ["extra_pv_switch_entity"]
-    control = next(k for k in schema.schema if k == "control")
-    assert schema.schema[control].options["collapsed"] is True
-
-
-async def test_options_flow_extra_pv_prefills_a_detected_sma(hass: HomeAssistant, mock_api_client):
-    """The SMA integration's total PV power, else its strings."""
-    strings = _sma_sensors(hass, f"{SMA_PV_POWER_STRING_KEY}_0", f"{SMA_PV_POWER_STRING_KEY}_1")
-    entry = await _create_entry(hass, mock_api_client)
-
-    result = await _open_section(hass, entry, "extra_pv")
-
-    measurement = _block(result["data_schema"], "measurement")
-    assert _suggested_value_for(measurement, CONF_EXTRA_PV_POWER_ENTITIES) == strings
-
-
-async def test_options_flow_extra_pv_takes_over_the_old_settings(
-    hass: HomeAssistant, mock_api_client
-):
-    """The old single source pre-fills the power list; picking a switch
-    drops the old Modbus hub settings (kept as long as there's none)."""
-    (total,) = _sma_sensors(hass, f"{SMA_PV_POWER_AGGREGATE_KEY}_0")
-    entry = await _create_entry(hass, mock_api_client)
-    hub = {
-        "extra_pv_modbus_hub": "sma_tripower",
-        "extra_pv_modbus_slave": 3,
-        "extra_pv_modbus_address": 40016,
-    }
-    hass.config_entries.async_update_entry(
-        entry, options={CONF_EXTRA_PV_POWER_ENTITY: total, **hub}
-    )
-
-    result = await _open_section(hass, entry, "extra_pv")
-    measurement = _block(result["data_schema"], "measurement")
-    assert _suggested_value_for(measurement, CONF_EXTRA_PV_POWER_ENTITIES) == [total]
-
-    await _save_section(
-        hass,
-        entry,
-        "extra_pv",
-        {
-            "measurement": {CONF_EXTRA_PV_POWER_ENTITIES: [total]},
-            "installation": {},
-            "control": {},
-        },
-    )
-    assert entry.options[CONF_EXTRA_PV_POWER_ENTITIES] == [total]
-    assert CONF_EXTRA_PV_POWER_ENTITY not in entry.options
-    assert entry.options["extra_pv_modbus_hub"] == "sma_tripower"
-
-    await _save_section(
-        hass,
-        entry,
-        "extra_pv",
-        {
-            "measurement": {CONF_EXTRA_PV_POWER_ENTITIES: [total]},
-            "installation": {},
-            "control": {"extra_pv_switch_entity": "switch.sma_productie"},
-        },
-    )
-    assert entry.options["extra_pv_switch_entity"] == "switch.sma_productie"
-    for key in hub:
-        assert key not in entry.options
 
 
 async def test_options_flow_ev_charger_section_saves_the_lists(

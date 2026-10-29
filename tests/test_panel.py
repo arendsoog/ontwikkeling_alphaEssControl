@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from homeassistant.config_entries import ConfigSubentry
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
@@ -327,7 +328,7 @@ async def test_extra_pv_strings_none_for_a_non_sma_source(hass):
 def _loaded_entry(hass, options):
     entry = MockConfigEntry(domain=DOMAIN, options=options)
     entry.add_to_hass(hass)
-    entry.runtime_data = SimpleNamespace(options=dict(options))
+    entry.runtime_data = SimpleNamespace(options=dict(options), subentries={})
     return entry
 
 
@@ -354,6 +355,24 @@ async def test_other_option_change_reloads(hass):
     entry = _loaded_entry(hass, {"extra_pv_control_enabled": False, "pv_power": 9800})
     hass.config_entries.async_update_entry(
         entry, options={"extra_pv_control_enabled": True, "pv_power": 10000}
+    )
+
+    with patch.object(hass.config_entries, "async_reload") as reload:
+        await async_reload_entry(hass, entry)
+
+    reload.assert_called_once_with(entry.entry_id)
+
+
+async def test_pv_installation_change_reloads(hass):
+    entry = _loaded_entry(hass, {"extra_pv_control_enabled": False})
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={"extra_pv_power_entities": ["sensor.sma"]},
+            subentry_type="pv_installation",
+            title="Garage",
+            unique_id=None,
+        ),
     )
 
     with patch.object(hass.config_entries, "async_reload") as reload:

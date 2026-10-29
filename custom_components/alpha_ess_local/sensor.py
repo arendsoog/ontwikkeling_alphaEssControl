@@ -45,7 +45,7 @@ from .const import (
 from .data import MAX_HOURS, Day
 from .dispatch import set_dispatch_msg
 from .entity import AlphaEssLocalEntity
-from .extra_pv import extra_pv_power_entities
+from .extra_pv import extra_pv_options, extra_pv_power_entities
 from .orchestrator import read_extra_pv_power
 from .prices import mk_use_price
 from .schedule import set_charging_msg
@@ -607,7 +607,7 @@ class _LiveExtraPvMixin(SensorEntity):
 
     def _options(self) -> Mapping[str, Any]:
         entry = getattr(self.coordinator, "config_entry", None)
-        return entry.options if entry else {}
+        return extra_pv_options(self.hass, entry) if entry else {}
 
     def _live_extra_pv(self) -> float | None:
         """The source's reading right now; else the cycle's value (which

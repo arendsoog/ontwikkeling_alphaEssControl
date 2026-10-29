@@ -1827,7 +1827,7 @@ class AlphaEssPanel extends HTMLElement {
       <section class="card device">
         <div class="device-head">
           <ha-icon icon="mdi:solar-panel"></ha-icon>
-          <div class="device-name">PV-installatie</div>
+          <div class="device-name">${esc((st.extra_pv_names || []).join(" + ") || "PV-installatie")}</div>
           <div class="spacer"></div>
           <span class="${producing ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : producing ? "Produceert" : "Rust"}</span>
         </div>
@@ -1853,15 +1853,20 @@ class AlphaEssPanel extends HTMLElement {
       </section>`;
   }
 
-  // The switch that turns the extra source off at negative prices, with
-  // its state -- or, set up before the switch, the Modbus hub.
+  // The switches that turn the installations off at negative prices, with
+  // their state -- or, set up before the switches, the Modbus hub.
   _extraPvSwitchRow(st) {
-    if (st.extra_pv_switch) {
-      const s = this._hass.states[st.extra_pv_switch];
-      const state = !s ? "Niet gevonden" : s.state === "on" ? "Aan" : s.state === "off" ? "Uit" : "Niet beschikbaar";
-      return `<div class="kv" data-entity="${esc(st.extra_pv_switch)}"><span>${esc(
-        (s && s.attributes.friendly_name) || st.extra_pv_switch
-      )}</span><span class="${s && s.state === "on" ? "accent" : "muted"}">${state}</span></div>`;
+    const switches = st.extra_pv_switches || [];
+    if (switches.length) {
+      return switches
+        .map((id) => {
+          const s = this._hass.states[id];
+          const state = !s ? "Niet gevonden" : s.state === "on" ? "Aan" : s.state === "off" ? "Uit" : "Niet beschikbaar";
+          return `<div class="kv" data-entity="${esc(id)}"><span>${esc(
+            (s && s.attributes.friendly_name) || id
+          )}</span><span class="${s && s.state === "on" ? "accent" : "muted"}">${state}</span></div>`;
+        })
+        .join("");
     }
     return `<div class="kv"><span>Schakelaar</span><span>${esc(
       st.extra_pv_modbus_hub ? `Modbus hub ${st.extra_pv_modbus_hub}` : "Niet ingesteld"

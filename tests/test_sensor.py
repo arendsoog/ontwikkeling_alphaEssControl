@@ -44,7 +44,7 @@ from custom_components.alpha_ess_local.sensor import (
 
 def _fake_coordinator(data=None):
     return SimpleNamespace(
-        data=data, config_entry=SimpleNamespace(entry_id="test-entry", options={})
+        data=data, config_entry=SimpleNamespace(entry_id="test-entry", options={}, subentries={})
     )
 
 

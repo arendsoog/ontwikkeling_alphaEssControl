@@ -36,7 +36,7 @@ It decides when to charge from the sun, when to buy cheap power from the grid, w
 ## Requirements
 
 - **An AlphaESS hybrid inverter with Modbus TCP** on your network: default port `502`, unit/slave ID `85`. Developed and tested on a SMILE-series system with three PV inputs. Other AlphaESS models that use the same register map should work, but haven't been tested.
-- **Home Assistant 2024.12 or newer.** The integration's own icon in Home Assistant needs a recent Home Assistant (2026.x).
+- **Home Assistant 2025.3 or newer.** The integration's own icon in Home Assistant needs a recent Home Assistant (2026.x).
 - **A dynamic electricity contract** with day-ahead prices in Home Assistant, from one of these integrations (one is enough; more can serve as backup):
   - [ENTSO-e](https://github.com/JaccoR/hass-entso-e)
   - [Frank Energie](https://github.com/HiDiHo01/home-assistant-frank_energie)
@@ -107,15 +107,17 @@ The form shows how it reads your list, for example "1. Forecast.Solar: Front + B
 
 A DSMR or HomeWizard meter is filled in automatically. Without a meter, the inverter's own grid reading is used.
 
-### Energy sources
+### PV installations
 
-Something next to the AlphaESS that produces power, such as a second solar installation with its own inverter.
+A solar installation next to the AlphaESS, with its own inverter. These aren't in the options menu: on the integration's page, click **Add PV installation**, give it a name, and fill in:
 
 - **Measurement**
   - **Power:** one or more power sensors, added up (a second inverter, micro inverters, or the power per string).
   - **Power per MPPT (string):** for the dashboard only. An SMA integration is detected and filled in automatically.
 - **Installation:** Wp per panel and number of panels, used to estimate its power when its reading is gone (an SMA asleep at night or out of reach).
 - **Control at negative prices:** a **switch** that turns the source off and on (on = producing). Any switch works: a Modbus switch, a relay, an `input_boolean`, ... See [Switching off an SMA at negative prices](#switching-off-an-sma-at-negative-prices).
+
+Add one for each installation; their power is added up. To change one later, use the ⋮ menu next to it on the integration's page.
 
 Its power counts in the energy flow, the house consumption and the learning of the solar forecast.
 
@@ -145,7 +147,7 @@ The integration adds **AlphaESS Control** to the sidebar, with four tabs.
   - today's and this week's energy, and today's power and state of charge;
   - the day's prices, solar and plan, with a decision log of what was planned per hour and why;
   - the integration status: which price/solar source is in use, which grid meter, and which grid-charge limit applies.
-- **Installations:** one card per AlphaESS (power, MPPTs, battery health, lifetime totals), a card for the additional energy source with its switch, and one card per EV charger.
+- **Installations:** one card per AlphaESS (power, MPPTs, battery health, lifetime totals), a card for the PV installations with their switches, and one card per EV charger.
 - **Control:** the switches and sliders below, and buttons to override the plan for the current hour.
 - **History:** energy and savings per day, week, month or year.
 
@@ -164,7 +166,7 @@ A battery's built-in logic is simple: charge from the sun, use it at night. On a
 - **Grid charging.** It only buys grid power for the most expensive hours ahead, and only when that's cheaper than buying in those hours.
 - **Pessimistic check.** Forecasts are never perfect. Before it uses a plan, it checks the plan against more pessimistic scenarios (less sun, more consumption). It only commits when the plan still makes the minimum daily profit you set; otherwise the battery just runs in its default mode.
 - **Live control.** Every 20 seconds (10 while charging from the grid) it sets the inverter's mode. It regulates grid charging on the smart meter's reading, so it stays under the grid limit, and at the target level it lets the sun finish the charge.
-- **Negative prices.** It never exports at a negative price. Once the battery is full it can switch off the additional energy source rather than export at a loss.
+- **Negative prices.** It never exports at a negative price. Once the battery is full it can switch off the PV installations rather than export at a loss.
 
 **When something is missing.**
 - **No prices:** if the price sources give nothing (for example right after a restart), it keeps the last known prices, or plans with yesterday's prices meanwhile. It replans as soon as the real prices arrive.
@@ -210,7 +212,7 @@ The overrides apply to the current hour and stay until you clear them.
 
 ### Switching off an SMA at negative prices
 
-Home Assistant's [Modbus](https://www.home-assistant.io/integrations/modbus/) integration can make a switch that writes the SMA's power limit. Add it under your SMA hub in `modbus.yaml`, restart Home Assistant, and pick `switch.sma_production` under **Energy sources → Control at negative prices**:
+Home Assistant's [Modbus](https://www.home-assistant.io/integrations/modbus/) integration can make a switch that writes the SMA's power limit. Add it under your SMA hub in `modbus.yaml`, restart Home Assistant, and pick `switch.sma_production` in the PV installation, under **Control at negative prices**:
 
 ```yaml
 - name: sma_tripower

@@ -7,8 +7,8 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.const import CONF_HOST, CONF_PORT
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
@@ -30,14 +30,8 @@ from .const import (
     CONF_EV_CHARGER_POWER_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITY,
     CONF_EXCLUDED_LOAD_ENTITIES,
-    CONF_EXTRA_PV_MODBUS_ADDRESS,
-    CONF_EXTRA_PV_MODBUS_HUB,
-    CONF_EXTRA_PV_MODBUS_OFF_VALUE,
-    CONF_EXTRA_PV_MODBUS_ON_VALUE,
-    CONF_EXTRA_PV_MODBUS_SLAVE,
     CONF_EXTRA_PV_PANEL_COUNT,
     CONF_EXTRA_PV_PANEL_WP,
-    CONF_EXTRA_PV_POWER_CAPACITY,
     CONF_EXTRA_PV_POWER_ENTITIES,
     CONF_EXTRA_PV_POWER_ENTITY,
     CONF_EXTRA_PV_STRING_ENTITIES,
@@ -76,6 +70,7 @@ from .const import (
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
+    SUBENTRY_PV_INSTALLATION,
 )
 from .consumers import (
     ev_charger_energy_entities,
@@ -368,13 +363,13 @@ def _solar_forecast_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _
     return fields, missing
 
 
-def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """The extra energy source (a second solar installation, ...) in three
-    blocks: its measurement, its panels, and the switch that turns it off at
-    negative prices (collapsed) -- see extra_pv.py.
+def _pv_installation_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.Schema:
+    """A PV installation (a second solar installation, ...): its name, and
+    three blocks -- its measurement, its panels, and the switch that turns
+    it off at negative prices (collapsed). See extra_pv.py.
 
-    The power is pre-filled with the saved sensors (also the old single
-    source), or with a detected SMA integration's when nothing is saved.
+    The power is pre-filled with the saved sensors, or for a new one with a
+    detected SMA integration's.
     """
     if CONF_EXTRA_PV_POWER_ENTITIES in options or options.get(CONF_EXTRA_PV_POWER_ENTITY):
         power = extra_pv_power_entities(hass, options)
@@ -422,14 +417,17 @@ def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sectio
             ),
         ),
     ]
-    return [
-        (vol.Required("measurement"), section(vol.Schema(dict(measurement)))),
-        (vol.Required("installation"), section(vol.Schema(dict(installation)))),
-        (
-            vol.Required("control"),
-            section(vol.Schema(dict(control)), {"collapsed": True}),
-        ),
-    ], []
+    name = options.get(CONF_NAME) or (
+        "PV-installatie" if hass.config.language.startswith("nl") else "PV installation"
+    )
+    return vol.Schema(
+        {
+            vol.Required(CONF_NAME, default=name): selector.TextSelector(),
+            vol.Required("measurement"): section(vol.Schema(dict(measurement))),
+            vol.Required("installation"): section(vol.Schema(dict(installation))),
+            vol.Required("control"): section(vol.Schema(dict(control)), {"collapsed": True}),
+        }
+    )
 
 
 def _ev_charger_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
@@ -559,7 +557,6 @@ OPTIONS_SECTIONS = {
     "prices": _prices_fields,
     "solar_forecast": _solar_forecast_fields,
     "meter": _meter_fields,
-    "extra_pv": _extra_pv_fields,
     "ev_charger": _ev_charger_fields,
     "control": _control_fields,
 }
@@ -574,23 +571,12 @@ _SUPERSEDED_KEYS = {
     },
     "meter": {CONF_HOUSE_LOAD_POWER_ENTITY},
     "ev_charger": {CONF_EV_CHARGER_POWER_ENTITY, CONF_EV_CHARGER_ENERGY_ENTITY},
-    "extra_pv": {CONF_EXTRA_PV_POWER_ENTITY},
     "solar_forecast": {
         CONF_FORECAST_SOLAR_ENTRIES,
         CONF_SOLCAST_ENTRIES,
         CONF_SOLAR_SOURCE_PRIMARY,
     },
 }
-
-
-# The old Modbus switching of the extra source, dropped once a switch is picked.
-_EXTRA_PV_MODBUS_KEYS = (
-    CONF_EXTRA_PV_MODBUS_HUB,
-    CONF_EXTRA_PV_MODBUS_SLAVE,
-    CONF_EXTRA_PV_MODBUS_ADDRESS,
-    CONF_EXTRA_PV_MODBUS_ON_VALUE,
-    CONF_EXTRA_PV_MODBUS_OFF_VALUE,
-)
 
 
 def _field_keys(schema: vol.Schema) -> set[str]:
@@ -628,6 +614,8 @@ class AlphaEssLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for AlphaESSControl."""
 
     VERSION = 1
+    # 1.2: the PV installation moved from the options to a subentry.
+    MINOR_VERSION = 2
 
     @staticmethod
     def async_get_options_flow(
@@ -635,6 +623,14 @@ class AlphaEssLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> AlphaEssLocalOptionsFlow:
         """Get the options flow for this handler."""
         return AlphaEssLocalOptionsFlow()
+
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(
+        cls, config_entry: config_entries.ConfigEntry
+    ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
+        """PV installations are added one by one, as subentries."""
+        return {SUBENTRY_PV_INSTALLATION: PvInstallationSubentryFlow}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -705,11 +701,6 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
     ) -> config_entries.ConfigFlowResult:
         return self._async_section("solar_forecast", user_input)
 
-    async def async_step_extra_pv(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        return self._async_section("extra_pv", user_input)
-
     async def async_step_ev_charger(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
@@ -746,14 +737,7 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
                 if key not in section_keys
             }
             data.update(user_input)
-            if data.get(CONF_EXTRA_PV_SWITCH_ENTITY):
-                # The switch replaces the old Modbus hub settings.
-                for key in _EXTRA_PV_MODBUS_KEYS:
-                    data.pop(key, None)
             data[CONF_PV_POWER] = data.get(CONF_PV_PANEL_WP, 0) * data.get(CONF_PV_PANEL_COUNT, 0)
-            data[CONF_EXTRA_PV_POWER_CAPACITY] = data.get(CONF_EXTRA_PV_PANEL_WP, 0) * data.get(
-                CONF_EXTRA_PV_PANEL_COUNT, 0
-            )
             return self.async_create_entry(title="", data=data)
 
         return self.async_show_form(
@@ -768,3 +752,38 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
                 ),
             },
         )
+
+
+class PvInstallationSubentryFlow(config_entries.ConfigSubentryFlow):
+    """Add or change one PV installation (see extra_pv.py)."""
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        return self._async_installation("user", user_input, {})
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        subentry = self._get_reconfigure_subentry()
+        return self._async_installation(
+            "reconfigure", user_input, {**subentry.data, CONF_NAME: subentry.title}
+        )
+
+    def _async_installation(
+        self, step_id: str, user_input: dict[str, Any] | None, current: Mapping[str, Any]
+    ) -> config_entries.SubentryFlowResult:
+        schema = _pv_installation_schema(self.hass, current)
+        if user_input is None:
+            return self.async_show_form(step_id=step_id, data_schema=schema)
+
+        data = _flatten_blocks(schema, user_input)
+        name = data.pop(CONF_NAME)
+        if step_id == "user":
+            return self.async_create_entry(title=name, data=data)
+        # Not async_update_and_abort: that refuses an entry with an update
+        # listener, which reloads the entry on this change itself.
+        self.hass.config_entries.async_update_subentry(
+            self._get_entry(), self._get_reconfigure_subentry(), title=name, data=data
+        )
+        return self.async_abort(reason="reconfigure_successful")
