@@ -17,15 +17,18 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
+from homeassistant.const import CONF_ICON
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 
 from .. import storage
 from ..const import (
+    CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
     CONF_EXTRA_PV_CONTROL_ENABLED,
+    CONF_EXTRA_PV_ENERGY_ENTITIES,
     CONF_EXTRA_PV_MODBUS_HUB,
     CONF_EXTRA_PV_POWER_CAPACITY,
     CONF_INVERTER_NOMINAL_POWER,
@@ -37,6 +40,7 @@ from ..const import (
     CONF_PV_POWER,
     CONF_USABLE_BATTERY_CAPACITY,
     CONF_VAT_PERCENTAGE,
+    DEFAULT_ALLOW_PROVIDER_CONTROL_HOURS,
     DEFAULT_APPLY_VAT_ON_RETURN,
     DEFAULT_CONTROL_ENABLED,
     DEFAULT_EXTRA_PV_CONTROL_ENABLED,
@@ -49,12 +53,20 @@ from ..const import (
     LOGGER,
 )
 from ..consumers import (
+    consumer_cards,
+    consumer_options,
+    ev_charger_cards,
     ev_charger_energy_entities,
-    ev_charger_groups,
     ev_charger_power_entities,
 )
 from ..data import MAX_FIVE_MINS, Charge, Day
-from ..extra_pv import extra_pv_power_entities, extra_pv_string_entities, extra_pv_switch
+from ..extra_pv import (
+    extra_pv_options,
+    extra_pv_power_entities,
+    extra_pv_string_entities,
+    extra_pv_switches,
+    pv_installations,
+)
 from ..orchestrator import get_db_path, grid_meter_status
 from ..prices import configured_price_entities
 from ..schedule import set_charging_msg
@@ -95,6 +107,7 @@ def _ws_panel_status(
         _today_source(runtime.prices_coordinator),
     )
     solar = configured_solar_sources(hass, options)
+    pv_options = extra_pv_options(hass, entry)
     solar_sources = source_list(
         {source: solar_source_name(source) for source, _ in solar},
         {source: _entry_titles(hass, entry_ids) for source, entry_ids in solar},
@@ -112,6 +125,12 @@ def _ws_panel_status(
             "persist_daily_charge_limit": options.get(
                 CONF_PERSIST_DAILY_CHARGE_LIMIT, DEFAULT_PERSIST_DAILY_CHARGE_LIMIT
             ),
+            "allow_provider_control_hours": sorted(
+                int(hour)
+                for hour in options.get(
+                    CONF_ALLOW_PROVIDER_CONTROL_HOURS, DEFAULT_ALLOW_PROVIDER_CONTROL_HOURS
+                )
+            ),
             "usable_battery_capacity": options.get(CONF_USABLE_BATTERY_CAPACITY, 0),
             "inverter_nominal_power": options.get(CONF_INVERTER_NOMINAL_POWER, 0),
             "pv_power": options.get(CONF_PV_POWER, 0),
@@ -127,13 +146,19 @@ def _ws_panel_status(
                 CONF_NETWORK_USE_FEE_NORMAL, DEFAULT_NETWORK_USE_FEE
             ),
             "network_use_fee_low": options.get(CONF_NETWORK_USE_FEE_LOW, DEFAULT_NETWORK_USE_FEE),
-            "ev_charger_power_entities": ev_charger_power_entities(options),
-            "ev_charger_energy_entities": ev_charger_energy_entities(options),
-            "ev_chargers": ev_charger_groups(hass, options),
-            "extra_pv_configured": bool(extra_pv_power_entities(hass, options)),
-            "extra_pv_string_entities": extra_pv_string_entities(hass, options),
-            "extra_pv_power_capacity": options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0),
-            "extra_pv_switch": extra_pv_switch(options),
+            "ev_charger_power_entities": ev_charger_power_entities(consumer_options(entry)),
+            "ev_charger_energy_entities": ev_charger_energy_entities(consumer_options(entry)),
+            "ev_chargers": ev_charger_cards(hass, entry),
+            "consumers": consumer_cards(entry),
+            "extra_pv_configured": bool(extra_pv_power_entities(hass, pv_options)),
+            "extra_pv_names": [i["name"] for i in pv_installations(entry)],
+            "extra_pv_icon": next(
+                (i[CONF_ICON] for i in pv_installations(entry) if i.get(CONF_ICON)), None
+            ),
+            "extra_pv_string_entities": extra_pv_string_entities(hass, pv_options),
+            "extra_pv_power_capacity": pv_options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0),
+            "extra_pv_switches": extra_pv_switches(pv_options),
+            "extra_pv_energy_entities": pv_options.get(CONF_EXTRA_PV_ENERGY_ENTITIES, []),
             "extra_pv_modbus_hub": options.get(CONF_EXTRA_PV_MODBUS_HUB) or None,
             "extra_pv_unreachable": runtime.dispatch_coordinator.extra_pv_unreachable,
             "manual_override": None if override is None else set_charging_msg(override),
@@ -292,6 +317,32 @@ def _ws_set_option(
 
 @websocket_api.websocket_command(
     {
+        vol.Required("type"): f"{DOMAIN}/set_provider_hours",
+        vol.Required("hours"): [vol.All(int, vol.Range(min=0, max=23))],
+    }
+)
+@websocket_api.require_admin
+@callback
+def _ws_set_provider_hours(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Set the hours the energy provider may override the schedule in --
+    stored as the options form stores them (hour numbers as text)."""
+    entries = hass.config_entries.async_loaded_entries(DOMAIN)
+    if not entries:
+        connection.send_error(msg["id"], "not_loaded", "AlphaESSControl is not loaded")
+        return
+    entry = entries[0]
+    hours = sorted(set(msg["hours"]))
+    hass.config_entries.async_update_entry(
+        entry,
+        options={**entry.options, CONF_ALLOW_PROVIDER_CONTROL_HOURS: [str(h) for h in hours]},
+    )
+    connection.send_result(msg["id"], {"hours": hours})
+
+
+@websocket_api.websocket_command(
+    {
         vol.Required("type"): f"{DOMAIN}/history",
         vol.Required("start"): cv.date,
         vol.Required("end"): cv.date,
@@ -424,6 +475,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         websocket_api.async_register_command(hass, _ws_panel_status)
         websocket_api.async_register_command(hass, _ws_today_power)
         websocket_api.async_register_command(hass, _ws_set_option)
+        websocket_api.async_register_command(hass, _ws_set_provider_hours)
         websocket_api.async_register_command(hass, _ws_history)
         hass.data[_DATA_REGISTERED] = True
 

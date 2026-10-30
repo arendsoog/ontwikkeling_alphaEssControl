@@ -2626,7 +2626,7 @@ async def test_extra_pv_switch_turned_off_on_negative_price_when_battery_full(
 
     assert modbus_calls == []
     assert len(off_calls) == 1
-    assert off_calls[0].data == {"entity_id": "switch.sma_productie"}
+    assert off_calls[0].data == {"entity_id": ["switch.sma_productie"]}
 
 
 async def test_unreachable_extra_pv_does_not_stop_the_battery_dispatch(

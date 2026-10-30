@@ -79,7 +79,7 @@ from .const import (
     DOMAIN,
     LOGGER,
 )
-from .consumers import excluded_power_entities
+from .consumers import consumer_options, excluded_power_entities
 from .data import (
     MAX_FIVE_MINS,
     MAX_HOURS,
@@ -91,7 +91,7 @@ from .data import (
     FiveMin,
     Hour,
 )
-from .extra_pv import extra_pv_power_entities, extra_pv_switch
+from .extra_pv import extra_pv_options, extra_pv_power_entities, extra_pv_switches
 from .meter import GridMeter, configured_grid_meter, tariff_from_state
 from .prices import mk_return_price, mk_use_price
 from .protocol import DispatchMode, DispatchParam
@@ -953,13 +953,14 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         self._modbus_down = not modbus_ok
         pv_roof = modbus_data.get("pv_power", 0)
         battery_power = modbus_data.get("battery_power", 0)
-        extra_pv_power = read_extra_pv_power(self.hass, self.config_entry.options)
+        pv_options = extra_pv_options(self.hass, self.config_entry)
+        extra_pv_power = read_extra_pv_power(self.hass, pv_options)
         estimated = False
-        if extra_pv_power is None and extra_pv_power_entities(self.hass, self.config_entry.options):
+        if extra_pv_power is None and extra_pv_power_entities(self.hass, pv_options):
             # The extra installation's reading is gone (unreachable, or an
             # SMA asleep at night): it sees the same sun as the roof, so
             # scale the roof's production by the two installations' peaks.
-            extra_pv_power = _estimated_extra_pv(pv_roof, self.config_entry.options)
+            extra_pv_power = _estimated_extra_pv(pv_roof, pv_options)
             estimated = extra_pv_power is not None and extra_pv_power > 0
         # Logged only while the sun is up (an SMA asleep at night is normal).
         if estimated and not self._extra_pv_estimating:
@@ -985,7 +986,7 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         # ev_power.
         readings = [
             _entity_power(self.hass, entity)
-            for entity in excluded_power_entities(self.config_entry.options)
+            for entity in excluded_power_entities(consumer_options(self.config_entry))
         ]
         ev_power = sum(reading for reading in readings if reading is not None)
         ev_missing = any(reading is None for reading in readings)
@@ -1791,23 +1792,24 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         # hub/register config be entered once and paused/resumed without
         # clearing it. Even when both are on, an actual write still only
         # happens when CONF_CONTROL_ENABLED is also on (logged either way).
-        extra_pv_switch_entity = extra_pv_switch(options)
+        extra_pv_switch_entities = extra_pv_switches(extra_pv_options(self.hass, self.config_entry))
         extra_pv_hub = options.get(CONF_EXTRA_PV_MODBUS_HUB)
         extra_pv_control_enabled = options.get(
             CONF_EXTRA_PV_CONTROL_ENABLED, DEFAULT_EXTRA_PV_CONTROL_ENABLED
         )
-        if (extra_pv_switch_entity or extra_pv_hub) and extra_pv_control_enabled:
+        if (extra_pv_switch_entities or extra_pv_hub) and extra_pv_control_enabled:
             extra_pv_state = dispatch.decide_extra_pv_state(hour, cur_soc)
             if extra_pv_state != self._last_extra_pv_state:
                 turn_on = extra_pv_state == dispatch.ExtraPvState.ON
-                if extra_pv_switch_entity:
-                    # A switch (on = producing): homeassistant.turn_on/off
-                    # works for a switch and an input_boolean alike.
-                    target = extra_pv_switch_entity
+                if extra_pv_switch_entities:
+                    # Each installation's switch (on = producing):
+                    # homeassistant.turn_on/off works for a switch and an
+                    # input_boolean alike.
+                    target = ", ".join(extra_pv_switch_entities)
                     service: tuple[str, str, dict[str, Any]] = (
                         "homeassistant",
                         "turn_on" if turn_on else "turn_off",
-                        {"entity_id": extra_pv_switch_entity},
+                        {"entity_id": extra_pv_switch_entities},
                     )
                 else:
                     # Set up before the switch: the Modbus hub settings.
@@ -2075,7 +2077,7 @@ async def async_handle_daily_rollover(
     _now: datetime,
 ) -> None:
     """Port of DoDailyWork's mean-data recompute + rebuild-and-reschedule."""
-    options = entry.options
+    options = extra_pv_options(hass, entry)
     # The forecast covers roof and extra installation, so learn against both.
     pv_power = options.get(CONF_PV_POWER, 0) + options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0)
     db_path = get_db_path(hass, entry)

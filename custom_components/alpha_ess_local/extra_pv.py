@@ -1,17 +1,25 @@
-"""The extra energy source next to the AlphaESS (a second solar installation, ...).
+"""The PV installations next to the AlphaESS (a second solar installation, ...).
 
-Picked in the options by its sensors and a switch:
-- its power: one or more power sensors, summed (a second inverter, micro
-  inverters, or an inverter's power per string);
+Each is a subentry of the config entry ("Add PV installation"), picked by
+its sensors and a switch:
+- its power: its inverter's power sensor (migrated installations may have
+  several, summed);
+- its total production in kWh, for the panel's daily total;
 - its power per string, MPPT or phase, for the panel only;
+- its panels (Wp and count), for its peak power;
 - a switch that turns it off at negative prices (on = producing): any
   switch, e.g. a Modbus switch writing the inverter's power limit.
 
-Installations set up before had one power source -- a sensor, or
-"sma:<config entry>" for the SMA integration's per-string sensors summed --
-and the switching as a Modbus hub, slave, register and on/off values. Both
-are read the same way until the section is saved again (the hub until a
-switch is picked).
+The rest of the integration reads all installations together, folded into
+the options by `extra_pv_options`: their power sensors summed, their peak
+power added up, all their switches switched.
+
+Before the subentries the one installation was in the options; it's moved
+into a subentry when the entry is migrated (`installation_from_options`).
+Older still, its power source was one sensor or "sma:<config entry>" for the
+SMA integration's per-string sensors summed, and its switching a Modbus hub,
+slave, register and on/off values -- the hub settings stay in the options
+and are used as long as no installation has a switch.
 """
 
 from __future__ import annotations
@@ -19,14 +27,23 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
 from .const import (
+    CONF_EXTRA_PV_ENERGY_ENTITIES,
+    CONF_EXTRA_PV_ENERGY_ENTITY,
+    CONF_EXTRA_PV_MODBUS_HUB,
+    CONF_EXTRA_PV_PANEL_COUNT,
+    CONF_EXTRA_PV_PANEL_WP,
+    CONF_EXTRA_PV_POWER_CAPACITY,
     CONF_EXTRA_PV_POWER_ENTITIES,
     CONF_EXTRA_PV_POWER_ENTITY,
     CONF_EXTRA_PV_STRING_ENTITIES,
+    CONF_EXTRA_PV_SWITCH_ENTITIES,
     CONF_EXTRA_PV_SWITCH_ENTITY,
+    SUBENTRY_PV_INSTALLATION,
 )
 
 # pysma's internal register keys for its PV-power sensors, verified directly
@@ -102,6 +119,98 @@ def extra_pv_string_entities(hass: HomeAssistant, options: Mapping[str, Any]) ->
     return []
 
 
-def extra_pv_switch(options: Mapping[str, Any]) -> str | None:
-    """The switch that turns the extra source off at negative prices."""
-    return options.get(CONF_EXTRA_PV_SWITCH_ENTITY) or None
+def extra_pv_switches(options: Mapping[str, Any]) -> list[str]:
+    """The switches that turn the installations off at negative prices."""
+    if CONF_EXTRA_PV_SWITCH_ENTITIES in options:
+        return list(options[CONF_EXTRA_PV_SWITCH_ENTITIES])
+    switch = options.get(CONF_EXTRA_PV_SWITCH_ENTITY)
+    return [switch] if switch else []
+
+
+def pv_installations(entry: ConfigEntry) -> list[Mapping[str, Any]]:
+    """The PV installations' settings, each with its name under "name"."""
+    return [
+        {**subentry.data, "name": subentry.title}
+        for subentry in entry.subentries.values()
+        if subentry.subentry_type == SUBENTRY_PV_INSTALLATION
+    ]
+
+
+def pv_installation_capacity(installation: Mapping[str, Any]) -> float:
+    """An installation's peak power in Wp: its panels' Wp times their count."""
+    return (installation.get(CONF_EXTRA_PV_PANEL_WP) or 0) * (
+        installation.get(CONF_EXTRA_PV_PANEL_COUNT) or 0
+    )
+
+
+def extra_pv_options(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
+    """The entry's options with its PV installations folded in, as the rest
+    of the integration reads them: their power and string sensors listed
+    together, their peak power added up, their switches listed.
+
+    Without installations the options as they are (an entry not migrated
+    yet still has its one installation there).
+    """
+    installations = pv_installations(entry)
+    options = dict(entry.options)
+    if not installations:
+        return options
+
+    def joined(entities: Any) -> list[str]:
+        return list(dict.fromkeys(e for group in entities for e in group or [] if e))
+
+    options[CONF_EXTRA_PV_POWER_ENTITIES] = joined(
+        extra_pv_power_entities(hass, i) for i in installations
+    )
+    options[CONF_EXTRA_PV_ENERGY_ENTITIES] = joined(
+        [i.get(CONF_EXTRA_PV_ENERGY_ENTITY)] for i in installations
+    )
+    options[CONF_EXTRA_PV_STRING_ENTITIES] = joined(
+        extra_pv_string_entities(hass, i) for i in installations
+    )
+    options[CONF_EXTRA_PV_POWER_CAPACITY] = sum(map(pv_installation_capacity, installations))
+    options[CONF_EXTRA_PV_SWITCH_ENTITIES] = joined(
+        [i.get(CONF_EXTRA_PV_SWITCH_ENTITY)] for i in installations
+    )
+    return options
+
+
+# The installation's settings in the options before the subentries.
+_INSTALLATION_OPTION_KEYS = (
+    CONF_EXTRA_PV_POWER_ENTITIES,
+    CONF_EXTRA_PV_POWER_ENTITY,
+    CONF_EXTRA_PV_STRING_ENTITIES,
+    CONF_EXTRA_PV_PANEL_WP,
+    CONF_EXTRA_PV_PANEL_COUNT,
+    CONF_EXTRA_PV_POWER_CAPACITY,
+    CONF_EXTRA_PV_SWITCH_ENTITY,
+)
+
+
+def installation_from_options(
+    hass: HomeAssistant, options: Mapping[str, Any]
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Split the one installation from options saved before the subentries:
+    its settings (None when there was none) and the options left.
+
+    The old Modbus hub settings stay in the options.
+    """
+    power = extra_pv_power_entities(hass, options)
+    switch = options.get(CONF_EXTRA_PV_SWITCH_ENTITY)
+    rest = {k: v for k, v in options.items() if k not in _INSTALLATION_OPTION_KEYS}
+    if not (power or switch or options.get(CONF_EXTRA_PV_MODBUS_HUB)):
+        return None, rest
+    installation: dict[str, Any] = {
+        # One sensor in the single field; an old SMA source's strings summed.
+        **(
+            {CONF_EXTRA_PV_POWER_ENTITY: power[0]}
+            if len(power) == 1
+            else {CONF_EXTRA_PV_POWER_ENTITIES: power}
+        ),
+        CONF_EXTRA_PV_STRING_ENTITIES: list(options.get(CONF_EXTRA_PV_STRING_ENTITIES) or []),
+        CONF_EXTRA_PV_PANEL_WP: options.get(CONF_EXTRA_PV_PANEL_WP, 0),
+        CONF_EXTRA_PV_PANEL_COUNT: options.get(CONF_EXTRA_PV_PANEL_COUNT, 0),
+    }
+    if switch:
+        installation[CONF_EXTRA_PV_SWITCH_ENTITY] = switch
+    return installation, rest

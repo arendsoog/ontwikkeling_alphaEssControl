@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import CONF_HOST, CONF_PORT, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import device_registry as dr
@@ -14,17 +14,23 @@ from homeassistant.helpers.event import async_track_time_change
 
 from .api import AlphaEssLocalApiClient, AlphaEssLocalApiClientError
 from .const import (
+    CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_CONTROL_ENABLED,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
     DOMAIN,
+    SUBENTRY_CONSUMER,
+    SUBENTRY_EV_CHARGER,
+    SUBENTRY_PV_INSTALLATION,
 )
+from .consumers import consumers_from_options, ev_chargers_from_options
 from .coordinator import (
     AlphaEssLocalDataUpdateCoordinator,
     AlphaEssLocalPricesCoordinator,
     AlphaEssLocalSolarCoordinator,
 )
 from .data import SOC_MAX, SOC_MAX_CHARGE_ON_GRID, SOC_MIN_DISCHARGE_AFTER, Charge
+from .extra_pv import installation_from_options
 from .frontend import async_register_panel, async_unregister_panel
 from .orchestrator import (
     AlphaEssLocalDispatchCoordinator,
@@ -42,7 +48,12 @@ PLATFORMS: list[Platform] = [Platform.NUMBER, Platform.SENSOR, Platform.SWITCH]
 # change to only these takes effect without a reload. Reloading would drop
 # all entities for several seconds -- and blank the panel that toggled them.
 LIVE_OPTIONS = frozenset(
-    {CONF_CONTROL_ENABLED, CONF_EXTRA_PV_CONTROL_ENABLED, CONF_PERSIST_DAILY_CHARGE_LIMIT}
+    {
+        CONF_ALLOW_PROVIDER_CONTROL_HOURS,
+        CONF_CONTROL_ENABLED,
+        CONF_EXTRA_PV_CONTROL_ENABLED,
+        CONF_PERSIST_DAILY_CHARGE_LIMIT,
+    }
 )
 
 # Manual dispatch-override services — port of ReadConfigMinute's C/D/P/N
@@ -75,9 +86,11 @@ class AlphaEssLocalRuntimeData:
     real_data_coordinator: AlphaEssLocalRealDataCoordinator
     schedule_coordinator: AlphaEssLocalScheduleCoordinator
     dispatch_coordinator: AlphaEssLocalDispatchCoordinator
-    # The options this entry was (re)loaded with, so the update listener
-    # can tell a live-read option change from one that needs a reload.
+    # The options and subentries this entry was (re)loaded with, so the
+    # update listener can tell a live-read option change from one that
+    # needs a reload.
     options: dict[str, Any] = field(default_factory=dict)
+    subentries: dict[str, Any] = field(default_factory=dict)
 
 
 type AlphaEssLocalConfigEntry = ConfigEntry[AlphaEssLocalRuntimeData]
@@ -168,6 +181,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry
         schedule_coordinator=schedule_coordinator,
         dispatch_coordinator=dispatch_coordinator,
         options=dict(entry.options),
+        subentries=_subentries_snapshot(entry),
     )
 
     _async_register_dispatch_services(hass)
@@ -203,6 +217,50 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry
     return True
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry) -> bool:
+    """1.1 -> 1.2: the PV installation in the options becomes a subentry.
+    1.2 -> 1.3: so does each EV charger; 1.3 -> 1.4: and each other consumer."""
+    if entry.version > 1:
+        return False
+    dutch = hass.config.language.startswith("nl")
+    if entry.minor_version < 2:
+        installation, options = installation_from_options(hass, entry.options)
+        if installation is not None:
+            hass.config_entries.async_add_subentry(
+                entry,
+                ConfigSubentry(
+                    data=installation,
+                    subentry_type=SUBENTRY_PV_INSTALLATION,
+                    title="PV-installatie" if dutch else "PV installation",
+                    unique_id=None,
+                ),
+            )
+        hass.config_entries.async_update_entry(entry, options=options, minor_version=2)
+    if entry.minor_version < 3:
+        chargers, options = ev_chargers_from_options(
+            hass, entry.options, "EV-lader" if dutch else "EV charger"
+        )
+        for title, data in chargers:
+            hass.config_entries.async_add_subentry(
+                entry,
+                ConfigSubentry(
+                    data=data, subentry_type=SUBENTRY_EV_CHARGER, title=title, unique_id=None
+                ),
+            )
+        hass.config_entries.async_update_entry(entry, options=options, minor_version=3)
+    if entry.minor_version < 4:
+        consumers, options = consumers_from_options(hass, entry.options)
+        for title, data in consumers:
+            hass.config_entries.async_add_subentry(
+                entry,
+                ConfigSubentry(
+                    data=data, subentry_type=SUBENTRY_CONSUMER, title=title, unique_id=None
+                ),
+            )
+        hass.config_entries.async_update_entry(entry, options=options, minor_version=4)
+    return True
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry) -> bool:
     """Unload a config entry."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
@@ -224,15 +282,23 @@ async def async_remove_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntr
         async_unregister_panel(hass)
 
 
+def _subentries_snapshot(entry: AlphaEssLocalConfigEntry) -> dict[str, Any]:
+    return {
+        subentry_id: (subentry.title, dict(subentry.data))
+        for subentry_id, subentry in entry.subentries.items()
+    }
+
+
 async def async_reload_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry) -> None:
-    """Reload the config entry when options change -- unless only live ones did."""
+    """Reload the config entry when options or subentries (PV installations)
+    change -- unless only live options did."""
     previous = entry.runtime_data.options
     changed = {
         key
         for key in previous.keys() | entry.options.keys()
         if previous.get(key) != entry.options.get(key)
     }
-    if changed <= LIVE_OPTIONS:
+    if changed <= LIVE_OPTIONS and entry.runtime_data.subentries == _subentries_snapshot(entry):
         entry.runtime_data.options = dict(entry.options)
         return
     await hass.config_entries.async_reload(entry.entry_id)

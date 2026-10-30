@@ -91,6 +91,16 @@ CONF_EXTRA_PV_SWITCH_ENTITY = "extra_pv_switch_entity"
 CONF_EXTRA_PV_POWER_CAPACITY = "extra_pv_power_capacity"
 CONF_EXTRA_PV_PANEL_WP = "extra_pv_panel_wp"
 CONF_EXTRA_PV_PANEL_COUNT = "extra_pv_panel_count"
+# Each PV installation is a subentry of this type, holding the power, string
+# and switch entities and the panels above (see extra_pv.py). The rest of the
+# integration reads them together under the option keys, the switches listed
+# under CONF_EXTRA_PV_SWITCH_ENTITIES.
+SUBENTRY_PV_INSTALLATION = "pv_installation"
+CONF_EXTRA_PV_SWITCH_ENTITIES = "extra_pv_switch_entities"
+# An installation's total-production counter (kWh), for the panel's daily
+# total; all installations' listed under CONF_EXTRA_PV_ENERGY_ENTITIES.
+CONF_EXTRA_PV_ENERGY_ENTITY = "extra_pv_energy_entity"
+CONF_EXTRA_PV_ENERGY_ENTITIES = "extra_pv_energy_entities"
 
 # Options flow: extra-PV price-based on/off control. A Modbus write to a
 # *different* device (e.g. a second SMA inverter) via HA's core `modbus`
@@ -151,6 +161,21 @@ CONF_EV_CHARGER_POWER_ENTITIES = "ev_charger_power_entities"
 CONF_EV_CHARGER_ENERGY_ENTITIES = "ev_charger_energy_entities"
 CONF_EV_CHARGER_PHASE_ENTITIES = "ev_charger_phase_entities"
 CONF_EXCLUDED_LOAD_ENTITIES = "excluded_load_entities"
+# Each EV charger is a subentry of this type, with its power and energy
+# sensor and its power per phase (see consumers.py).
+SUBENTRY_EV_CHARGER = "ev_charger"
+# Each other consumer (a heat pump, ...) is a subentry of this type, with
+# its power and total-energy sensor; their power sensors are read together
+# under CONF_EXCLUDED_LOAD_ENTITIES.
+SUBENTRY_CONSUMER = "consumer"
+CONF_CONSUMER_POWER_ENTITY = "consumer_power_entity"
+CONF_CONSUMER_ENERGY_ENTITY = "consumer_energy_entity"
+# Per EV charger/consumer: whether its power is left out of the learned
+# house load (on) or counts as ordinary house load (off). The power sensors
+# left out are listed under CONF_EXCLUDED_POWER_ENTITIES.
+CONF_EXCLUDE_FROM_LEARNING = "exclude_from_learning"
+DEFAULT_EXCLUDE_FROM_LEARNING = True
+CONF_EXCLUDED_POWER_ENTITIES = "excluded_power_entities"
 
 # Options flow: scheduler tuning (config.ini [Daily])
 CONF_ALLOW_PROVIDER_CONTROL_HOURS = "allow_provider_control_hours"

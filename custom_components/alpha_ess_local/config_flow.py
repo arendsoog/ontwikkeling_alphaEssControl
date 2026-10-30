@@ -7,8 +7,8 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.const import CONF_HOST, CONF_PORT
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_HOST, CONF_ICON, CONF_NAME, CONF_PORT
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
@@ -20,25 +20,17 @@ from .api import (
     AlphaEssLocalApiClientError,
 )
 from .const import (
-    CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_APPLY_VAT_ON_RETURN,
-    CONF_CONTROL_ENABLED,
+    CONF_CONSUMER_ENERGY_ENTITY,
+    CONF_CONSUMER_POWER_ENTITY,
     CONF_ENTSOE_PRICE_ENTITY,
-    CONF_EV_CHARGER_ENERGY_ENTITIES,
     CONF_EV_CHARGER_ENERGY_ENTITY,
     CONF_EV_CHARGER_PHASE_ENTITIES,
-    CONF_EV_CHARGER_POWER_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITY,
-    CONF_EXCLUDED_LOAD_ENTITIES,
-    CONF_EXTRA_PV_CONTROL_ENABLED,
-    CONF_EXTRA_PV_MODBUS_ADDRESS,
-    CONF_EXTRA_PV_MODBUS_HUB,
-    CONF_EXTRA_PV_MODBUS_OFF_VALUE,
-    CONF_EXTRA_PV_MODBUS_ON_VALUE,
-    CONF_EXTRA_PV_MODBUS_SLAVE,
+    CONF_EXCLUDE_FROM_LEARNING,
+    CONF_EXTRA_PV_ENERGY_ENTITY,
     CONF_EXTRA_PV_PANEL_COUNT,
     CONF_EXTRA_PV_PANEL_WP,
-    CONF_EXTRA_PV_POWER_CAPACITY,
     CONF_EXTRA_PV_POWER_ENTITIES,
     CONF_EXTRA_PV_POWER_ENTITY,
     CONF_EXTRA_PV_STRING_ENTITIES,
@@ -53,7 +45,6 @@ from .const import (
     CONF_NETWORK_USE_FEE_LOW,
     CONF_NETWORK_USE_FEE_NORMAL,
     CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
-    CONF_PERSIST_DAILY_CHARGE_LIMIT,
     CONF_PRICE_ENTITIES,
     CONF_PRICE_SOURCE_PRIMARY,
     CONF_PROVIDER_RETURN_FEE,
@@ -66,18 +57,18 @@ from .const import (
     CONF_SOLCAST_ENTRIES,
     CONF_USABLE_BATTERY_CAPACITY,
     CONF_VAT_PERCENTAGE,
-    DEFAULT_ALLOW_PROVIDER_CONTROL_HOURS,
     DEFAULT_APPLY_VAT_ON_RETURN,
-    DEFAULT_CONTROL_ENABLED,
-    DEFAULT_EXTRA_PV_CONTROL_ENABLED,
+    DEFAULT_EXCLUDE_FROM_LEARNING,
     DEFAULT_NETWORK_USE_FEE,
-    DEFAULT_PERSIST_DAILY_CHARGE_LIMIT,
     DEFAULT_PORT,
     DEFAULT_PROVIDER_RETURN_FEE,
     DEFAULT_PROVIDER_USE_FEE,
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
+    SUBENTRY_CONSUMER,
+    SUBENTRY_EV_CHARGER,
+    SUBENTRY_PV_INSTALLATION,
 )
 from .consumers import (
     ev_charger_energy_entities,
@@ -370,33 +361,43 @@ def _solar_forecast_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _
     return fields, missing
 
 
-def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """The extra energy source (a second solar installation, ...) in three
-    blocks: its measurement, its panels, and the switch that turns it off at
-    negative prices (collapsed) -- see extra_pv.py.
+def _pv_installation_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.Schema:
+    """A PV installation (a second solar installation, ...): its name, and
+    three blocks -- its measurement, its panels, and the switch that turns
+    it off at negative prices (collapsed). See extra_pv.py.
 
-    The power is pre-filled with the saved sensors (also the old single
-    source), or with a detected SMA integration's when nothing is saved.
+    The power is pre-filled with the saved sensor (the first, when migrated
+    with several), or for a new one with a detected SMA integration's total.
     """
     if CONF_EXTRA_PV_POWER_ENTITIES in options or options.get(CONF_EXTRA_PV_POWER_ENTITY):
-        power = extra_pv_power_entities(hass, options)
+        power = next(iter(extra_pv_power_entities(hass, options)), None)
     else:
-        power = detected_extra_pv_power_entities(hass)
+        detected = detected_extra_pv_power_entities(hass)
+        power = detected[0] if len(detected) == 1 else None
 
-    def entities(key: str, value: Any, device_class: str) -> tuple[Any, Any]:
+    def entities(key: str, value: Any, device_class: str, *, multiple: bool) -> tuple[Any, Any]:
         return (
             vol.Optional(key, description={"suggested_value": value}),
             selector.EntitySelector(
                 selector.EntitySelectorConfig(
-                    domain="sensor", device_class=device_class, multiple=True
+                    domain="sensor", device_class=device_class, multiple=multiple
                 )
             ),
         )
 
     measurement = [
-        entities(CONF_EXTRA_PV_POWER_ENTITIES, power, "power"),
+        entities(CONF_EXTRA_PV_POWER_ENTITY, power, "power", multiple=False),
         entities(
-            CONF_EXTRA_PV_STRING_ENTITIES, options.get(CONF_EXTRA_PV_STRING_ENTITIES), "power"
+            CONF_EXTRA_PV_ENERGY_ENTITY,
+            options.get(CONF_EXTRA_PV_ENERGY_ENTITY),
+            "energy",
+            multiple=False,
+        ),
+        entities(
+            CONF_EXTRA_PV_STRING_ENTITIES,
+            options.get(CONF_EXTRA_PV_STRING_ENTITIES),
+            "power",
+            multiple=True,
         ),
     ]
     installation = [
@@ -411,18 +412,9 @@ def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sectio
             _count_selector(),
         ),
     ]
+    # Turning the control on/off (CONF_EXTRA_PV_CONTROL_ENABLED) is the
+    # panel's toggle, not a field here.
     control = [
-        (
-            # Its own toggle, separate from CONF_CONTROL_ENABLED, so the
-            # switch can be picked once and paused/resumed. Defaults off.
-            vol.Optional(
-                CONF_EXTRA_PV_CONTROL_ENABLED,
-                default=options.get(
-                    CONF_EXTRA_PV_CONTROL_ENABLED, DEFAULT_EXTRA_PV_CONTROL_ENABLED
-                ),
-            ),
-            selector.BooleanSelector(),
-        ),
         (
             vol.Optional(
                 CONF_EXTRA_PV_SWITCH_ENTITY,
@@ -433,43 +425,98 @@ def _extra_pv_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _Sectio
             ),
         ),
     ]
-    return [
-        (vol.Required("measurement"), section(vol.Schema(dict(measurement)))),
-        (vol.Required("installation"), section(vol.Schema(dict(installation)))),
-        (
-            vol.Required("control"),
-            section(vol.Schema(dict(control)), {"collapsed": True}),
-        ),
-    ], []
+    name = options.get(CONF_NAME) or (
+        "PV-installatie" if hass.config.language.startswith("nl") else "PV installation"
+    )
+    return vol.Schema(
+        {
+            vol.Required(CONF_NAME, default=name): selector.TextSelector(),
+            **_icon_field(options),
+            vol.Required("measurement"): section(vol.Schema(dict(measurement))),
+            vol.Required("installation"): section(vol.Schema(dict(installation))),
+            vol.Required("control"): section(vol.Schema(dict(control)), {"collapsed": True}),
+        }
+    )
 
 
-def _ev_charger_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """Consumers left out of the learned house load: EV chargers (also shown
-    in the panel) and other consumers (a heat pump, ...), any number of
-    each, picked one by one -- see consumers.py."""
+def _sensor_selector(device_class: str, *, multiple: bool = False) -> selector.EntitySelector:
+    return selector.EntitySelector(
+        selector.EntitySelectorConfig(domain="sensor", device_class=device_class, multiple=multiple)
+    )
 
-    def entities_field(key: str, suggested: list[str], device_class: str) -> tuple[Any, Any]:
-        return (
-            vol.Optional(key, description={"suggested_value": suggested}),
-            selector.EntitySelector(
-                selector.EntitySelectorConfig(
-                    domain="sensor", device_class=device_class, multiple=True
-                )
-            ),
-        )
 
-    return [
-        entities_field(CONF_EV_CHARGER_POWER_ENTITIES, ev_charger_power_entities(options), "power"),
-        entities_field(
-            CONF_EV_CHARGER_ENERGY_ENTITIES, ev_charger_energy_entities(options), "energy"
-        ),
-        entities_field(CONF_EV_CHARGER_PHASE_ENTITIES, ev_charger_phase_entities(options), "power"),
-        entities_field(
-            CONF_EXCLUDED_LOAD_ENTITIES,
-            list(options.get(CONF_EXCLUDED_LOAD_ENTITIES) or []),
-            "power",
-        ),
-    ], []
+def _consumer_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.Schema:
+    """Another consumer left out of the learned house load (a heat pump,
+    ...): its name, power and total-energy sensor -- see consumers.py."""
+    name = options.get(CONF_NAME) or (
+        "Verbruiker" if hass.config.language.startswith("nl") else "Consumer"
+    )
+    return vol.Schema(
+        {
+            vol.Required(CONF_NAME, default=name): selector.TextSelector(),
+            **_icon_field(options),
+            vol.Optional(
+                CONF_CONSUMER_POWER_ENTITY,
+                description={"suggested_value": options.get(CONF_CONSUMER_POWER_ENTITY)},
+            ): _sensor_selector("power"),
+            vol.Optional(
+                CONF_CONSUMER_ENERGY_ENTITY,
+                description={"suggested_value": options.get(CONF_CONSUMER_ENERGY_ENTITY)},
+            ): _sensor_selector("energy"),
+            **_exclude_from_learning_field(options),
+        }
+    )
+
+
+def _ev_charger_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.Schema:
+    """An EV charger: its name, power and total-energy sensor, and its
+    power per phase -- see consumers.py. A migrated charger with several
+    power/energy sensors shows its first."""
+
+    def first(entities: list[str]) -> str | None:
+        return entities[0] if entities else None
+
+    name = options.get(CONF_NAME) or (
+        "EV-lader" if hass.config.language.startswith("nl") else "EV charger"
+    )
+    return vol.Schema(
+        {
+            vol.Required(CONF_NAME, default=name): selector.TextSelector(),
+            **_icon_field(options),
+            vol.Optional(
+                CONF_EV_CHARGER_POWER_ENTITY,
+                description={"suggested_value": first(ev_charger_power_entities(options))},
+            ): _sensor_selector("power"),
+            vol.Optional(
+                CONF_EV_CHARGER_ENERGY_ENTITY,
+                description={"suggested_value": first(ev_charger_energy_entities(options))},
+            ): _sensor_selector("energy"),
+            vol.Optional(
+                CONF_EV_CHARGER_PHASE_ENTITIES,
+                description={"suggested_value": ev_charger_phase_entities(options)},
+            ): _sensor_selector("power", multiple=True),
+            **_exclude_from_learning_field(options),
+        }
+    )
+
+
+def _icon_field(options: Mapping[str, Any]) -> dict[Any, Any]:
+    """The icon its card in the panel shows."""
+    return {
+        vol.Optional(
+            CONF_ICON, description={"suggested_value": options.get(CONF_ICON)}
+        ): selector.IconSelector()
+    }
+
+
+def _exclude_from_learning_field(options: Mapping[str, Any]) -> dict[Any, Any]:
+    """Whether the consumer's power is left out of the learned house load."""
+    return {
+        vol.Optional(
+            CONF_EXCLUDE_FROM_LEARNING,
+            default=options.get(CONF_EXCLUDE_FROM_LEARNING, DEFAULT_EXCLUDE_FROM_LEARNING),
+        ): selector.BooleanSelector()
+    }
 
 
 def _meter_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
@@ -524,55 +571,12 @@ def _meter_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFi
     ], []
 
 
-def _control_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:
-    """Scheduler/dispatch behaviour, including the master control switch."""
-    return [
-        (
-            vol.Optional(
-                CONF_ALLOW_PROVIDER_CONTROL_HOURS,
-                default=options.get(
-                    CONF_ALLOW_PROVIDER_CONTROL_HOURS, DEFAULT_ALLOW_PROVIDER_CONTROL_HOURS
-                ),
-            ),
-            selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=[str(hour) for hour in range(24)],
-                    multiple=True,
-                    mode=selector.SelectSelectorMode.DROPDOWN,
-                )
-            ),
-        ),
-        (
-            vol.Optional(
-                CONF_PERSIST_DAILY_CHARGE_LIMIT,
-                default=options.get(
-                    CONF_PERSIST_DAILY_CHARGE_LIMIT, DEFAULT_PERSIST_DAILY_CHARGE_LIMIT
-                ),
-            ),
-            selector.BooleanSelector(),
-        ),
-        (
-            # Master switch for real writes to the inverter — off means the
-            # dispatch coordinator only ever computes and logs its decision.
-            # Deliberately last in the form and defaulting off.
-            vol.Optional(
-                CONF_CONTROL_ENABLED,
-                default=options.get(CONF_CONTROL_ENABLED, DEFAULT_CONTROL_ENABLED),
-            ),
-            selector.BooleanSelector(),
-        ),
-    ], []
-
-
 # Options menu sections, in menu order: step_id -> field builder.
 OPTIONS_SECTIONS = {
     "installation": _installation_fields,
     "prices": _prices_fields,
     "solar_forecast": _solar_forecast_fields,
     "meter": _meter_fields,
-    "extra_pv": _extra_pv_fields,
-    "ev_charger": _ev_charger_fields,
-    "control": _control_fields,
 }
 
 # Options a section's newer field replaced: dropped when that section is
@@ -584,24 +588,12 @@ _SUPERSEDED_KEYS = {
         CONF_PRICE_SOURCE_PRIMARY,
     },
     "meter": {CONF_HOUSE_LOAD_POWER_ENTITY},
-    "ev_charger": {CONF_EV_CHARGER_POWER_ENTITY, CONF_EV_CHARGER_ENERGY_ENTITY},
-    "extra_pv": {CONF_EXTRA_PV_POWER_ENTITY},
     "solar_forecast": {
         CONF_FORECAST_SOLAR_ENTRIES,
         CONF_SOLCAST_ENTRIES,
         CONF_SOLAR_SOURCE_PRIMARY,
     },
 }
-
-
-# The old Modbus switching of the extra source, dropped once a switch is picked.
-_EXTRA_PV_MODBUS_KEYS = (
-    CONF_EXTRA_PV_MODBUS_HUB,
-    CONF_EXTRA_PV_MODBUS_SLAVE,
-    CONF_EXTRA_PV_MODBUS_ADDRESS,
-    CONF_EXTRA_PV_MODBUS_ON_VALUE,
-    CONF_EXTRA_PV_MODBUS_OFF_VALUE,
-)
 
 
 def _field_keys(schema: vol.Schema) -> set[str]:
@@ -639,6 +631,9 @@ class AlphaEssLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for AlphaESSControl."""
 
     VERSION = 1
+    # 1.2: the PV installation moved from the options to a subentry; 1.3:
+    # each EV charger too; 1.4: each other consumer too.
+    MINOR_VERSION = 4
 
     @staticmethod
     def async_get_options_flow(
@@ -646,6 +641,19 @@ class AlphaEssLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> AlphaEssLocalOptionsFlow:
         """Get the options flow for this handler."""
         return AlphaEssLocalOptionsFlow()
+
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(
+        cls, config_entry: config_entries.ConfigEntry
+    ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
+        """PV installations, EV chargers and other consumers are added one by
+        one, as subentries."""
+        return {
+            SUBENTRY_PV_INSTALLATION: PvInstallationSubentryFlow,
+            SUBENTRY_EV_CHARGER: EvChargerSubentryFlow,
+            SUBENTRY_CONSUMER: ConsumerSubentryFlow,
+        }
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -716,25 +724,10 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
     ) -> config_entries.ConfigFlowResult:
         return self._async_section("solar_forecast", user_input)
 
-    async def async_step_extra_pv(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        return self._async_section("extra_pv", user_input)
-
-    async def async_step_ev_charger(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        return self._async_section("ev_charger", user_input)
-
     async def async_step_meter(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         return self._async_section("meter", user_input)
-
-    async def async_step_control(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
-        return self._async_section("control", user_input)
 
     def _async_section(
         self, section: str, user_input: dict[str, Any] | None
@@ -757,25 +750,74 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
                 if key not in section_keys
             }
             data.update(user_input)
-            if data.get(CONF_EXTRA_PV_SWITCH_ENTITY):
-                # The switch replaces the old Modbus hub settings.
-                for key in _EXTRA_PV_MODBUS_KEYS:
-                    data.pop(key, None)
             data[CONF_PV_POWER] = data.get(CONF_PV_PANEL_WP, 0) * data.get(CONF_PV_PANEL_COUNT, 0)
-            data[CONF_EXTRA_PV_POWER_CAPACITY] = data.get(CONF_EXTRA_PV_PANEL_WP, 0) * data.get(
-                CONF_EXTRA_PV_PANEL_COUNT, 0
-            )
             return self.async_create_entry(title="", data=data)
 
+        note = _SECTION_NOTES.get(section)
         return self.async_show_form(
             step_id=section,
             data_schema=schema,
             description_placeholders={
                 "missing_source_note": _missing_source_note(self.hass, missing),
-                "sources_note": (
-                    note(self.hass, self.config_entry.options)
-                    if (note := _SECTION_NOTES.get(section))
-                    else ""
-                ),
+                "sources_note": note(self.hass, self.config_entry.options) if note else "",
             },
         )
+
+
+class _SubentryFlow(config_entries.ConfigSubentryFlow):
+    """Add or change one subentry: a name and the fields `_schema` builds."""
+
+    def _schema(self, current: Mapping[str, Any]) -> vol.Schema:
+        raise NotImplementedError
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        return self._async_installation("user", user_input, {})
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.SubentryFlowResult:
+        subentry = self._get_reconfigure_subentry()
+        return self._async_installation(
+            "reconfigure", user_input, {**subentry.data, CONF_NAME: subentry.title}
+        )
+
+    def _async_installation(
+        self, step_id: str, user_input: dict[str, Any] | None, current: Mapping[str, Any]
+    ) -> config_entries.SubentryFlowResult:
+        schema = self._schema(current)
+        if user_input is None:
+            return self.async_show_form(step_id=step_id, data_schema=schema)
+
+        data = _flatten_blocks(schema, user_input)
+        name = data.pop(CONF_NAME)
+        if step_id == "user":
+            return self.async_create_entry(title=name, data=data)
+        # Not async_update_and_abort: that refuses an entry with an update
+        # listener, which reloads the entry on this change itself.
+        self.hass.config_entries.async_update_subentry(
+            self._get_entry(), self._get_reconfigure_subentry(), title=name, data=data
+        )
+        return self.async_abort(reason="reconfigure_successful")
+
+
+class PvInstallationSubentryFlow(_SubentryFlow):
+    """Add or change one PV installation (see extra_pv.py)."""
+
+    def _schema(self, current: Mapping[str, Any]) -> vol.Schema:
+        return _pv_installation_schema(self.hass, current)
+
+
+class EvChargerSubentryFlow(_SubentryFlow):
+    """Add or change one EV charger (see consumers.py)."""
+
+    def _schema(self, current: Mapping[str, Any]) -> vol.Schema:
+        return _ev_charger_schema(self.hass, current)
+
+
+class ConsumerSubentryFlow(_SubentryFlow):
+    """Add or change one other consumer (see consumers.py)."""
+
+    def _schema(self, current: Mapping[str, Any]) -> vol.Schema:
+        return _consumer_schema(self.hass, current)

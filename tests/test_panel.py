@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from homeassistant.config_entries import ConfigSubentry
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
@@ -19,6 +20,7 @@ from custom_components.alpha_ess_local.frontend import (
     SETTABLE_OPTIONS,
     _is_our_panel,
     _ws_set_option,
+    _ws_set_provider_hours,
     day_details,
     extra_pv_string_entities,
     source_list,
@@ -233,6 +235,25 @@ def test_set_option_requires_admin(hass):
     connection.send_result.assert_not_called()
 
 
+def test_set_provider_hours_stores_them_as_the_form_does(hass):
+    entry = MockConfigEntry(domain=DOMAIN, options={"allow_provider_control_hours": ["3"]})
+    entry.add_to_hass(hass)
+    connection = _ws_connection()
+
+    with patch.object(hass.config_entries, "async_loaded_entries", return_value=[entry]):
+        _ws_set_provider_hours(hass, connection, {"id": 1, "type": "x", "hours": [17, 3, 17]})
+
+    assert entry.options == {"allow_provider_control_hours": ["3", "17"]}
+    connection.send_result.assert_called_once_with(1, {"hours": [3, 17]})
+
+
+def test_set_provider_hours_requires_admin(hass):
+    connection = _ws_connection(is_admin=False)
+
+    with pytest.raises(Unauthorized):
+        _ws_set_provider_hours(hass, connection, {"id": 1, "type": "x", "hours": [3]})
+
+
 # --- price/solar source order ---------------------------------------------------
 
 
@@ -327,7 +348,7 @@ async def test_extra_pv_strings_none_for_a_non_sma_source(hass):
 def _loaded_entry(hass, options):
     entry = MockConfigEntry(domain=DOMAIN, options=options)
     entry.add_to_hass(hass)
-    entry.runtime_data = SimpleNamespace(options=dict(options))
+    entry.runtime_data = SimpleNamespace(options=dict(options), subentries={})
     return entry
 
 
@@ -354,6 +375,24 @@ async def test_other_option_change_reloads(hass):
     entry = _loaded_entry(hass, {"extra_pv_control_enabled": False, "pv_power": 9800})
     hass.config_entries.async_update_entry(
         entry, options={"extra_pv_control_enabled": True, "pv_power": 10000}
+    )
+
+    with patch.object(hass.config_entries, "async_reload") as reload:
+        await async_reload_entry(hass, entry)
+
+    reload.assert_called_once_with(entry.entry_id)
+
+
+async def test_pv_installation_change_reloads(hass):
+    entry = _loaded_entry(hass, {"extra_pv_control_enabled": False})
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={"extra_pv_power_entities": ["sensor.sma"]},
+            subentry_type="pv_installation",
+            title="Garage",
+            unique_id=None,
+        ),
     )
 
     with patch.object(hass.config_entries, "async_reload") as reload:

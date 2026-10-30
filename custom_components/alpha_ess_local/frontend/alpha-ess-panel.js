@@ -88,7 +88,7 @@ const LIVE_KEYS = ["battery_soc", "pv_power", "total_pv_power", "grid_power", "b
 
 const TABS = [
   { key: "overview", label: "Overzicht", icon: "mdi:view-dashboard-outline" },
-  { key: "devices", label: "Omvormers", icon: "mdi:solar-power-variant-outline" },
+  { key: "devices", label: "Installaties", icon: "mdi:solar-power-variant-outline" },
   { key: "control", label: "Bediening", icon: "mdi:tune-variant" },
   { key: "history", label: "Historie", icon: "mdi:history" },
 ];
@@ -596,7 +596,7 @@ class AlphaEssPanel extends HTMLElement {
       // option toggles and settings don't vanish until the next refresh.
       console.debug("alpha-ess-panel: panel_status failed", err);
     }
-    const evEnergy = this._evEnergyIds().join(",");
+    const evEnergy = [...this._evEnergyIds(), ...this._pvEnergyIds(), ...this._consumerEnergyIds()].join(",");
     if (evEnergy !== this._loadedEvEnergy) {
       this._loadedEvEnergy = evEnergy;
       if (evEnergy) this._loadHistory();
@@ -613,6 +613,16 @@ class AlphaEssPanel extends HTMLElement {
     return (this._status && this._status.ev_charger_energy_entities) || [];
   }
 
+  // The PV installations' total-production counters (kWh).
+  _pvEnergyIds() {
+    return (this._status && this._status.extra_pv_energy_entities) || [];
+  }
+
+  // The other consumers' total-energy counters (kWh).
+  _consumerEnergyIds() {
+    return ((this._status && this._status.consumers) || []).map((c) => c.energy).filter(Boolean);
+  }
+
   async _loadHistory() {
     if (!this._hass || !this._entities) return;
     const keys = ["battery_soc", "pv_power", "total_pv_power", "grid_power", "battery_power", "extra_pv_power"];
@@ -621,7 +631,12 @@ class AlphaEssPanel extends HTMLElement {
     ];
     const counterIds = [
       ...new Set(
-        [...this._devices.flatMap((d) => Object.values(COUNTERS).map((k) => d.entities[k])), ...this._evEnergyIds()].filter(
+        [
+          ...this._devices.flatMap((d) => Object.values(COUNTERS).map((k) => d.entities[k])),
+          ...this._evEnergyIds(),
+          ...this._pvEnergyIds(),
+          ...this._consumerEnergyIds(),
+        ].filter(
           Boolean
         )
       ),
@@ -844,6 +859,8 @@ class AlphaEssPanel extends HTMLElement {
     root.addEventListener("click", (ev) => {
       const sw = ev.composedPath().find((el) => el.classList && el.classList.contains("switch"));
       if (sw) this._toggle(sw);
+      const hour = ev.composedPath().find((el) => el.dataset && el.dataset.hour !== undefined);
+      if (hour) this._toggleHour(hour);
     });
     root.addEventListener("pointerdown", (ev) => {
       if (ev.composedPath().some((el) => el.dataset && el.dataset.number)) this._dragging = true;
@@ -1033,7 +1050,7 @@ class AlphaEssPanel extends HTMLElement {
         key: "ev",
         color: SCENE_COLOR.ev,
         value: fmtW(ev),
-        name: this._evPowerIds().length > 1 ? "LAADPALEN" : "LAADPAAL",
+        name: this._evPowerIds().length > 1 ? "EV-LADERS" : "EV-LADER",
         entity: this._evPowerIds()[0],
         sub: this._evTodayTotalKwh() === null ? "" : `${fmtNum(this._evTodayTotalKwh(), 2)} kWh vandaag`,
       },
@@ -1106,7 +1123,7 @@ class AlphaEssPanel extends HTMLElement {
       const state = this._hass.states[id];
       const name = state && state.attributes.friendly_name;
       rows.push({
-        label: evIds.length > 1 ? `Geladen: ${name || id}` : "Laadpaal geladen",
+        label: evIds.length > 1 ? `Geladen: ${name || id}` : "EV-lader geladen",
         value: this._evTodayKwh(id),
         color: SCENE_COLOR.ev,
         entityId: id,
@@ -1249,7 +1266,7 @@ class AlphaEssPanel extends HTMLElement {
       sourcesRow("Netmeting", meter && meter.meters, "huisverbruik, dag/nachttarief, regelen van netladen"),
       sourcesRow("Grens netladen", meter && meter.caps, "de hoogste geldt (maandpiek in hele kW)"),
       row(
-        "Extra PV-sturing negatieve prijzen",
+        "PV-sturing negatieve prijzen",
         !st ? "–" : st.extra_pv_unreachable ? "Niet bereikbaar" : st.extra_pv_control_enabled ? "Actief" : "Uit",
         !st ? "" : st.extra_pv_unreachable ? "error" : tone(st.extra_pv_control_enabled)
       ),
@@ -1539,7 +1556,42 @@ class AlphaEssPanel extends HTMLElement {
     }
     const chargers = (this._status && this._status.ev_chargers) || [];
     chargers.forEach((group, i) => cards.push(this._evChargerCard(group, i, chargers.length)));
+    const consumers = (this._status && this._status.consumers) || [];
+    consumers.forEach((consumer) => cards.push(this._consumerCard(consumer)));
     return cards.join("");
+  }
+
+  // One card per other consumer (a heat pump, a pool, ...), under the EV
+  // chargers: its power now and its kWh today.
+  _consumerCard(consumer) {
+    const s = consumer.power && this._hass.states[consumer.power];
+    let power = s ? num(s.state) : null;
+    if (power !== null && s.attributes.unit_of_measurement === "kW") power *= 1000;
+    const running = power !== null && power > 10;
+    return `
+      <section class="card device">
+        <div class="device-head">
+          <ha-icon icon="${esc(consumer.icon || "mdi:power-plug-outline")}"></ha-icon>
+          <div class="device-name">${esc(consumer.name)}</div>
+          <div class="spacer"></div>
+          <span class="${running ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : running ? "Aan" : "Uit"}</span>
+        </div>
+        ${
+          consumer.power
+            ? `<div class="device-main wide" data-entity="${esc(consumer.power)}">
+          <div class="big ${running ? "accent" : "muted"}">${fmtW(power)}</div>
+          <div class="muted">Vermogen</div>
+        </div>`
+            : ""
+        }
+        ${
+          consumer.energy
+            ? `<div class="section-title">Energie vandaag</div>${this._energyRows([
+                { label: "Verbruikt", value: this._evTodayKwh(consumer.energy), color: SCENE_COLOR.house, entity: consumer.energy },
+              ])}`
+            : ""
+        }
+      </section>`;
   }
 
   // One card per EV charger (consumers.py's ev_charger_groups: its sensors
@@ -1552,7 +1604,7 @@ class AlphaEssPanel extends HTMLElement {
       if (v !== null) power = (power || 0) + (s.attributes.unit_of_measurement === "kW" ? v * 1000 : v);
     }
     const charging = power !== null && power > 50;
-    const name = group.name || (count > 1 ? `Laadpaal ${index + 1}` : "Laadpaal");
+    const name = group.name || (count > 1 ? `EV-lader ${index + 1}` : "EV-lader");
     const energy = group.energy.map((id) => ({
       label: group.energy.length > 1 ? (this._hass.states[id] || {}).attributes?.friendly_name || id : "Geladen",
       value: this._evTodayKwh(id),
@@ -1575,7 +1627,7 @@ class AlphaEssPanel extends HTMLElement {
     return `
       <section class="card device">
         <div class="device-head">
-          <ha-icon icon="mdi:ev-station"></ha-icon>
+          <ha-icon icon="${esc(group.icon || "mdi:ev-station")}"></ha-icon>
           <div class="device-name">${esc(name)}</div>
           <div class="spacer"></div>
           <span class="${charging ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : charging ? "Laadt" : "Laadt niet"}</span>
@@ -1818,16 +1870,22 @@ class AlphaEssPanel extends HTMLElement {
     const capacity = num(st.extra_pv_power_capacity);
     const usage = capacity && power ? Math.min(100, (power / capacity) * 100) : 0;
     const dayStart = startOfDay().getTime();
-    const todayKwh = this._todayPower
-      ? this._todayPower.extra_pv_wh / 1000
-      : integrateWh(this._historyOf(e, "extra_pv_power"), dayStart, Date.now()) / 1000;
+    // From the installations' production counters when all are known, else
+    // the power summed over the day.
+    const counters = this._pvEnergyIds().map((id) => this._dailyTotalsById(id)[dayStart] ?? null);
+    const todayKwh =
+      counters.length && counters.every((v) => v !== null)
+        ? counters.reduce((sum, v) => sum + v, 0)
+        : this._todayPower
+          ? this._todayPower.extra_pv_wh / 1000
+          : integrateWh(this._historyOf(e, "extra_pv_power"), dayStart, Date.now()) / 1000;
     const producing = power !== null && power > 15;
 
     return `
       <section class="card device">
         <div class="device-head">
-          <ha-icon icon="mdi:solar-panel"></ha-icon>
-          <div class="device-name">Extra PV-installatie</div>
+          <ha-icon icon="${esc(st.extra_pv_icon || "mdi:solar-panel")}"></ha-icon>
+          <div class="device-name">${esc((st.extra_pv_names || []).join(" + ") || "PV-installatie")}</div>
           <div class="spacer"></div>
           <span class="${producing ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : producing ? "Produceert" : "Rust"}</span>
         </div>
@@ -1841,7 +1899,7 @@ class AlphaEssPanel extends HTMLElement {
         ${this._mpptSection(st.extra_pv_string_entities || [])}
 
         <div class="section-title">Energie vandaag</div>
-        ${this._energyRows([{ label: "Opgewekt", value: this._history ? todayKwh : null, color: COLOR.solar, entity: e.extra_pv_power }])}
+        ${this._energyRows([{ label: "Opgewekt", value: this._history ? todayKwh : null, color: COLOR.solar, entity: this._pvEnergyIds()[0] || e.extra_pv_power }])}
 
         <div class="section-title">Sturing bij negatieve prijzen</div>
         <div class="kv-grid">
@@ -1853,15 +1911,20 @@ class AlphaEssPanel extends HTMLElement {
       </section>`;
   }
 
-  // The switch that turns the extra source off at negative prices, with
-  // its state -- or, set up before the switch, the Modbus hub.
+  // The switches that turn the installations off at negative prices, with
+  // their state -- or, set up before the switches, the Modbus hub.
   _extraPvSwitchRow(st) {
-    if (st.extra_pv_switch) {
-      const s = this._hass.states[st.extra_pv_switch];
-      const state = !s ? "Niet gevonden" : s.state === "on" ? "Aan" : s.state === "off" ? "Uit" : "Niet beschikbaar";
-      return `<div class="kv" data-entity="${esc(st.extra_pv_switch)}"><span>${esc(
-        (s && s.attributes.friendly_name) || st.extra_pv_switch
-      )}</span><span class="${s && s.state === "on" ? "accent" : "muted"}">${state}</span></div>`;
+    const switches = st.extra_pv_switches || [];
+    if (switches.length) {
+      return switches
+        .map((id) => {
+          const s = this._hass.states[id];
+          const state = !s ? "Niet gevonden" : s.state === "on" ? "Aan" : s.state === "off" ? "Uit" : "Niet beschikbaar";
+          return `<div class="kv" data-entity="${esc(id)}"><span>${esc(
+            (s && s.attributes.friendly_name) || id
+          )}</span><span class="${s && s.state === "on" ? "accent" : "muted"}">${state}</span></div>`;
+        })
+        .join("");
     }
     return `<div class="kv"><span>Schakelaar</span><span>${esc(
       st.extra_pv_modbus_hub ? `Modbus hub ${st.extra_pv_modbus_hub}` : "Niet ingesteld"
@@ -1908,9 +1971,10 @@ class AlphaEssPanel extends HTMLElement {
         toggle({
           option: "extra_pv_control_enabled",
           icon: "mdi:solar-panel",
-          label: "Extra PV-sturing negatieve prijzen",
-          info: "Schakelt de extra PV-installatie uit bij negatieve prijzen, zodra de batterij haar doel-SOC heeft bereikt.",
+          label: "PV-sturing negatieve prijzen",
+          info: "Schakelt de PV-installatie uit bij negatieve prijzen, zodra de batterij haar doel-SOC heeft bereikt.",
         }),
+        this._providerHours(st),
       ].join("") || '<div class="empty">Status laden…</div>'
     );
 
@@ -2014,6 +2078,41 @@ class AlphaEssPanel extends HTMLElement {
     return rows
       ? `<div class="section-title">Limieten</div><p class="hint">Geldt vanaf het volgende hele uur, als de planning opnieuw rekent.</p><div class="limits">${rows}</div>`
       : "";
+  }
+
+  // The hours the energy provider may override the schedule in: one button
+  // per hour, on = allowed.
+  _providerHours(st) {
+    if (!st || !Array.isArray(st.allow_provider_control_hours)) return "";
+    const allowed = new Set(st.allow_provider_control_hours);
+    const hours = Array.from({ length: 24 }, (_, h) => {
+      const on = allowed.has(h);
+      return `<button class="hour ${on ? "on" : ""}" data-hour="${h}" aria-pressed="${on}">${pad2(h)}</button>`;
+    }).join("");
+    return `
+      <div class="ctl">
+        ${this._ctlLabel({
+          icon: "mdi:clock-outline",
+          label: "Uren waarin de leverancier het schema mag overschrijven",
+          info: "In deze uren laat de sturing het staan als je energieleverancier de batterij zelf aanstuurt (bijvoorbeeld bij onbalans). Buiten deze uren zet de sturing het schema terug.",
+        })}
+        <div class="hour-grid">${hours}</div>
+      </div>`;
+  }
+
+  async _toggleHour(el) {
+    const hour = Number(el.dataset.hour);
+    const current = (this._status && this._status.allow_provider_control_hours) || [];
+    const hours = current.includes(hour) ? current.filter((h) => h !== hour) : [...current, hour].sort((a, b) => a - b);
+    try {
+      await this._hass.callWS({ type: `${DOMAIN}/set_provider_hours`, hours });
+      // Applies live (no reload): show it right away.
+      if (this._status) this._status = { ...this._status, allow_provider_control_hours: hours };
+      this._renderAll();
+      this._loadStatus();
+    } catch (err) {
+      window.alert(`Mislukt: ${err.message || err}`);
+    }
   }
 
   _ctlLabel(spec) {
@@ -2967,6 +3066,19 @@ const STYLE = `
   /* control tab */
   .ctl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px 48px; align-items: start; }
   .ctl { padding: 10px 0 14px; }
+  .hour-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin-top: 10px; }
+  .hour {
+    padding: 5px 0;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+  }
+  .hour.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .limits { display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px; }
   @media (max-width: 700px) { .limits { grid-template-columns: 1fr; } }
   .ctl-label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 15px; font-weight: 300; }

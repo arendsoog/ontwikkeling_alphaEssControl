@@ -26,10 +26,7 @@
                     "installation": "Installation",
                     "prices": "Prices",
                     "solar_forecast": "Solar forecast",
-                    "extra_pv": "Additional energy sources",
-                    "ev_charger": "Excluded consumption",
-                    "meter": "Smart meter",
-                    "control": "Control"
+                    "meter": "P1 meter"
                 }
             },
             "installation": {
@@ -62,63 +59,8 @@
                     "solar_forecast_entities": "Locations (in order; drag to change)"
                 }
             },
-            "extra_pv": {
-                "title": "Additional energy sources",
-                "description": "An energy source next to the AlphaESS, such as a second solar installation. Its power counts in the energy flow, the house load and learning the solar forecast.",
-                "sections": {
-                    "measurement": {
-                        "name": "Measurement",
-                        "data": {
-                            "extra_pv_power_entities": "Power",
-                            "extra_pv_string_entities": "Power per MPPT (string)"
-                        },
-                        "data_description": {
-                            "extra_pv_power_entities": "The power the source delivers right now, e.g. the inverter's 'AC power'. Several sensors are summed (a second inverter, micro inverters, or the power per string).",
-                            "extra_pv_string_entities": "Panel display only: the power per MPPT input of the inverter, i.e. per line of panels (string), e.g. 'DC power string 1' and 'string 2'. Empty with the SMA integration: its own strings."
-                        }
-                    },
-                    "installation": {
-                        "name": "Installation",
-                        "data": {
-                            "extra_pv_panel_wp": "Wp per panel",
-                            "extra_pv_panel_count": "Number of panels"
-                        },
-                        "data_description": {
-                            "extra_pv_panel_wp": "One panel's peak power.",
-                            "extra_pv_panel_count": "With Wp per panel the source's peak power: for the bar in the panel, and to estimate its power when the reading is gone."
-                        }
-                    },
-                    "control": {
-                        "name": "Control at negative prices",
-                        "data": {
-                            "extra_pv_control_enabled": "Enable control",
-                            "extra_pv_switch_entity": "Switch"
-                        },
-                        "data_description": {
-                            "extra_pv_control_enabled": "Turns the source off at negative prices and on again after. Only switches when battery control is on too.",
-                            "extra_pv_switch_entity": "A switch that turns the source on (producing) and off, e.g. a Modbus switch on the inverter's power register."
-                        }
-                    }
-                }
-            },
-            "ev_charger": {
-                "title": "Excluded consumption",
-                "description": "Consumers kept out of the learned house load because they're big and irregular. Their power is taken off the measured house load before the load per hour is learned. Not used for control. Add as many as you have with 'Add entity'.",
-                "data": {
-                    "ev_charger_power_entities": "EV chargers: power",
-                    "ev_charger_energy_entities": "EV chargers: total energy",
-                    "ev_charger_phase_entities": "EV chargers: power per phase",
-                    "excluded_load_entities": "Other consumers: power"
-                },
-                "data_description": {
-                    "ev_charger_power_entities": "Each EV charger's charging power. Shown together in the panel's energy flow.",
-                    "ev_charger_energy_entities": "Each EV charger's total charged energy (an increasing kWh counter). Shown per charger in the panel's daily totals. Optional.",
-                    "ev_charger_phase_entities": "Each EV charger's power per phase (L1, L2, L3), for its card on the Inverters tab. Optional.",
-                    "excluded_load_entities": "The power of other big consumers, such as a heat pump. For the learning only, not in the panel."
-                }
-            },
             "meter": {
-                "title": "Smart meter",
+                "title": "P1 meter",
                 "description": "Pick your smart (P1) meter's sensors here. They give the house load and the grid import the grid charge is regulated on. Without a meter the inverter's own grid reading is used.",
                 "data": {
                     "grid_import_power_entity": "Grid import power",
@@ -132,37 +74,267 @@
                     "grid_tariff_entity": "The current tariff, e.g. 'Active tariff', for the day or night network fee. Optional.",
                     "peak_load_this_month_entity": "This month's highest 15-minute peak, e.g. 'Maximum demand current month' (Belgian meters only). The grid charge may go up to this peak. Optional."
                 }
+            }
+        }
+    },
+    "config_subentries": {
+        "pv_installation": {
+            "initiate_flow": {
+                "user": "Add PV installation"
             },
-            "control": {
-                "title": "Control",
-                "description": "Scheduler behaviour and the master switch for battery control.",
-                "data": {
-                    "allow_provider_control_hours": "Hours where the provider may override the schedule",
-                    "persist_daily_charge_limit": "At most one full battery a day, solar and grid together (off: no daily limit; discharge for own use only)",
-                    "control_enabled": "Enable battery control (writes real commands to the inverter)"
+            "entry_type": "PV installation",
+            "step": {
+                "user": {
+                    "title": "Add PV installation",
+                    "description": "A solar installation next to the AlphaESS, with its own inverter. Its power counts in the energy flow, the house load and the learning of the solar forecast. Several installations are added up.",
+                    "data": {
+                        "name": "Name",
+                        "icon": "Icon"
+                    },
+                    "data_description": {
+                        "name": "What the installation is called, in the panel and in the list of installations.",
+                        "icon": "The icon on its card in the panel. Optional."
+                    },
+                    "sections": {
+                        "measurement": {
+                            "name": "Measurement",
+                            "data": {
+                                "extra_pv_power_entity": "Power",
+                                "extra_pv_energy_entity": "Total produced",
+                                "extra_pv_string_entities": "Power per MPPT (string)"
+                            },
+                            "data_description": {
+                                "extra_pv_power_entity": "The power the installation delivers right now, e.g. the inverter's 'AC power'.",
+                                "extra_pv_energy_entity": "The installation's total produced energy (a rising counter in kWh), e.g. the inverter's 'Total yield'. For 'Produced today' in the panel. Optional: without it the panel works it out from the power.",
+                                "extra_pv_string_entities": "Panel display only: the power per MPPT input of the inverter, i.e. per line of panels (string), e.g. 'DC power string 1' and 'string 2'. Empty with the SMA integration: its own strings."
+                            }
+                        },
+                        "installation": {
+                            "name": "Installation",
+                            "data": {
+                                "extra_pv_panel_wp": "Wp per panel",
+                                "extra_pv_panel_count": "Number of panels"
+                            },
+                            "data_description": {
+                                "extra_pv_panel_wp": "One panel's peak power.",
+                                "extra_pv_panel_count": "With Wp per panel the source's peak power: for the bar in the panel, and to estimate its power when the reading is gone."
+                            }
+                        },
+                        "control": {
+                            "name": "Control at negative prices",
+                            "data": {
+                                "extra_pv_switch_entity": "Switch"
+                            },
+                            "data_description": {
+                                "extra_pv_switch_entity": "A switch that turns the source on (producing) and off, e.g. a Modbus switch on the inverter's power register. The control itself is turned on and off in the panel, under Controls."
+                            }
+                        }
+                    }
+                },
+                "reconfigure": {
+                    "title": "Change PV installation",
+                    "description": "A solar installation next to the AlphaESS, with its own inverter. Its power counts in the energy flow, the house load and the learning of the solar forecast. Several installations are added up.",
+                    "data": {
+                        "name": "Name",
+                        "icon": "Icon"
+                    },
+                    "data_description": {
+                        "name": "What the installation is called, in the panel and in the list of installations.",
+                        "icon": "The icon on its card in the panel. Optional."
+                    },
+                    "sections": {
+                        "measurement": {
+                            "name": "Measurement",
+                            "data": {
+                                "extra_pv_power_entity": "Power",
+                                "extra_pv_energy_entity": "Total produced",
+                                "extra_pv_string_entities": "Power per MPPT (string)"
+                            },
+                            "data_description": {
+                                "extra_pv_power_entity": "The power the installation delivers right now, e.g. the inverter's 'AC power'.",
+                                "extra_pv_energy_entity": "The installation's total produced energy (a rising counter in kWh), e.g. the inverter's 'Total yield'. For 'Produced today' in the panel. Optional: without it the panel works it out from the power.",
+                                "extra_pv_string_entities": "Panel display only: the power per MPPT input of the inverter, i.e. per line of panels (string), e.g. 'DC power string 1' and 'string 2'. Empty with the SMA integration: its own strings."
+                            }
+                        },
+                        "installation": {
+                            "name": "Installation",
+                            "data": {
+                                "extra_pv_panel_wp": "Wp per panel",
+                                "extra_pv_panel_count": "Number of panels"
+                            },
+                            "data_description": {
+                                "extra_pv_panel_wp": "One panel's peak power.",
+                                "extra_pv_panel_count": "With Wp per panel the source's peak power: for the bar in the panel, and to estimate its power when the reading is gone."
+                            }
+                        },
+                        "control": {
+                            "name": "Control at negative prices",
+                            "data": {
+                                "extra_pv_switch_entity": "Switch"
+                            },
+                            "data_description": {
+                                "extra_pv_switch_entity": "A switch that turns the source on (producing) and off, e.g. a Modbus switch on the inverter's power register. The control itself is turned on and off in the panel, under Controls."
+                            }
+                        }
+                    }
                 }
+            },
+            "abort": {
+                "reconfigure_successful": "The PV installation was saved."
+            }
+        },
+        "ev_charger": {
+            "initiate_flow": {
+                "user": "Add EV charger"
+            },
+            "entry_type": "EV charger",
+            "step": {
+                "user": {
+                    "title": "Add EV charger",
+                    "description": "An EV charger. Shown in the panel: in the energy flow and on its own card on the Installations tab.",
+                    "data": {
+                        "name": "Name",
+                        "icon": "Icon",
+                        "ev_charger_power_entity": "Power",
+                        "ev_charger_energy_entity": "Total charged",
+                        "ev_charger_phase_entities": "Power per phase",
+                        "exclude_from_learning": "Keep out of the learned consumption"
+                    },
+                    "data_description": {
+                        "name": "What the EV charger is called, in the panel and in the list of EV chargers.",
+                        "icon": "The icon on its card in the panel. Optional.",
+                        "ev_charger_power_entity": "The EV charger's charging power right now.",
+                        "ev_charger_energy_entity": "The total charged energy (a rising counter in kWh), for 'charged today' in the panel. Optional.",
+                        "ev_charger_phase_entities": "The power per phase (L1, L2, L3), for the EV charger's card. Optional.",
+                        "exclude_from_learning": "On: its power is taken off the house load before the load per hour is learned, for big, irregular consumers (car, pool, heat pump). Off: it counts as ordinary house load (like a cooktop)."
+                    }
+                },
+                "reconfigure": {
+                    "title": "Change EV charger",
+                    "description": "An EV charger. Shown in the panel: in the energy flow and on its own card on the Installations tab.",
+                    "data": {
+                        "name": "Name",
+                        "icon": "Icon",
+                        "ev_charger_power_entity": "Power",
+                        "ev_charger_energy_entity": "Total charged",
+                        "ev_charger_phase_entities": "Power per phase",
+                        "exclude_from_learning": "Keep out of the learned consumption"
+                    },
+                    "data_description": {
+                        "name": "What the EV charger is called, in the panel and in the list of EV chargers.",
+                        "icon": "The icon on its card in the panel. Optional.",
+                        "ev_charger_power_entity": "The EV charger's charging power right now.",
+                        "ev_charger_energy_entity": "The total charged energy (a rising counter in kWh), for 'charged today' in the panel. Optional.",
+                        "ev_charger_phase_entities": "The power per phase (L1, L2, L3), for the EV charger's card. Optional.",
+                        "exclude_from_learning": "On: its power is taken off the house load before the load per hour is learned, for big, irregular consumers (car, pool, heat pump). Off: it counts as ordinary house load (like a cooktop)."
+                    }
+                }
+            },
+            "abort": {
+                "reconfigure_successful": "The EV charger was saved."
+            }
+        },
+        "consumer": {
+            "initiate_flow": {
+                "user": "Add consumer"
+            },
+            "entry_type": "Consumer",
+            "step": {
+                "user": {
+                    "title": "Add consumer",
+                    "description": "A consumer in the house, such as a heat pump, pool or cooktop.",
+                    "data": {
+                        "name": "Name",
+                        "icon": "Icon",
+                        "consumer_power_entity": "Power",
+                        "consumer_energy_entity": "Total used",
+                        "exclude_from_learning": "Keep out of the learned consumption"
+                    },
+                    "data_description": {
+                        "name": "What the consumer is called, in the list of consumers.",
+                        "icon": "The icon on its card in the panel. Optional.",
+                        "consumer_power_entity": "The power the consumer uses right now.",
+                        "consumer_energy_entity": "The total used energy (a rising counter in kWh). Optional.",
+                        "exclude_from_learning": "On: its power is taken off the house load before the load per hour is learned, for big, irregular consumers (car, pool, heat pump). Off: it counts as ordinary house load (like a cooktop)."
+                    }
+                },
+                "reconfigure": {
+                    "title": "Change consumer",
+                    "description": "A consumer in the house, such as a heat pump, pool or cooktop.",
+                    "data": {
+                        "name": "Name",
+                        "icon": "Icon",
+                        "consumer_power_entity": "Power",
+                        "consumer_energy_entity": "Total used",
+                        "exclude_from_learning": "Keep out of the learned consumption"
+                    },
+                    "data_description": {
+                        "name": "What the consumer is called, in the list of consumers.",
+                        "icon": "The icon on its card in the panel. Optional.",
+                        "consumer_power_entity": "The power the consumer uses right now.",
+                        "consumer_energy_entity": "The total used energy (a rising counter in kWh). Optional.",
+                        "exclude_from_learning": "On: its power is taken off the house load before the load per hour is learned, for big, irregular consumers (car, pool, heat pump). Off: it counts as ordinary house load (like a cooktop)."
+                    }
+                }
+            },
+            "abort": {
+                "reconfigure_successful": "The consumer was saved."
             }
         }
     },
     "entity": {
         "sensor": {
-            "battery_soc": { "name": "Battery state of charge" },
-            "pv_power": { "name": "PV power roof" },
-            "pv1_power": { "name": "PV1 power" },
-            "pv2_power": { "name": "PV2 power" },
-            "pv3_power": { "name": "PV3 power" },
-            "grid_power": { "name": "Grid power" },
-            "battery_power": { "name": "Battery power" },
-            "total_energy_feed_to_grid": { "name": "Total energy fed to grid" },
-            "total_energy_consume_from_grid": { "name": "Total energy consumed from grid" },
-            "pv_total_energy_feed_to_grid": { "name": "PV total energy fed to grid" },
-            "pv_total_energy_consume_from_grid": { "name": "PV total energy consumed from grid" },
-            "pv_total_energy": { "name": "PV total energy" },
-            "battery_total_energy_charge": { "name": "Battery total energy charge" },
-            "battery_total_energy_discharge": { "name": "Battery total energy discharge" },
-            "price_current_hour": { "name": "Current hour price" },
-            "price_lowest_today": { "name": "Lowest price today" },
-            "price_highest_today": { "name": "Highest price today" },
+            "battery_soc": {
+                "name": "Battery state of charge"
+            },
+            "pv_power": {
+                "name": "PV power roof"
+            },
+            "pv1_power": {
+                "name": "PV1 power"
+            },
+            "pv2_power": {
+                "name": "PV2 power"
+            },
+            "pv3_power": {
+                "name": "PV3 power"
+            },
+            "grid_power": {
+                "name": "Grid power"
+            },
+            "battery_power": {
+                "name": "Battery power"
+            },
+            "total_energy_feed_to_grid": {
+                "name": "Total energy fed to grid"
+            },
+            "total_energy_consume_from_grid": {
+                "name": "Total energy consumed from grid"
+            },
+            "pv_total_energy_feed_to_grid": {
+                "name": "PV total energy fed to grid"
+            },
+            "pv_total_energy_consume_from_grid": {
+                "name": "PV total energy consumed from grid"
+            },
+            "pv_total_energy": {
+                "name": "PV total energy"
+            },
+            "battery_total_energy_charge": {
+                "name": "Battery total energy charge"
+            },
+            "battery_total_energy_discharge": {
+                "name": "Battery total energy discharge"
+            },
+            "price_current_hour": {
+                "name": "Current hour price"
+            },
+            "price_lowest_today": {
+                "name": "Lowest price today"
+            },
+            "price_highest_today": {
+                "name": "Highest price today"
+            },
             "price_earning_status": {
                 "name": "Earning status",
                 "state": {
@@ -171,43 +343,109 @@
                     "earning_on_use": "Earning on use"
                 }
             },
-            "solar_forecast_current_hour": { "name": "Solar forecast current hour" },
-            "solar_forecast_today": { "name": "Solar forecast today" },
-            "solar_forecast_tomorrow": { "name": "Solar forecast tomorrow" },
-            "schedule_current_hour_action": { "name": "Schedule current hour action" },
-            "schedule_next_hour_action": { "name": "Schedule next hour action" },
-            "schedule_remaining_solar_surplus_today": { "name": "Remaining solar surplus today" },
-            "schedule_today_plan": { "name": "Today's plan" },
-            "extra_pv_power": { "name": "PV power extra" },
-            "total_pv_power": { "name": "PV power total" },
-            "house_load_today": { "name": "Today house consumption" },
-            "solar_energy_today": { "name": "Today solar energy" },
-            "solar_to_battery_today": { "name": "Today solar to battery" },
-            "grid_to_battery_today": { "name": "Today grid to battery" },
-            "yesterday_savings": { "name": "Yesterday's savings" },
-            "dispatch_current_mode": { "name": "Dispatch current mode" },
-            "battery_voltage": { "name": "Battery voltage" },
-            "battery_current": { "name": "Battery current" },
-            "battery_min_cell_voltage": { "name": "Battery lowest cell voltage" },
-            "battery_max_cell_voltage": { "name": "Battery highest cell voltage" },
-            "battery_cell_voltage_delta": { "name": "Battery cell voltage spread" },
-            "battery_min_cell_temperature": { "name": "Battery lowest cell temperature" },
-            "battery_max_cell_temperature": { "name": "Battery highest cell temperature" },
-            "battery_soh": { "name": "Battery state of health" },
-            "battery_capacity": { "name": "Battery nominal capacity" },
-            "battery_module_count": { "name": "Battery modules" },
-            "battery_cycles": { "name": "Battery cycles (estimated)" },
-            "inverter_temperature": { "name": "Inverter temperature" }
+            "solar_forecast_current_hour": {
+                "name": "Solar forecast current hour"
+            },
+            "solar_forecast_today": {
+                "name": "Solar forecast today"
+            },
+            "solar_forecast_tomorrow": {
+                "name": "Solar forecast tomorrow"
+            },
+            "schedule_current_hour_action": {
+                "name": "Schedule current hour action"
+            },
+            "schedule_next_hour_action": {
+                "name": "Schedule next hour action"
+            },
+            "schedule_remaining_solar_surplus_today": {
+                "name": "Remaining solar surplus today"
+            },
+            "schedule_today_plan": {
+                "name": "Today's plan"
+            },
+            "extra_pv_power": {
+                "name": "PV power extra"
+            },
+            "total_pv_power": {
+                "name": "PV power total"
+            },
+            "house_load_today": {
+                "name": "Today house consumption"
+            },
+            "solar_energy_today": {
+                "name": "Today solar energy"
+            },
+            "solar_to_battery_today": {
+                "name": "Today solar to battery"
+            },
+            "grid_to_battery_today": {
+                "name": "Today grid to battery"
+            },
+            "yesterday_savings": {
+                "name": "Yesterday's savings"
+            },
+            "dispatch_current_mode": {
+                "name": "Dispatch current mode"
+            },
+            "battery_voltage": {
+                "name": "Battery voltage"
+            },
+            "battery_current": {
+                "name": "Battery current"
+            },
+            "battery_min_cell_voltage": {
+                "name": "Battery lowest cell voltage"
+            },
+            "battery_max_cell_voltage": {
+                "name": "Battery highest cell voltage"
+            },
+            "battery_cell_voltage_delta": {
+                "name": "Battery cell voltage spread"
+            },
+            "battery_min_cell_temperature": {
+                "name": "Battery lowest cell temperature"
+            },
+            "battery_max_cell_temperature": {
+                "name": "Battery highest cell temperature"
+            },
+            "battery_soh": {
+                "name": "Battery state of health"
+            },
+            "battery_capacity": {
+                "name": "Battery nominal capacity"
+            },
+            "battery_module_count": {
+                "name": "Battery modules"
+            },
+            "battery_cycles": {
+                "name": "Battery cycles (estimated)"
+            },
+            "inverter_temperature": {
+                "name": "Inverter temperature"
+            }
         },
         "number": {
-            "max_soc_positive_price": { "name": "Max SOC on positive-price hours" },
-            "max_soc_negative_price": { "name": "Max SOC on negative-price hours" },
-            "min_soc_discharge": { "name": "Min SOC on battery discharge" },
-            "daily_min_profit": { "name": "Minimum daily profit for optimized schedule" },
-            "max_grid_load": { "name": "Max grid-charge load" }
+            "max_soc_positive_price": {
+                "name": "Max SOC on positive-price hours"
+            },
+            "max_soc_negative_price": {
+                "name": "Max SOC on negative-price hours"
+            },
+            "min_soc_discharge": {
+                "name": "Min SOC on battery discharge"
+            },
+            "daily_min_profit": {
+                "name": "Minimum daily profit for optimized schedule"
+            },
+            "max_grid_load": {
+                "name": "Max grid-charge load"
+            }
         },
         "switch": {
-            "discharge_enabled": { "name": "Allow scheduled discharge to grid" }
+            "discharge_enabled": {
+                "name": "Allow scheduled discharge to grid"
+            }
         }
     },
     "services": {
