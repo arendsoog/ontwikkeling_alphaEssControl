@@ -109,7 +109,7 @@ A DSMR or HomeWizard meter is filled in automatically. Without a meter, the inve
 
 ### PV installations
 
-A solar installation next to the AlphaESS, with its own inverter. These aren't in the options menu: on the integration's page, click **Add PV installation**, give it a name, and fill in:
+A solar installation next to the AlphaESS, with its own inverter. These aren't in the options menu: on the integration's page, click **Add PV installation**, give it a name (and optionally an icon for its card), and fill in:
 
 - **Measurement**
   - **Power:** the inverter's power sensor, such as its AC power.
@@ -126,10 +126,10 @@ Its power counts in the energy flow, the house consumption and the learning of t
 
 Big, irregular consumers would spoil the learned consumption per hour, so their power can be subtracted from the house consumption first.
 
-Like PV installations, these aren't in the options menu: add each one on the integration's page and give it a name.
+Like PV installations, these aren't in the options menu: add each one on the integration's page and give it a name and, optionally, an icon for its card on the dashboard.
 
 - **EV chargers** (**Add EV charger**): its power (summed in the dashboard's energy flow), its total energy counter (kWh today) and its power per phase (on the charger's card). Each charger gets its own card on the dashboard.
-- **Other consumers** (**Add consumer**), for example a heat pump, a pool or a cooktop: its power and, optionally, its total energy counter.
+- **Other consumers** (**Add consumer**), for example a heat pump, a pool or a cooktop: its power and, optionally, its total energy counter. Each consumer gets its own card on the dashboard, under the EV chargers.
 
 Each has a switch **Keep out of the learned consumption**. On (the default): its power is taken off the house load before the load per hour is learned, for big, irregular consumers such as a car, a pool or a heat pump. Off: it counts as ordinary house load, as a cooktop should.
 
@@ -155,7 +155,7 @@ The integration adds **AlphaESS Control** to the sidebar, with four tabs.
   - today's and this week's energy, and today's power and state of charge;
   - the day's prices, solar and plan, with a decision log of what was planned per hour and why;
   - the integration status: which price/solar source is in use, which grid meter, and which grid-charge limit applies.
-- **Installations:** one card per AlphaESS (power, MPPTs, battery health, lifetime totals), a card for the PV installations with their switches, and one card per EV charger.
+- **Installations:** one card per AlphaESS (power, MPPTs, battery health, lifetime totals), a card for the PV installations with their switches, one card per EV charger and one per consumer.
 - **Control:** the switches and sliders below, and buttons to override the plan for the current hour.
 - **History:** energy and savings per day, week, month or year.
 

@@ -596,7 +596,7 @@ class AlphaEssPanel extends HTMLElement {
       // option toggles and settings don't vanish until the next refresh.
       console.debug("alpha-ess-panel: panel_status failed", err);
     }
-    const evEnergy = [...this._evEnergyIds(), ...this._pvEnergyIds()].join(",");
+    const evEnergy = [...this._evEnergyIds(), ...this._pvEnergyIds(), ...this._consumerEnergyIds()].join(",");
     if (evEnergy !== this._loadedEvEnergy) {
       this._loadedEvEnergy = evEnergy;
       if (evEnergy) this._loadHistory();
@@ -618,6 +618,11 @@ class AlphaEssPanel extends HTMLElement {
     return (this._status && this._status.extra_pv_energy_entities) || [];
   }
 
+  // The other consumers' total-energy counters (kWh).
+  _consumerEnergyIds() {
+    return ((this._status && this._status.consumers) || []).map((c) => c.energy).filter(Boolean);
+  }
+
   async _loadHistory() {
     if (!this._hass || !this._entities) return;
     const keys = ["battery_soc", "pv_power", "total_pv_power", "grid_power", "battery_power", "extra_pv_power"];
@@ -630,6 +635,7 @@ class AlphaEssPanel extends HTMLElement {
           ...this._devices.flatMap((d) => Object.values(COUNTERS).map((k) => d.entities[k])),
           ...this._evEnergyIds(),
           ...this._pvEnergyIds(),
+          ...this._consumerEnergyIds(),
         ].filter(
           Boolean
         )
@@ -1550,7 +1556,42 @@ class AlphaEssPanel extends HTMLElement {
     }
     const chargers = (this._status && this._status.ev_chargers) || [];
     chargers.forEach((group, i) => cards.push(this._evChargerCard(group, i, chargers.length)));
+    const consumers = (this._status && this._status.consumers) || [];
+    consumers.forEach((consumer) => cards.push(this._consumerCard(consumer)));
     return cards.join("");
+  }
+
+  // One card per other consumer (a heat pump, a pool, ...), under the EV
+  // chargers: its power now and its kWh today.
+  _consumerCard(consumer) {
+    const s = consumer.power && this._hass.states[consumer.power];
+    let power = s ? num(s.state) : null;
+    if (power !== null && s.attributes.unit_of_measurement === "kW") power *= 1000;
+    const running = power !== null && power > 10;
+    return `
+      <section class="card device">
+        <div class="device-head">
+          <ha-icon icon="${esc(consumer.icon || "mdi:power-plug-outline")}"></ha-icon>
+          <div class="device-name">${esc(consumer.name)}</div>
+          <div class="spacer"></div>
+          <span class="${running ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : running ? "Aan" : "Uit"}</span>
+        </div>
+        ${
+          consumer.power
+            ? `<div class="device-main wide" data-entity="${esc(consumer.power)}">
+          <div class="big ${running ? "accent" : "muted"}">${fmtW(power)}</div>
+          <div class="muted">Vermogen</div>
+        </div>`
+            : ""
+        }
+        ${
+          consumer.energy
+            ? `<div class="section-title">Energie vandaag</div>${this._energyRows([
+                { label: "Verbruikt", value: this._evTodayKwh(consumer.energy), color: SCENE_COLOR.house, entity: consumer.energy },
+              ])}`
+            : ""
+        }
+      </section>`;
   }
 
   // One card per EV charger (consumers.py's ev_charger_groups: its sensors
@@ -1586,7 +1627,7 @@ class AlphaEssPanel extends HTMLElement {
     return `
       <section class="card device">
         <div class="device-head">
-          <ha-icon icon="mdi:ev-station"></ha-icon>
+          <ha-icon icon="${esc(group.icon || "mdi:ev-station")}"></ha-icon>
           <div class="device-name">${esc(name)}</div>
           <div class="spacer"></div>
           <span class="${charging ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : charging ? "Laadt" : "Laadt niet"}</span>
@@ -1843,7 +1884,7 @@ class AlphaEssPanel extends HTMLElement {
     return `
       <section class="card device">
         <div class="device-head">
-          <ha-icon icon="mdi:solar-panel"></ha-icon>
+          <ha-icon icon="${esc(st.extra_pv_icon || "mdi:solar-panel")}"></ha-icon>
           <div class="device-name">${esc((st.extra_pv_names || []).join(" + ") || "PV-installatie")}</div>
           <div class="spacer"></div>
           <span class="${producing ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : producing ? "Produceert" : "Rust"}</span>

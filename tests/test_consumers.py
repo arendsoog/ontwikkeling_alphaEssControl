@@ -14,6 +14,7 @@ from custom_components.alpha_ess_local.const import (
     SUBENTRY_EV_CHARGER,
 )
 from custom_components.alpha_ess_local.consumers import (
+    consumer_cards,
     consumer_options,
     consumers_from_options,
     ev_charger_cards,
@@ -131,6 +132,7 @@ async def test_add_ev_charger(hass: HomeAssistant):
     )
     assert [str(key) for key in result["data_schema"].schema] == [
         "name",
+        "icon",
         "ev_charger_power_entity",
         "ev_charger_energy_entity",
         "ev_charger_phase_entities",
@@ -216,11 +218,18 @@ async def test_consumer_options_and_cards_from_the_chargers(hass: HomeAssistant)
     assert ev_charger_cards(hass, entry) == [
         {
             "name": "Oprit",
+            "icon": None,
             "power": ["sensor.oprit_power"],
             "energy": ["sensor.oprit_energy"],
             "phases": ["sensor.oprit_l1"],
         },
-        {"name": "Garage", "power": ["sensor.garage_power"], "energy": [], "phases": []},
+        {
+            "name": "Garage",
+            "icon": None,
+            "power": ["sensor.garage_power"],
+            "energy": [],
+            "phases": [],
+        },
     ]
 
 
@@ -297,6 +306,7 @@ async def test_add_consumer(hass: HomeAssistant):
     )
     assert [str(key) for key in result["data_schema"].schema] == [
         "name",
+        "icon",
         "consumer_power_entity",
         "consumer_energy_entity",
         "exclude_from_learning",
@@ -395,3 +405,29 @@ async def test_consumers_counted_as_house_load_when_not_left_out(hass: HomeAssis
 
     assert excluded_power_entities(options) == ["sensor.garage_power"]
     assert ev_charger_power_entities(options) == ["sensor.oprit_power", "sensor.garage_power"]
+
+
+async def test_consumer_cards_with_their_name_and_icon(hass: HomeAssistant):
+    entry = _entry(hass)
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={
+                "icon": "mdi:pool",
+                "consumer_power_entity": "sensor.zwembad",
+                "consumer_energy_entity": "sensor.zwembad_energie",
+            },
+            subentry_type=SUBENTRY_CONSUMER,
+            title="Zwembad",
+            unique_id=None,
+        ),
+    )
+
+    assert consumer_cards(entry) == [
+        {
+            "name": "Zwembad",
+            "icon": "mdi:pool",
+            "power": "sensor.zwembad",
+            "energy": "sensor.zwembad_energie",
+        }
+    ]

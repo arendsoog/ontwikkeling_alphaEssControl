@@ -88,10 +88,12 @@
                     "title": "Add PV installation",
                     "description": "A solar installation next to the AlphaESS, with its own inverter. Its power counts in the energy flow, the house load and the learning of the solar forecast. Several installations are added up.",
                     "data": {
-                        "name": "Name"
+                        "name": "Name",
+                        "icon": "Icon"
                     },
                     "data_description": {
-                        "name": "What the installation is called, in the panel and in the list of installations."
+                        "name": "What the installation is called, in the panel and in the list of installations.",
+                        "icon": "The icon on its card in the panel. Optional."
                     },
                     "sections": {
                         "measurement": {
@@ -133,10 +135,12 @@
                     "title": "Change PV installation",
                     "description": "A solar installation next to the AlphaESS, with its own inverter. Its power counts in the energy flow, the house load and the learning of the solar forecast. Several installations are added up.",
                     "data": {
-                        "name": "Name"
+                        "name": "Name",
+                        "icon": "Icon"
                     },
                     "data_description": {
-                        "name": "What the installation is called, in the panel and in the list of installations."
+                        "name": "What the installation is called, in the panel and in the list of installations.",
+                        "icon": "The icon on its card in the panel. Optional."
                     },
                     "sections": {
                         "measurement": {
@@ -190,6 +194,7 @@
                     "description": "An EV charger. Shown in the panel: in the energy flow and on its own card on the Installations tab.",
                     "data": {
                         "name": "Name",
+                        "icon": "Icon",
                         "ev_charger_power_entity": "Power",
                         "ev_charger_energy_entity": "Total charged",
                         "ev_charger_phase_entities": "Power per phase",
@@ -197,6 +202,7 @@
                     },
                     "data_description": {
                         "name": "What the EV charger is called, in the panel and in the list of EV chargers.",
+                        "icon": "The icon on its card in the panel. Optional.",
                         "ev_charger_power_entity": "The EV charger's charging power right now.",
                         "ev_charger_energy_entity": "The total charged energy (a rising counter in kWh), for 'charged today' in the panel. Optional.",
                         "ev_charger_phase_entities": "The power per phase (L1, L2, L3), for the EV charger's card. Optional.",
@@ -208,6 +214,7 @@
                     "description": "An EV charger. Shown in the panel: in the energy flow and on its own card on the Installations tab.",
                     "data": {
                         "name": "Name",
+                        "icon": "Icon",
                         "ev_charger_power_entity": "Power",
                         "ev_charger_energy_entity": "Total charged",
                         "ev_charger_phase_entities": "Power per phase",
@@ -215,6 +222,7 @@
                     },
                     "data_description": {
                         "name": "What the EV charger is called, in the panel and in the list of EV chargers.",
+                        "icon": "The icon on its card in the panel. Optional.",
                         "ev_charger_power_entity": "The EV charger's charging power right now.",
                         "ev_charger_energy_entity": "The total charged energy (a rising counter in kWh), for 'charged today' in the panel. Optional.",
                         "ev_charger_phase_entities": "The power per phase (L1, L2, L3), for the EV charger's card. Optional.",
@@ -237,12 +245,14 @@
                     "description": "A consumer in the house, such as a heat pump, pool or cooktop.",
                     "data": {
                         "name": "Name",
+                        "icon": "Icon",
                         "consumer_power_entity": "Power",
                         "consumer_energy_entity": "Total used",
                         "exclude_from_learning": "Keep out of the learned consumption"
                     },
                     "data_description": {
                         "name": "What the consumer is called, in the list of consumers.",
+                        "icon": "The icon on its card in the panel. Optional.",
                         "consumer_power_entity": "The power the consumer uses right now.",
                         "consumer_energy_entity": "The total used energy (a rising counter in kWh). Optional.",
                         "exclude_from_learning": "On: its power is taken off the house load before the load per hour is learned, for big, irregular consumers (car, pool, heat pump). Off: it counts as ordinary house load (like a cooktop)."
@@ -253,12 +263,14 @@
                     "description": "A consumer in the house, such as a heat pump, pool or cooktop.",
                     "data": {
                         "name": "Name",
+                        "icon": "Icon",
                         "consumer_power_entity": "Power",
                         "consumer_energy_entity": "Total used",
                         "exclude_from_learning": "Keep out of the learned consumption"
                     },
                     "data_description": {
                         "name": "What the consumer is called, in the list of consumers.",
+                        "icon": "The icon on its card in the panel. Optional.",
                         "consumer_power_entity": "The power the consumer uses right now.",
                         "consumer_energy_entity": "The total used energy (a rising counter in kWh). Optional.",
                         "exclude_from_learning": "On: its power is taken off the house load before the load per hour is learned, for big, irregular consumers (car, pool, heat pump). Off: it counts as ordinary house load (like a cooktop)."

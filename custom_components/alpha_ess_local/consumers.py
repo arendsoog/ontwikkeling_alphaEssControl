@@ -23,11 +23,13 @@ from collections.abc import Mapping
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_ICON
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from .const import (
+    CONF_CONSUMER_ENERGY_ENTITY,
     CONF_CONSUMER_POWER_ENTITY,
     CONF_EV_CHARGER_ENERGY_ENTITIES,
     CONF_EV_CHARGER_ENERGY_ENTITY,
@@ -175,11 +177,25 @@ def ev_charger_cards(hass: HomeAssistant, entry: ConfigEntry) -> list[dict[str, 
     return [
         {
             "name": charger["name"],
+            "icon": charger.get(CONF_ICON),
             "power": ev_charger_power_entities(charger),
             "energy": ev_charger_energy_entities(charger),
             "phases": ev_charger_phase_entities(charger),
         }
         for charger in chargers
+    ]
+
+
+def consumer_cards(entry: ConfigEntry) -> list[dict[str, Any]]:
+    """The other consumers' sensors per consumer, for the panel's cards."""
+    return [
+        {
+            "name": consumer["name"],
+            "icon": consumer.get(CONF_ICON),
+            "power": consumer.get(CONF_CONSUMER_POWER_ENTITY),
+            "energy": consumer.get(CONF_CONSUMER_ENERGY_ENTITY),
+        }
+        for consumer in other_consumers(entry)
     ]
 
 

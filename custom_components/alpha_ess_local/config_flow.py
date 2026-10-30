@@ -7,7 +7,7 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT
+from homeassistant.const import CONF_HOST, CONF_ICON, CONF_NAME, CONF_PORT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers import entity_registry as er
@@ -431,6 +431,7 @@ def _pv_installation_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> 
     return vol.Schema(
         {
             vol.Required(CONF_NAME, default=name): selector.TextSelector(),
+            **_icon_field(options),
             vol.Required("measurement"): section(vol.Schema(dict(measurement))),
             vol.Required("installation"): section(vol.Schema(dict(installation))),
             vol.Required("control"): section(vol.Schema(dict(control)), {"collapsed": True}),
@@ -453,6 +454,7 @@ def _consumer_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.Sch
     return vol.Schema(
         {
             vol.Required(CONF_NAME, default=name): selector.TextSelector(),
+            **_icon_field(options),
             vol.Optional(
                 CONF_CONSUMER_POWER_ENTITY,
                 description={"suggested_value": options.get(CONF_CONSUMER_POWER_ENTITY)},
@@ -480,6 +482,7 @@ def _ev_charger_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.S
     return vol.Schema(
         {
             vol.Required(CONF_NAME, default=name): selector.TextSelector(),
+            **_icon_field(options),
             vol.Optional(
                 CONF_EV_CHARGER_POWER_ENTITY,
                 description={"suggested_value": first(ev_charger_power_entities(options))},
@@ -495,6 +498,15 @@ def _ev_charger_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.S
             **_exclude_from_learning_field(options),
         }
     )
+
+
+def _icon_field(options: Mapping[str, Any]) -> dict[Any, Any]:
+    """The icon its card in the panel shows."""
+    return {
+        vol.Optional(
+            CONF_ICON, description={"suggested_value": options.get(CONF_ICON)}
+        ): selector.IconSelector()
+    }
 
 
 def _exclude_from_learning_field(options: Mapping[str, Any]) -> dict[Any, Any]:

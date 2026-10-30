@@ -88,10 +88,12 @@
                     "title": "PV-installatie toevoegen",
                     "description": "Een zonne-installatie naast de AlphaESS, met een eigen omvormer. Het vermogen telt mee in de energiestroom, het huisverbruik en het leren van de zonnevoorspelling. Meerdere installaties worden opgeteld.",
                     "data": {
-                        "name": "Naam"
+                        "name": "Naam",
+                        "icon": "Pictogram"
                     },
                     "data_description": {
-                        "name": "Hoe de installatie heet, in het paneel en in de lijst van installaties."
+                        "name": "Hoe de installatie heet, in het paneel en in de lijst van installaties.",
+                        "icon": "Het pictogram op de kaart in het paneel. Optioneel."
                     },
                     "sections": {
                         "measurement": {
@@ -133,10 +135,12 @@
                     "title": "PV-installatie wijzigen",
                     "description": "Een zonne-installatie naast de AlphaESS, met een eigen omvormer. Het vermogen telt mee in de energiestroom, het huisverbruik en het leren van de zonnevoorspelling. Meerdere installaties worden opgeteld.",
                     "data": {
-                        "name": "Naam"
+                        "name": "Naam",
+                        "icon": "Pictogram"
                     },
                     "data_description": {
-                        "name": "Hoe de installatie heet, in het paneel en in de lijst van installaties."
+                        "name": "Hoe de installatie heet, in het paneel en in de lijst van installaties.",
+                        "icon": "Het pictogram op de kaart in het paneel. Optioneel."
                     },
                     "sections": {
                         "measurement": {
@@ -190,6 +194,7 @@
                     "description": "Een EV-lader. Getoond in het paneel: in de energiestroom en op een eigen kaart op het tabblad Installaties.",
                     "data": {
                         "name": "Naam",
+                        "icon": "Pictogram",
                         "ev_charger_power_entity": "Vermogen",
                         "ev_charger_energy_entity": "Totaal geladen",
                         "ev_charger_phase_entities": "Vermogen per fase",
@@ -197,6 +202,7 @@
                     },
                     "data_description": {
                         "name": "Hoe de EV-lader heet, in het paneel en in de lijst van EV-laders.",
+                        "icon": "Het pictogram op de kaart in het paneel. Optioneel.",
                         "ev_charger_power_entity": "Het laadvermogen van de EV-lader nu.",
                         "ev_charger_energy_entity": "De totaal geladen energie (een oplopende teller in kWh), voor 'geladen vandaag' in het paneel. Optioneel.",
                         "ev_charger_phase_entities": "Het vermogen per fase (L1, L2, L3), voor de kaart van de EV-lader. Optioneel.",
@@ -208,6 +214,7 @@
                     "description": "Een EV-lader. Getoond in het paneel: in de energiestroom en op een eigen kaart op het tabblad Installaties.",
                     "data": {
                         "name": "Naam",
+                        "icon": "Pictogram",
                         "ev_charger_power_entity": "Vermogen",
                         "ev_charger_energy_entity": "Totaal geladen",
                         "ev_charger_phase_entities": "Vermogen per fase",
@@ -215,6 +222,7 @@
                     },
                     "data_description": {
                         "name": "Hoe de EV-lader heet, in het paneel en in de lijst van EV-laders.",
+                        "icon": "Het pictogram op de kaart in het paneel. Optioneel.",
                         "ev_charger_power_entity": "Het laadvermogen van de EV-lader nu.",
                         "ev_charger_energy_entity": "De totaal geladen energie (een oplopende teller in kWh), voor 'geladen vandaag' in het paneel. Optioneel.",
                         "ev_charger_phase_entities": "Het vermogen per fase (L1, L2, L3), voor de kaart van de EV-lader. Optioneel.",
@@ -237,12 +245,14 @@
                     "description": "Een verbruiker in huis, zoals een warmtepomp, zwembad of kookplaat.",
                     "data": {
                         "name": "Naam",
+                        "icon": "Pictogram",
                         "consumer_power_entity": "Vermogen",
                         "consumer_energy_entity": "Totaal verbruikt",
                         "exclude_from_learning": "Buiten het geleerde verbruik houden"
                     },
                     "data_description": {
                         "name": "Hoe de verbruiker heet, in de lijst van verbruikers.",
+                        "icon": "Het pictogram op de kaart in het paneel. Optioneel.",
                         "consumer_power_entity": "Het vermogen dat de verbruiker nu gebruikt.",
                         "consumer_energy_entity": "Het totaal verbruikte energie (een oplopende teller in kWh). Optioneel.",
                         "exclude_from_learning": "Aan: het vermogen wordt van het huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd, voor grote, onregelmatige verbruikers (auto, zwembad, warmtepomp). Uit: telt als gewoon huisverbruik (zoals een kookplaat)."
@@ -253,12 +263,14 @@
                     "description": "Een verbruiker in huis, zoals een warmtepomp, zwembad of kookplaat.",
                     "data": {
                         "name": "Naam",
+                        "icon": "Pictogram",
                         "consumer_power_entity": "Vermogen",
                         "consumer_energy_entity": "Totaal verbruikt",
                         "exclude_from_learning": "Buiten het geleerde verbruik houden"
                     },
                     "data_description": {
                         "name": "Hoe de verbruiker heet, in de lijst van verbruikers.",
+                        "icon": "Het pictogram op de kaart in het paneel. Optioneel.",
                         "consumer_power_entity": "Het vermogen dat de verbruiker nu gebruikt.",
                         "consumer_energy_entity": "Het totaal verbruikte energie (een oplopende teller in kWh). Optioneel.",
                         "exclude_from_learning": "Aan: het vermogen wordt van het huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd, voor grote, onregelmatige verbruikers (auto, zwembad, warmtepomp). Uit: telt als gewoon huisverbruik (zoals een kookplaat)."

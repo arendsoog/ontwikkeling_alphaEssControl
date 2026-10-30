@@ -17,6 +17,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
+from homeassistant.const import CONF_ICON
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
@@ -52,6 +53,7 @@ from ..const import (
     LOGGER,
 )
 from ..consumers import (
+    consumer_cards,
     consumer_options,
     ev_charger_cards,
     ev_charger_energy_entities,
@@ -147,8 +149,12 @@ def _ws_panel_status(
             "ev_charger_power_entities": ev_charger_power_entities(consumer_options(entry)),
             "ev_charger_energy_entities": ev_charger_energy_entities(consumer_options(entry)),
             "ev_chargers": ev_charger_cards(hass, entry),
+            "consumers": consumer_cards(entry),
             "extra_pv_configured": bool(extra_pv_power_entities(hass, pv_options)),
             "extra_pv_names": [i["name"] for i in pv_installations(entry)],
+            "extra_pv_icon": next(
+                (i[CONF_ICON] for i in pv_installations(entry) if i.get(CONF_ICON)), None
+            ),
             "extra_pv_string_entities": extra_pv_string_entities(hass, pv_options),
             "extra_pv_power_capacity": pv_options.get(CONF_EXTRA_PV_POWER_CAPACITY, 0),
             "extra_pv_switches": extra_pv_switches(pv_options),

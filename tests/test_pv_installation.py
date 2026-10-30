@@ -74,6 +74,7 @@ async def test_add_installation_form(hass: HomeAssistant):
     schema = result["data_schema"]
     assert [str(key) for key in schema.schema] == [
         "name",
+        "icon",
         "measurement",
         "installation",
         "control",
