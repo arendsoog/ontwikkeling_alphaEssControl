@@ -753,16 +753,13 @@ class AlphaEssLocalOptionsFlow(config_entries.OptionsFlow):
             data[CONF_PV_POWER] = data.get(CONF_PV_PANEL_WP, 0) * data.get(CONF_PV_PANEL_COUNT, 0)
             return self.async_create_entry(title="", data=data)
 
+        note = _SECTION_NOTES.get(section)
         return self.async_show_form(
             step_id=section,
             data_schema=schema,
             description_placeholders={
                 "missing_source_note": _missing_source_note(self.hass, missing),
-                "sources_note": (
-                    note(self.hass, self.config_entry.options)
-                    if (note := _SECTION_NOTES.get(section))
-                    else ""
-                ),
+                "sources_note": note(self.hass, self.config_entry.options) if note else "",
             },
         )
 
