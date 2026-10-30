@@ -27,6 +27,7 @@ from .const import (
     CONF_EV_CHARGER_ENERGY_ENTITY,
     CONF_EV_CHARGER_PHASE_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITY,
+    CONF_EXCLUDE_FROM_LEARNING,
     CONF_EXTRA_PV_ENERGY_ENTITY,
     CONF_EXTRA_PV_PANEL_COUNT,
     CONF_EXTRA_PV_PANEL_WP,
@@ -57,6 +58,7 @@ from .const import (
     CONF_USABLE_BATTERY_CAPACITY,
     CONF_VAT_PERCENTAGE,
     DEFAULT_APPLY_VAT_ON_RETURN,
+    DEFAULT_EXCLUDE_FROM_LEARNING,
     DEFAULT_NETWORK_USE_FEE,
     DEFAULT_PORT,
     DEFAULT_PROVIDER_RETURN_FEE,
@@ -459,6 +461,7 @@ def _consumer_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.Sch
                 CONF_CONSUMER_ENERGY_ENTITY,
                 description={"suggested_value": options.get(CONF_CONSUMER_ENERGY_ENTITY)},
             ): _sensor_selector("energy"),
+            **_exclude_from_learning_field(options),
         }
     )
 
@@ -489,8 +492,19 @@ def _ev_charger_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.S
                 CONF_EV_CHARGER_PHASE_ENTITIES,
                 description={"suggested_value": ev_charger_phase_entities(options)},
             ): _sensor_selector("power", multiple=True),
+            **_exclude_from_learning_field(options),
         }
     )
+
+
+def _exclude_from_learning_field(options: Mapping[str, Any]) -> dict[Any, Any]:
+    """Whether the consumer's power is left out of the learned house load."""
+    return {
+        vol.Optional(
+            CONF_EXCLUDE_FROM_LEARNING,
+            default=options.get(CONF_EXCLUDE_FROM_LEARNING, DEFAULT_EXCLUDE_FROM_LEARNING),
+        ): selector.BooleanSelector()
+    }
 
 
 def _meter_fields(hass: HomeAssistant, options: Mapping[str, Any]) -> _SectionFields:

@@ -124,12 +124,14 @@ Its power counts in the energy flow, the house consumption and the learning of t
 
 ### Consumption sources
 
-Big, irregular consumers would spoil the learned consumption per hour, so their power is subtracted from the house consumption first.
+Big, irregular consumers would spoil the learned consumption per hour, so their power can be subtracted from the house consumption first.
 
 Like PV installations, these aren't in the options menu: add each one on the integration's page and give it a name.
 
 - **EV chargers** (**Add EV charger**): its power (summed in the dashboard's energy flow), its total energy counter (kWh today) and its power per phase (on the charger's card). Each charger gets its own card on the dashboard.
-- **Other consumers** (**Add consumer**), for example a heat pump: its power, used for the learning only, and optionally its total energy counter.
+- **Other consumers** (**Add consumer**), for example a heat pump, a pool or a cooktop: its power and, optionally, its total energy counter.
+
+Each has a switch **Keep out of the learned consumption**. On (the default): its power is taken off the house load before the load per hour is learned, for big, irregular consumers such as a car, a pool or a heat pump. Off: it counts as ordinary house load, as a cooktop should.
 
 Nothing here is used to control anything.
 

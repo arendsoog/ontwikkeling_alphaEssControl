@@ -170,12 +170,12 @@ SUBENTRY_EV_CHARGER = "ev_charger"
 SUBENTRY_CONSUMER = "consumer"
 CONF_CONSUMER_POWER_ENTITY = "consumer_power_entity"
 CONF_CONSUMER_ENERGY_ENTITY = "consumer_energy_entity"
-# Each other consumer (a heat pump, ...) is a subentry of this type, with
-# its power and total-energy sensor; their power sensors are read together
-# under CONF_EXCLUDED_LOAD_ENTITIES.
-SUBENTRY_CONSUMER = "consumer"
-CONF_CONSUMER_POWER_ENTITY = "consumer_power_entity"
-CONF_CONSUMER_ENERGY_ENTITY = "consumer_energy_entity"
+# Per EV charger/consumer: whether its power is left out of the learned
+# house load (on) or counts as ordinary house load (off). The power sensors
+# left out are listed under CONF_EXCLUDED_POWER_ENTITIES.
+CONF_EXCLUDE_FROM_LEARNING = "exclude_from_learning"
+DEFAULT_EXCLUDE_FROM_LEARNING = True
+CONF_EXCLUDED_POWER_ENTITIES = "excluded_power_entities"
 
 # Options flow: scheduler tuning (config.ini [Daily])
 CONF_ALLOW_PROVIDER_CONTROL_HOURS = "allow_provider_control_hours"

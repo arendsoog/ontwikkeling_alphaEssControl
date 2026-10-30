@@ -187,34 +187,38 @@
             "step": {
                 "user": {
                     "title": "Add EV charger",
-                    "description": "An EV charger. Its power stays out of the learned house load and is shown in the panel: in the energy flow and on its own card on the Installations tab.",
+                    "description": "An EV charger. Shown in the panel: in the energy flow and on its own card on the Installations tab.",
                     "data": {
                         "name": "Name",
                         "ev_charger_power_entity": "Power",
                         "ev_charger_energy_entity": "Total charged",
-                        "ev_charger_phase_entities": "Power per phase"
+                        "ev_charger_phase_entities": "Power per phase",
+                        "exclude_from_learning": "Keep out of the learned consumption"
                     },
                     "data_description": {
                         "name": "What the EV charger is called, in the panel and in the list of EV chargers.",
                         "ev_charger_power_entity": "The EV charger's charging power right now.",
                         "ev_charger_energy_entity": "The total charged energy (a rising counter in kWh), for 'charged today' in the panel. Optional.",
-                        "ev_charger_phase_entities": "The power per phase (L1, L2, L3), for the EV charger's card. Optional."
+                        "ev_charger_phase_entities": "The power per phase (L1, L2, L3), for the EV charger's card. Optional.",
+                        "exclude_from_learning": "On: its power is taken off the house load before the load per hour is learned, for big, irregular consumers (car, pool, heat pump). Off: it counts as ordinary house load (like a cooktop)."
                     }
                 },
                 "reconfigure": {
                     "title": "Change EV charger",
-                    "description": "An EV charger. Its power stays out of the learned house load and is shown in the panel: in the energy flow and on its own card on the Installations tab.",
+                    "description": "An EV charger. Shown in the panel: in the energy flow and on its own card on the Installations tab.",
                     "data": {
                         "name": "Name",
                         "ev_charger_power_entity": "Power",
                         "ev_charger_energy_entity": "Total charged",
-                        "ev_charger_phase_entities": "Power per phase"
+                        "ev_charger_phase_entities": "Power per phase",
+                        "exclude_from_learning": "Keep out of the learned consumption"
                     },
                     "data_description": {
                         "name": "What the EV charger is called, in the panel and in the list of EV chargers.",
                         "ev_charger_power_entity": "The EV charger's charging power right now.",
                         "ev_charger_energy_entity": "The total charged energy (a rising counter in kWh), for 'charged today' in the panel. Optional.",
-                        "ev_charger_phase_entities": "The power per phase (L1, L2, L3), for the EV charger's card. Optional."
+                        "ev_charger_phase_entities": "The power per phase (L1, L2, L3), for the EV charger's card. Optional.",
+                        "exclude_from_learning": "On: its power is taken off the house load before the load per hour is learned, for big, irregular consumers (car, pool, heat pump). Off: it counts as ordinary house load (like a cooktop)."
                     }
                 }
             },
@@ -230,30 +234,34 @@
             "step": {
                 "user": {
                     "title": "Add consumer",
-                    "description": "A big, irregular consumer such as a heat pump. Its power is taken off the measured house load before the load per hour is learned. Not used for the control.",
+                    "description": "A consumer in the house, such as a heat pump, pool or cooktop.",
                     "data": {
                         "name": "Name",
                         "consumer_power_entity": "Power",
-                        "consumer_energy_entity": "Total used"
+                        "consumer_energy_entity": "Total used",
+                        "exclude_from_learning": "Keep out of the learned consumption"
                     },
                     "data_description": {
                         "name": "What the consumer is called, in the list of consumers.",
                         "consumer_power_entity": "The power the consumer uses right now.",
-                        "consumer_energy_entity": "The total used energy (a rising counter in kWh). Optional."
+                        "consumer_energy_entity": "The total used energy (a rising counter in kWh). Optional.",
+                        "exclude_from_learning": "On: its power is taken off the house load before the load per hour is learned, for big, irregular consumers (car, pool, heat pump). Off: it counts as ordinary house load (like a cooktop)."
                     }
                 },
                 "reconfigure": {
                     "title": "Change consumer",
-                    "description": "A big, irregular consumer such as a heat pump. Its power is taken off the measured house load before the load per hour is learned. Not used for the control.",
+                    "description": "A consumer in the house, such as a heat pump, pool or cooktop.",
                     "data": {
                         "name": "Name",
                         "consumer_power_entity": "Power",
-                        "consumer_energy_entity": "Total used"
+                        "consumer_energy_entity": "Total used",
+                        "exclude_from_learning": "Keep out of the learned consumption"
                     },
                     "data_description": {
                         "name": "What the consumer is called, in the list of consumers.",
                         "consumer_power_entity": "The power the consumer uses right now.",
-                        "consumer_energy_entity": "The total used energy (a rising counter in kWh). Optional."
+                        "consumer_energy_entity": "The total used energy (a rising counter in kWh). Optional.",
+                        "exclude_from_learning": "On: its power is taken off the house load before the load per hour is learned, for big, irregular consumers (car, pool, heat pump). Off: it counts as ordinary house load (like a cooktop)."
                     }
                 }
             },

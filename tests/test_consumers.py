@@ -134,6 +134,7 @@ async def test_add_ev_charger(hass: HomeAssistant):
         "ev_charger_power_entity",
         "ev_charger_energy_entity",
         "ev_charger_phase_entities",
+        "exclude_from_learning",
     ]
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
@@ -152,6 +153,7 @@ async def test_add_ev_charger(hass: HomeAssistant):
             "ev_charger_power_entity": "sensor.alfen_vermogen",
             "ev_charger_energy_entity": "sensor.alfen_energie",
             "ev_charger_phase_entities": ["sensor.alfen_l1", "sensor.alfen_l2"],
+            "exclude_from_learning": True,
         }
     ]
 
@@ -174,11 +176,22 @@ async def test_change_ev_charger(hass: HomeAssistant):
     )
 
     assert result["reason"] == "reconfigure_successful"
-    assert ev_chargers(entry) == [{"name": "Garage", "ev_charger_power_entity": "sensor.b"}]
+    assert ev_chargers(entry) == [
+        {"name": "Garage", "ev_charger_power_entity": "sensor.b", "exclude_from_learning": True}
+    ]
 
 
 async def test_consumer_options_and_cards_from_the_chargers(hass: HomeAssistant):
-    entry = _entry(hass, {"excluded_load_entities": ["sensor.warmtepomp"]})
+    entry = _entry(hass)
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={"consumer_power_entity": "sensor.warmtepomp"},
+            subentry_type=SUBENTRY_CONSUMER,
+            title="Warmtepomp",
+            unique_id=None,
+        ),
+    )
     _add_charger(
         hass,
         entry,
@@ -286,6 +299,7 @@ async def test_add_consumer(hass: HomeAssistant):
         "name",
         "consumer_power_entity",
         "consumer_energy_entity",
+        "exclude_from_learning",
     ]
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
@@ -302,6 +316,7 @@ async def test_add_consumer(hass: HomeAssistant):
             "name": "Warmtepomp",
             "consumer_power_entity": "sensor.warmtepomp_vermogen",
             "consumer_energy_entity": "sensor.warmtepomp_energie",
+            "exclude_from_learning": True,
         }
     ]
 
@@ -353,3 +368,30 @@ async def test_migrate_moves_the_consumers_into_subentries(hass: HomeAssistant):
     assert other_consumers(entry) == [
         {"name": "sensor.warmtepomp", "consumer_power_entity": "sensor.warmtepomp"}
     ]
+
+
+async def test_consumers_counted_as_house_load_when_not_left_out(hass: HomeAssistant):
+    """A cooktop or a charger set to count as ordinary house load isn't
+    taken off it; the charger is still shown in the panel."""
+    entry = _entry(hass)
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={"consumer_power_entity": "sensor.kookplaat", "exclude_from_learning": False},
+            subentry_type=SUBENTRY_CONSUMER,
+            title="Kookplaat",
+            unique_id=None,
+        ),
+    )
+    _add_charger(
+        hass,
+        entry,
+        "Oprit",
+        {"ev_charger_power_entity": "sensor.oprit_power", "exclude_from_learning": False},
+    )
+    _add_charger(hass, entry, "Garage", {"ev_charger_power_entity": "sensor.garage_power"})
+
+    options = consumer_options(entry)
+
+    assert excluded_power_entities(options) == ["sensor.garage_power"]
+    assert ev_charger_power_entities(options) == ["sensor.oprit_power", "sensor.garage_power"]

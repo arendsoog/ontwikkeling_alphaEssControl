@@ -34,7 +34,10 @@ from .const import (
     CONF_EV_CHARGER_PHASE_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITIES,
     CONF_EV_CHARGER_POWER_ENTITY,
+    CONF_EXCLUDE_FROM_LEARNING,
     CONF_EXCLUDED_LOAD_ENTITIES,
+    CONF_EXCLUDED_POWER_ENTITIES,
+    DEFAULT_EXCLUDE_FROM_LEARNING,
     SUBENTRY_CONSUMER,
     SUBENTRY_EV_CHARGER,
 )
@@ -100,7 +103,10 @@ def ev_charger_groups(hass: HomeAssistant, options: Mapping[str, Any]) -> list[d
 
 def excluded_power_entities(options: Mapping[str, Any]) -> list[str]:
     """All power sensors left out of the learned house load: the EV
-    chargers' and the other consumers'."""
+    chargers' and the other consumers' -- from subentries only those set to
+    be left out."""
+    if CONF_EXCLUDED_POWER_ENTITIES in options:
+        return list(options[CONF_EXCLUDED_POWER_ENTITIES])
     return _unique(
         [*ev_charger_power_entities(options), *(options.get(CONF_EXCLUDED_LOAD_ENTITIES) or [])]
     )
@@ -129,11 +135,21 @@ def consumer_options(entry: ConfigEntry) -> dict[str, Any]:
     in under the list keys. Without any, the options as they are (an entry
     not migrated yet still has them there)."""
     options = dict(entry.options)
-    if consumers := other_consumers(entry):
-        options[CONF_EXCLUDED_LOAD_ENTITIES] = _unique(
-            [consumer.get(CONF_CONSUMER_POWER_ENTITY) for consumer in consumers]
-        )
+    consumers = other_consumers(entry)
     chargers = ev_chargers(entry)
+    if not (consumers or chargers):
+        return options
+
+    def left_out(item: Mapping[str, Any]) -> bool:
+        return item.get(CONF_EXCLUDE_FROM_LEARNING, DEFAULT_EXCLUDE_FROM_LEARNING)
+
+    options[CONF_EXCLUDED_POWER_ENTITIES] = _unique(
+        [e for charger in chargers if left_out(charger) for e in ev_charger_power_entities(charger)]
+        + [consumer.get(CONF_CONSUMER_POWER_ENTITY) for consumer in consumers if left_out(consumer)]
+    )
+    options[CONF_EXCLUDED_LOAD_ENTITIES] = _unique(
+        [consumer.get(CONF_CONSUMER_POWER_ENTITY) for consumer in consumers]
+    )
     if not chargers:
         return options
     for key in (CONF_EV_CHARGER_POWER_ENTITY, CONF_EV_CHARGER_ENERGY_ENTITY):
