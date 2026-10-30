@@ -365,7 +365,7 @@
                 "name": "Planning vandaag"
             },
             "extra_pv_power": {
-                "name": "PV vermogen extra"
+                "name": "PV vermogen installaties"
             },
             "total_pv_power": {
                 "name": "PV vermogen totaal"

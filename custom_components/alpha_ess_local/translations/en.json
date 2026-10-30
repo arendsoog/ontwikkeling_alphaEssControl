@@ -365,7 +365,7 @@
                 "name": "Today's plan"
             },
             "extra_pv_power": {
-                "name": "PV power extra"
+                "name": "PV power installations"
             },
             "total_pv_power": {
                 "name": "PV power total"
