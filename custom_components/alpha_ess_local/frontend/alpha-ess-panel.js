@@ -1591,6 +1591,7 @@ class AlphaEssPanel extends HTMLElement {
               ])}`
             : ""
         }
+        ${this._lifetimeSection(consumer.energy ? [consumer.energy] : [], "Verbruikt")}
       </section>`;
   }
 
@@ -1654,7 +1655,27 @@ class AlphaEssPanel extends HTMLElement {
             : ""
         }
         ${energy.length ? `<div class="section-title">Energie vandaag</div>${this._energyRows(energy)}` : ""}
+        ${this._lifetimeSection(group.energy, "Geladen")}
       </section>`;
+  }
+
+  // The lifetime totals of a card's kWh counters, as on the AlphaESS card:
+  // one row per counter, named `label` (or after the sensor when several).
+  _lifetimeSection(ids, label) {
+    if (!ids.length) return "";
+    const rows = ids
+      .map((id) => {
+        const s = this._hass.states[id];
+        const name = ids.length > 1 ? (s && s.attributes.friendly_name) || id : label;
+        const value = s && this._hass.formatEntityState ? this._hass.formatEntityState(s) : s ? s.state : "–";
+        return `<div class="kv" data-entity="${esc(id)}"><span>${esc(name)}</span><span>${esc(value)}</span></div>`;
+      })
+      .join("");
+    return `
+        <details>
+          <summary><ha-icon icon="mdi:counter"></ha-icon>Totalen (levensduur)</summary>
+          <div class="kv-grid">${rows}</div>
+        </details>`;
   }
 
   _stateOf(entities, key) {
@@ -1908,6 +1929,7 @@ class AlphaEssPanel extends HTMLElement {
           }</span></div>
           ${this._extraPvSwitchRow(st)}
         </div>
+        ${this._lifetimeSection(this._pvEnergyIds(), "Opgewekt")}
       </section>`;
   }
 
