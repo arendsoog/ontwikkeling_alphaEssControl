@@ -10,6 +10,10 @@
 const DOMAIN = "alpha_ess_local";
 const HISTORY_REFRESH_MS = 5 * 60 * 1000;
 const STATUS_REFRESH_MS = 30 * 1000;
+// A history load that came back empty-handed (HA restarting, the connection
+// just back) is retried this soon, at most HISTORY_RETRIES times in a row.
+const HISTORY_RETRY_MS = 30 * 1000;
+const HISTORY_RETRIES = 10;
 
 const COLOR = {
   charge: "#2dd4bf",
@@ -429,6 +433,7 @@ class AlphaEssPanel extends HTMLElement {
   }
 
   connectedCallback() {
+    if (this._hass) this._watchConnection(this._hass.connection);
     this._timers.push(
       setInterval(() => {
         this._loadHistory();
@@ -450,7 +455,34 @@ class AlphaEssPanel extends HTMLElement {
   disconnectedCallback() {
     this._timers.forEach(clearInterval);
     this._timers = [];
+    clearTimeout(this._retryTimer);
+    this._retryTimer = null;
     document.removeEventListener("visibilitychange", this._onVisible);
+    this._watchConnection(null);
+  }
+
+  // HA restarted or the connection dropped (a sleeping PC or tablet): once
+  // it is back, fetch right away instead of waiting for the timers.
+  _watchConnection(conn) {
+    if (conn === this._conn) return;
+    if (this._conn) this._conn.removeEventListener("ready", this._onReconnect);
+    this._conn = conn;
+    if (!conn) return;
+    this._onReconnect = this._onReconnect || (() => this._refreshNow());
+    conn.addEventListener("ready", this._onReconnect);
+  }
+
+  // Try again soon when a load failed, rather than after HISTORY_REFRESH_MS.
+  _retryHistory(failed) {
+    clearTimeout(this._retryTimer);
+    this._retryTimer = null;
+    if (!failed) {
+      this._historyRetries = 0;
+      return;
+    }
+    this._historyRetries = (this._historyRetries || 0) + 1;
+    if (this._historyRetries > HISTORY_RETRIES || !this.isConnected) return;
+    this._retryTimer = setTimeout(() => this._loadHistory(), HISTORY_RETRY_MS);
   }
 
   _refreshNow() {
@@ -473,6 +505,7 @@ class AlphaEssPanel extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    if (this.isConnected) this._watchConnection(hass.connection);
     if (first) this._renderShell();
     this._update();
     if (first) {
@@ -647,6 +680,7 @@ class AlphaEssPanel extends HTMLElement {
     // older load finishing last can't overwrite them.
     const seq = (this._historySeq = (this._historySeq || 0) + 1);
     const stale = () => seq !== this._historySeq;
+    let failed = false;
 
     try {
       const raw = await this._hass.callWS({
@@ -668,16 +702,21 @@ class AlphaEssPanel extends HTMLElement {
       this._history = history;
     } catch (err) {
       this._history = this._history || {};
+      failed = true;
     }
 
     try {
       const today = await this._hass.callWS({ type: `${DOMAIN}/today_power` });
       if (stale()) return;
       this._todayPower = today && Array.isArray(today.samples) ? today : null;
+      // Nothing while the integration (re)loads after an update or a change.
+      if (!this._todayPower) failed = true;
     } catch (err) {
       // Older backend without the command: fall back to recorder history only.
       this._todayPower = null;
+      failed = true;
     }
+    this._retryHistory(failed);
 
     if (counterIds.length) {
       try {
@@ -1591,6 +1630,7 @@ class AlphaEssPanel extends HTMLElement {
               ])}`
             : ""
         }
+        ${this._lifetimeSection(consumer.energy ? [consumer.energy] : [], "Verbruikt")}
       </section>`;
   }
 
@@ -1654,7 +1694,27 @@ class AlphaEssPanel extends HTMLElement {
             : ""
         }
         ${energy.length ? `<div class="section-title">Energie vandaag</div>${this._energyRows(energy)}` : ""}
+        ${this._lifetimeSection(group.energy, "Geladen")}
       </section>`;
+  }
+
+  // The lifetime totals of a card's kWh counters, as on the AlphaESS card:
+  // one row per counter, named `label` (or after the sensor when several).
+  _lifetimeSection(ids, label) {
+    if (!ids.length) return "";
+    const rows = ids
+      .map((id) => {
+        const s = this._hass.states[id];
+        const name = ids.length > 1 ? (s && s.attributes.friendly_name) || id : label;
+        const value = s && this._hass.formatEntityState ? this._hass.formatEntityState(s) : s ? s.state : "–";
+        return `<div class="kv" data-entity="${esc(id)}"><span>${esc(name)}</span><span>${esc(value)}</span></div>`;
+      })
+      .join("");
+    return `
+        <details>
+          <summary><ha-icon icon="mdi:counter"></ha-icon>Totalen (levensduur)</summary>
+          <div class="kv-grid">${rows}</div>
+        </details>`;
   }
 
   _stateOf(entities, key) {
@@ -1908,6 +1968,7 @@ class AlphaEssPanel extends HTMLElement {
           }</span></div>
           ${this._extraPvSwitchRow(st)}
         </div>
+        ${this._lifetimeSection(this._pvEnergyIds(), "Opgewekt")}
       </section>`;
   }
 
