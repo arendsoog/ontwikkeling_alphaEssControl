@@ -1330,6 +1330,7 @@ class AlphaEssPanel extends HTMLElement {
       row("Volgend uur", actionLabel(next), "", "schedule_next_hour_action"),
       row("Dispatch-modus", this._text("dispatch_current_mode") ?? "–", "", "dispatch_current_mode"),
       row("Handmatige override", st ? (st.manual_override ? actionLabel(st.manual_override) : "Geen") : "–", st && st.manual_override ? "warn" : ""),
+      this._activeSlotRow(st, row),
       row("Prijs nu (all-in)", this._formatted("price_current_hour"), "", "price_current_hour"),
       row("Winststatus", this._formatted("price_earning_status"), "", "price_earning_status"),
     ];
@@ -2331,6 +2332,29 @@ class AlphaEssPanel extends HTMLElement {
       <p class="hint">Een vaste actie op vaste uren, bv. elke nacht van 02:00 tot 05:00 laden vanaf het net. De planning houdt die uren vast en plant de rest van de dag eromheen. Handmatig overschrijven gaat voor. Wordt alleen echt naar de omvormer geschreven als batterijsturing aan staat.</p>
       ${rows || (draft ? "" : '<div class="muted slot-none">Geen tijdsloten.</div>')}
       ${draft ? this._slotForm(draft) : add}`;
+  }
+
+  // The time slot covering this hour, as the backend picks it (the first
+  // enabled one; past midnight its last hours fall on the next day).
+  _activeSlot(slots) {
+    const now = new Date();
+    const hour = now.getHours();
+    const weekday = (now.getDay() + 6) % 7; // Monday = 0, as in Python
+    return (slots || []).find((s) => {
+      if (s.enabled === false) return false;
+      if (s.start < s.end) return s.days.includes(weekday) && hour >= s.start && hour < s.end;
+      return (s.days.includes(weekday) && hour >= s.start) || (s.days.includes((weekday + 6) % 7) && hour < s.end);
+    });
+  }
+
+  // Overview status row: the time slot in force now (none while a manual
+  // override goes before it).
+  _activeSlotRow(st, row) {
+    if (!st || !Array.isArray(st.time_slots) || !st.time_slots.length) return "";
+    const slot = this._activeSlot(st.time_slots);
+    if (!slot) return row("Tijdslot", "Geen", "muted");
+    const text = `${this._slotSummary(slot)} (${pad2(slot.start)}:00–${pad2(slot.end % 24)}:00)`;
+    return row("Tijdslot", st.manual_override ? `${text} — override gaat voor` : text, st.manual_override ? "muted" : "warn");
   }
 
   _slotDays(days) {
