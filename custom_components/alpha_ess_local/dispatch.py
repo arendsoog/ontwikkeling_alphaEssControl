@@ -74,6 +74,10 @@ class DispatchConfig:
     # plan's total Wh. Defaults to unconstrained so existing callers/tests
     # that don't pass it keep prior (uncapped) behavior.
     max_grid_load: float = float("inf")
+    # A time slot's power (W): the most to charge from the grid with, or
+    # the power to discharge with.
+    max_charge_power: float = float("inf")
+    max_discharge_power: float = float("inf")
 
 
 @dataclass
@@ -179,7 +183,7 @@ def decide_dispatch(
         pv_on = True
     elif mode == DispatchMode.STATE_OF_CHARGE_CONTROL:
         if hour.charge == Charge.CHARGING_DISCHARGE:
-            power = -full_power
+            power = -int(min(full_power, config.max_discharge_power))
         else:
             # CHARGING_ON_GRID: throttle the actual charge power so
             # house_load_w + power stays under the capaciteitstarief cap —
@@ -188,7 +192,13 @@ def decide_dispatch(
             # min() with full_power (already int) before casting to int
             # keeps this safe even when max_grid_load is unconstrained
             # (float("inf") would overflow an int() cast on its own).
-            power = int(min(full_power, max(0.0, config.max_grid_load - house_load_w)))
+            power = int(
+                min(
+                    full_power,
+                    config.max_charge_power,
+                    max(0.0, config.max_grid_load - house_load_w),
+                )
+            )
         param_cutoff_soc = cutoff_soc
         pv_on = True
     elif mode == DispatchMode.MAXIMISE_CONSUMPTION:
@@ -281,7 +291,9 @@ def regulate_grid_charge_power(
         return current_power
     error = cap - grid_w
     gain = GRID_CHARGE_GAIN_DOWN if error < 0 else GRID_CHARGE_GAIN_UP
-    upper = min(float(_full_dispatch_power(config.usable_battery_capacity)), cap)
+    upper = min(
+        float(_full_dispatch_power(config.usable_battery_capacity)), cap, config.max_charge_power
+    )
     new = current_power + gain * error
     if error > 0 and actual_charge_w is not None:
         new = min(new, max(0.0, actual_charge_w) + error)

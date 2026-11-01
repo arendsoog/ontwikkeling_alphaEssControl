@@ -57,6 +57,18 @@ const OVERRIDES = [
   { service: "force_no_charging", label: "Niet laden", icon: "mdi:battery-off-outline" },
 ];
 
+// Time slots: the actions a slot can fix, and which of them take a SOC
+// (charging: up to it, discharging: down to it) and a power.
+const SLOT_ACTIONS = [
+  { key: "charge_grid", label: "Laden vanaf net", soc: "Laden tot", power: true },
+  { key: "charge_pv", label: "Laden met zon", soc: "Laden tot", power: false },
+  { key: "discharge", label: "Ontladen", soc: "Ontladen tot", power: true },
+  { key: "no_charging", label: "Niet laden", soc: null, power: false },
+  { key: "no_discharging", label: "Niet ontladen", soc: null, power: false },
+];
+const SLOT_DAYS = ["ma", "di", "wo", "do", "vr", "za", "zo"];
+const MAX_TIME_SLOTS = 8;
+
 const SETTINGS = [
   "max_soc_positive_price",
   "max_soc_negative_price",
@@ -837,6 +849,7 @@ class AlphaEssPanel extends HTMLElement {
       </div>
       <div class="content tab-page" data-page="control">
         <section class="card" id="controls"></section>
+        <section class="card" id="slots"></section>
       </div>
       <div class="content tab-page" data-page="overview">
         <div class="grid g-status">
@@ -912,6 +925,10 @@ class AlphaEssPanel extends HTMLElement {
       } else this._moreInfo(target.dataset.entity);
     });
     root.addEventListener("click", (ev) => {
+      const slot = ev.composedPath().find((el) => el.dataset && el.dataset.slot);
+      if (slot) this._slotClick(slot);
+    });
+    root.addEventListener("click", (ev) => {
       const sw = ev.composedPath().find((el) => el.classList && el.classList.contains("switch"));
       if (sw) this._toggle(sw);
       const hour = ev.composedPath().find((el) => el.dataset && el.dataset.hour !== undefined);
@@ -939,6 +956,7 @@ class AlphaEssPanel extends HTMLElement {
     root.addEventListener("change", (ev) => {
       const el = ev.composedPath()[0];
       if (el.dataset && el.dataset.number) this._setNumber(el);
+      if (el.dataset && el.dataset.slotField) this._slotField(el);
     });
     root.addEventListener("mousemove", (ev) => this._hover(ev));
     root.addEventListener("mouseleave", () => this._hideHover(), true);
@@ -959,6 +977,7 @@ class AlphaEssPanel extends HTMLElement {
     this._card("history", this._renderHistory());
     // Don't rebuild the controls while a slider is being dragged.
     if (!this._dragging) this._card("controls", this._renderControls());
+    this._card("slots", this._renderSlots());
   }
 
   _applyTab() {
@@ -2235,7 +2254,10 @@ class AlphaEssPanel extends HTMLElement {
     const on = el.dataset.on !== "true";
     if (on && el.dataset.confirm && !window.confirm(el.dataset.confirm)) return;
     try {
-      if (el.dataset.subentry) {
+      if (el.dataset.slotToggle) {
+        const slots = this._slots().map((s) => (s.id === el.dataset.slotToggle ? { ...s, enabled: on } : s));
+        await this._saveSlots(slots);
+      } else if (el.dataset.subentry) {
         await this._hass.callWS({ type: `${DOMAIN}/set_exclude_from_learning`, subentry_id: el.dataset.subentry, value: on });
         // Applies live (no reload): show it right away.
         if (this._status) {
@@ -2267,6 +2289,177 @@ class AlphaEssPanel extends HTMLElement {
       }
     } catch (err) {
       window.alert(`Mislukt: ${err.message || err}`);
+    }
+  }
+
+  // ------------------------------------------------------------ time slots
+
+  _slots() {
+    return (this._status && this._status.time_slots) || [];
+  }
+
+  // The time slots card: the slots, each with its switch, and the form to
+  // add or change one. Its own card, rebuilt only when a slot or the form
+  // changes, so typing in the form isn't interrupted.
+  _renderSlots() {
+    const st = this._status;
+    const header = this._header("mdi:clock-time-four-outline", "Tijdsloten");
+    if (!st || !Array.isArray(st.time_slots)) return header;
+    const slots = st.time_slots;
+    const draft = this._slotDraft;
+    const rows = slots
+      .map((slot) => {
+        const on = slot.enabled !== false;
+        return `
+        <div class="slot ${on ? "" : "off"}">
+          <button class="switch ${on ? "on" : ""}" role="switch" aria-checked="${on}" data-slot-toggle="${esc(slot.id)}" data-on="${on}"><span></span></button>
+          <div class="slot-text">
+            <div class="slot-time">${pad2(slot.start)}:00–${pad2(slot.end % 24)}:00 <span class="muted">${esc(this._slotDays(slot.days))}</span></div>
+            <div class="muted">${esc(this._slotSummary(slot))}</div>
+          </div>
+          <button class="icon-btn" data-slot="edit" data-id="${esc(slot.id)}" title="Wijzigen"><ha-icon icon="mdi:pencil-outline"></ha-icon></button>
+          <button class="icon-btn" data-slot="delete" data-id="${esc(slot.id)}" title="Verwijderen"><ha-icon icon="mdi:delete-outline"></ha-icon></button>
+        </div>`;
+      })
+      .join("");
+    const add =
+      !draft && slots.length < MAX_TIME_SLOTS
+        ? `<button class="action slot-add" data-slot="new"><ha-icon icon="mdi:plus"></ha-icon><span>Tijdslot toevoegen</span></button>`
+        : "";
+    return `
+      ${header}
+      <p class="hint">Een vaste actie op vaste uren, bv. elke nacht van 02:00 tot 05:00 laden vanaf het net. De planning houdt die uren vast en plant de rest van de dag eromheen. Handmatig overschrijven gaat voor. Wordt alleen echt naar de omvormer geschreven als batterijsturing aan staat.</p>
+      ${rows || (draft ? "" : '<div class="muted slot-none">Geen tijdsloten.</div>')}
+      ${draft ? this._slotForm(draft) : add}`;
+  }
+
+  _slotDays(days) {
+    const sorted = [...days].sort((a, b) => a - b);
+    if (sorted.length === 7) return "elke dag";
+    if (sorted.join() === "0,1,2,3,4") return "werkdagen";
+    if (sorted.join() === "5,6") return "weekend";
+    return sorted.map((d) => SLOT_DAYS[d]).join(" ");
+  }
+
+  _slotSummary(slot) {
+    const action = SLOT_ACTIONS.find((a) => a.key === slot.action) || { label: slot.action };
+    const parts = [action.label];
+    if (action.soc && slot.soc !== null && slot.soc !== undefined) parts.push(`tot ${slot.soc}%`);
+    if (action.power && slot.power) parts.push(`${slot.power} W`);
+    return parts.join(" · ");
+  }
+
+  _slotForm(draft) {
+    const action = SLOT_ACTIONS.find((a) => a.key === draft.action) || SLOT_ACTIONS[0];
+    const hours = (from, to, value) =>
+      Array.from({ length: to - from + 1 }, (_, i) => from + i)
+        .map((h) => `<option value="${h}" ${h === value ? "selected" : ""}>${pad2(h % 24)}:00</option>`)
+        .join("");
+    const days = SLOT_DAYS.map(
+      (d, i) => `<button class="hour ${draft.days.includes(i) ? "on" : ""}" data-slot="day" data-day="${i}" aria-pressed="${draft.days.includes(i)}">${d}</button>`
+    ).join("");
+    const actions = SLOT_ACTIONS.map(
+      (a) => `<option value="${a.key}" ${a.key === draft.action ? "selected" : ""}>${a.label}</option>`
+    ).join("");
+    const value = (v) => (v === null || v === undefined ? "" : v);
+    return `
+      <div class="slot-form">
+        <label>Van<select data-slot-field="start">${hours(0, 23, draft.start)}</select></label>
+        <label>Tot<select data-slot-field="end">${hours(1, 24, draft.end)}</select></label>
+        <label class="wide">Actie<select data-slot-field="action">${actions}</select></label>
+        ${
+          action.soc
+            ? `<label>${action.soc} (%)<input type="number" min="0" max="100" step="1" placeholder="zoals gepland" data-slot-field="soc" value="${value(draft.soc)}"></label>`
+            : ""
+        }
+        ${
+          action.power
+            ? `<label>Vermogen (W)<input type="number" min="100" step="50" placeholder="zoals gepland" data-slot-field="power" value="${value(draft.power)}"></label>`
+            : ""
+        }
+        <div class="wide"><div class="slot-label">Dagen</div><div class="day-grid">${days}</div></div>
+        <div class="wide slot-buttons">
+          <button class="action" data-slot="cancel"><span>Annuleren</span></button>
+          <button class="action active" data-slot="save"><ha-icon icon="mdi:check"></ha-icon><span>Opslaan</span></button>
+        </div>
+      </div>
+      <p class="hint">Een slot dat eindigt vóór het begint, loopt over middernacht door. Leeg SOC of vermogen: zoals de planning het zou doen (vermogen binnen de max belasting net-laden).</p>`;
+  }
+
+  _slotClick(el) {
+    const kind = el.dataset.slot;
+    if (kind === "new") {
+      this._slotDraft = { id: null, start: 2, end: 5, days: [0, 1, 2, 3, 4, 5, 6], action: "charge_grid", soc: null, power: null, enabled: true };
+    } else if (kind === "edit") {
+      const slot = this._slots().find((s) => s.id === el.dataset.id);
+      if (slot) this._slotDraft = { ...slot, days: [...slot.days] };
+    } else if (kind === "cancel") {
+      this._slotDraft = null;
+    } else if (kind === "day" && this._slotDraft) {
+      const day = Number(el.dataset.day);
+      const days = this._slotDraft.days;
+      this._slotDraft.days = days.includes(day) ? days.filter((d) => d !== day) : [...days, day].sort((a, b) => a - b);
+    } else if (kind === "delete") {
+      const slot = this._slots().find((s) => s.id === el.dataset.id);
+      if (!slot || !window.confirm(`Tijdslot ${pad2(slot.start)}:00–${pad2(slot.end % 24)}:00 verwijderen?`)) return;
+      this._saveSlots(this._slots().filter((s) => s.id !== slot.id));
+      return;
+    } else if (kind === "save") {
+      this._saveDraft();
+      return;
+    }
+    this._renderAll();
+  }
+
+  _slotField(el) {
+    if (!this._slotDraft) return;
+    const field = el.dataset.slotField;
+    let value = el.value;
+    if (field === "action") value = String(value);
+    else if (value === "") value = null;
+    else value = Number(value);
+    this._slotDraft = { ...this._slotDraft, [field]: value };
+    this._renderAll();
+  }
+
+  async _saveDraft() {
+    const draft = this._slotDraft;
+    if (!draft.days.length) {
+      window.alert("Kies minstens één dag.");
+      return;
+    }
+    if (draft.start === draft.end % 24) {
+      window.alert("Begin en einde mogen niet hetzelfde uur zijn.");
+      return;
+    }
+    const action = SLOT_ACTIONS.find((a) => a.key === draft.action);
+    const slot = {
+      id: draft.id || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      start: draft.start,
+      end: draft.end,
+      days: draft.days,
+      action: draft.action,
+      soc: action.soc && draft.soc !== null ? Math.round(Math.min(100, Math.max(0, draft.soc))) : null,
+      power: action.power && draft.power !== null ? Math.max(100, Math.round(draft.power / 50) * 50) : null,
+      enabled: draft.enabled !== false,
+    };
+    const slots = this._slots();
+    const next = draft.id ? slots.map((s) => (s.id === draft.id ? slot : s)) : [...slots, slot];
+    if (await this._saveSlots(next)) this._slotDraft = null;
+    this._renderAll();
+  }
+
+  async _saveSlots(slots) {
+    try {
+      const result = await this._hass.callWS({ type: `${DOMAIN}/set_time_slots`, slots });
+      // Applies live (no reload): show it right away.
+      if (this._status) this._status = { ...this._status, time_slots: result.slots };
+      this._renderAll();
+      this._loadStatus();
+      return true;
+    } catch (err) {
+      window.alert(`Mislukt: ${err.message || err}`);
+      return false;
     }
   }
 
@@ -3265,6 +3458,31 @@ const STYLE = `
   button.action:hover { border-color: var(--accent); }
   button.action.active { border-color: var(--accent); color: var(--accent); }
   button.action.clear { width: 100%; margin-top: 8px; justify-content: center; }
+
+  /* time slots */
+  .slot { display: flex; align-items: center; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--line); max-width: 720px; }
+  .slot .switch { margin-top: 0; flex: none; }
+  .slot.off .slot-text { opacity: 0.5; }
+  .slot-text { flex: 1; min-width: 0; font-size: 14px; }
+  .slot-time { font-size: 16px; font-variant-numeric: tabular-nums; margin-bottom: 2px; }
+  .slot-none { font-size: 14px; padding: 6px 0 12px; }
+  .icon-btn { background: none; border: none; color: var(--muted); cursor: pointer; padding: 6px; border-radius: 8px; }
+  .icon-btn:hover { color: var(--accent); }
+  button.action.slot-add { margin-top: 12px; }
+  .slot-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; margin-top: 16px; max-width: 520px; }
+  .slot-form .wide { grid-column: 1 / -1; }
+  .slot-form label, .slot-label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+  .slot-form select, .slot-form input {
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--secondary-background-color);
+    color: var(--primary-text-color);
+    font: inherit;
+    font-size: 14px;
+  }
+  .day-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-top: 6px; }
+  .slot-buttons { display: flex; justify-content: flex-end; gap: 8px; }
 
   /* inverters tab */
   .device-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 20px; align-items: start; }

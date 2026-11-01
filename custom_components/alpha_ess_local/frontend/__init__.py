@@ -39,6 +39,7 @@ from ..const import (
     CONF_PROVIDER_RETURN_FEE,
     CONF_PROVIDER_USE_FEE,
     CONF_PV_POWER,
+    CONF_TIME_SLOTS,
     CONF_USABLE_BATTERY_CAPACITY,
     CONF_VAT_PERCENTAGE,
     DEFAULT_ALLOW_PROVIDER_CONTROL_HOURS,
@@ -72,6 +73,7 @@ from ..orchestrator import get_db_path, grid_meter_status
 from ..prices import configured_price_entities
 from ..schedule import set_charging_msg
 from ..solar import configured_solar_sources, solar_source_name
+from ..time_slots import SLOTS_SCHEMA, time_slots
 
 # Specific enough not to collide with a user's own dashboard: a Lovelace
 # dashboard named "AlphaESS" readily gets "alpha-ess" as its URL, which made
@@ -132,6 +134,7 @@ def _ws_panel_status(
                     CONF_ALLOW_PROVIDER_CONTROL_HOURS, DEFAULT_ALLOW_PROVIDER_CONTROL_HOURS
                 )
             ),
+            "time_slots": time_slots(options),
             "usable_battery_capacity": options.get(CONF_USABLE_BATTERY_CAPACITY, 0),
             "inverter_nominal_power": options.get(CONF_INVERTER_NOMINAL_POWER, 0),
             "pv_power": options.get(CONF_PV_POWER, 0),
@@ -344,6 +347,28 @@ def _ws_set_provider_hours(
 
 @websocket_api.websocket_command(
     {
+        vol.Required("type"): f"{DOMAIN}/set_time_slots",
+        vol.Required("slots"): SLOTS_SCHEMA,
+    }
+)
+@websocket_api.require_admin
+@callback
+def _ws_set_time_slots(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Store the time slots; applies live, and the plan is made again."""
+    entries = hass.config_entries.async_loaded_entries(DOMAIN)
+    if not entries:
+        connection.send_error(msg["id"], "not_loaded", "AlphaESSControl is not loaded")
+        return
+    entry = entries[0]
+    slots = time_slots({CONF_TIME_SLOTS: msg["slots"]})
+    hass.config_entries.async_update_entry(entry, options={**entry.options, CONF_TIME_SLOTS: slots})
+    connection.send_result(msg["id"], {"slots": slots})
+
+
+@websocket_api.websocket_command(
+    {
         vol.Required("type"): f"{DOMAIN}/set_exclude_from_learning",
         vol.Required("subentry_id"): str,
         vol.Required("value"): bool,
@@ -507,6 +532,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         websocket_api.async_register_command(hass, _ws_set_option)
         websocket_api.async_register_command(hass, _ws_set_provider_hours)
         websocket_api.async_register_command(hass, _ws_set_exclude_from_learning)
+        websocket_api.async_register_command(hass, _ws_set_time_slots)
         websocket_api.async_register_command(hass, _ws_history)
         hass.data[_DATA_REGISTERED] = True
 

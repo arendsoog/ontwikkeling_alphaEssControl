@@ -83,8 +83,12 @@ from .consumers import consumer_options, excluded_power_entities
 from .data import (
     MAX_FIVE_MINS,
     MAX_HOURS,
+    SOC_MAX,
     SOC_MAX_BATTERY,
+    SOC_MAX_CHARGE_ON_GRID,
     SOC_MAX_CHARGE_PROVIDER,
+    SOC_MIN,
+    SOC_MIN_DISCHARGE_AFTER,
     Charge,
     Day,
     Earning,
@@ -103,6 +107,7 @@ from .schedule import (
 )
 from .schedule import set_schedule as run_scheduler
 from .storage import HourMean
+from .time_slots import fixed_hours, slot_at
 
 if TYPE_CHECKING:
     # Deferred to break the coordinator.py <-> orchestrator.py import cycle
@@ -116,6 +121,17 @@ if TYPE_CHECKING:
 # estimate. Lives here (not storage.py) — it's how an *estimate consumer*
 # treats the data, not something storage.py itself needs to know.
 MIN_SIGMA_WH = 200
+
+
+# A time slot's cutoff when it sets no SOC and the plan has another action
+# this hour (as _finalise_schedule would set it, with the default limits).
+_SLOT_DEFAULT_CUTOFF = {
+    Charge.CHARGING_ON_GRID: SOC_MAX_CHARGE_ON_GRID,
+    Charge.CHARGING_ON_PV: SOC_MAX,
+    Charge.CHARGING_DISCHARGE: SOC_MIN_DISCHARGE_AFTER,
+    Charge.NO_CHARGING: SOC_MIN,
+    Charge.NO_DISCHARGING: SOC_MAX,
+}
 
 
 def get_db_path(hass: HomeAssistant, entry: ConfigEntry) -> str:
@@ -1333,6 +1349,7 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                 storage.retrieve_forecast_spread, db_path
             )
             or None,
+            fixed_hours=fixed_hours(options, today_date),
         )
 
         modbus_data = self._modbus_coordinator.data or {}
@@ -1912,6 +1929,20 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
                 else hour.cutoff_soc,
             )
 
+        # A time slot covering this hour (a manual override goes first): its
+        # action, with its SOC and power. The plan already has the slot's
+        # action; applied here too so it holds when there's no plan.
+        slot = None if self._manual_override is not None else slot_at(options, now)
+        if slot is not None:
+            cutoff_soc = slot.soc
+            if cutoff_soc is None:
+                cutoff_soc = (
+                    hour.cutoff_soc
+                    if hour.charge == slot.action
+                    else _SLOT_DEFAULT_CUTOFF[slot.action]
+                )
+            hour = replace(hour, charge=slot.action, cutoff_soc=cutoff_soc)
+
         client = self._modbus_coordinator.client
 
         try:
@@ -1926,6 +1957,12 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
             usable_battery_capacity=options.get(CONF_USABLE_BATTERY_CAPACITY, 0),
             max_grid_load=_effective_max_grid_load_wh(self.hass, self.config_entry),
         )
+        if slot is not None and slot.power is not None:
+            dispatch_config = replace(
+                dispatch_config,
+                max_charge_power=slot.power,
+                max_discharge_power=slot.power,
+            )
         decision = dispatch.decide_dispatch(
             hour, cur_soc, dispatch_config, hour.estimated_house_load
         )
