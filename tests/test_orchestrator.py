@@ -2029,6 +2029,43 @@ async def test_dispatch_coordinator_control_enabled_writes_when_changed(
     client.async_set_dispatch_param.assert_awaited_once_with(decision.param)
 
 
+async def test_record_dispatch_logs_only_the_grid_charge_power(hass: HomeAssistant):
+    # Normal's placeholder power (let the inverter decide) must not show up
+    # as the hour's largest power next to State of Charge control.
+    entry = MockConfigEntry(domain=DOMAIN, options={CONF_USABLE_BATTERY_CAPACITY: 23000})
+    entry.add_to_hass(hass)
+    coordinator = AlphaEssLocalDispatchCoordinator(
+        hass, entry, _fake_modbus_coordinator(_fake_client(None)), SimpleNamespace(data=None)
+    )
+    now = dt_util.now().replace(minute=0)
+
+    def decision(mode, power):
+        param = DispatchParam(
+            mode=mode,
+            started=True,
+            power=power,
+            cutoff_soc=0,
+            duration=3600,
+            para7=255,
+            pv_on=True,
+        )
+        return SimpleNamespace(param=param)
+
+    with patch.object(storage, "store_hour_dispatch") as store:
+        await coordinator._record_dispatch("db", now, decision(DispatchMode.NORMAL, 21100), True)
+        assert store.call_args.kwargs["power"] is None
+        await coordinator._record_dispatch(
+            "db", now, decision(DispatchMode.STATE_OF_CHARGE_CONTROL, 4400), True
+        )
+        await coordinator._record_dispatch(
+            "db", now, decision(DispatchMode.STATE_OF_CHARGE_CONTROL, 5200), True
+        )
+        await coordinator._record_dispatch("db", now, decision(DispatchMode.NORMAL, 21100), True)
+
+    assert store.call_args.kwargs["mode"] == ("Normal → State of Charge control → Normal")
+    assert (store.call_args.kwargs["power"], store.call_args.kwargs["power_max"]) == (4400, 5200)
+
+
 @pytest.mark.parametrize(
     ("slider_kw", "peak_kw", "expected_w"),
     [
