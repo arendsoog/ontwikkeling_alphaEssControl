@@ -1,5 +1,7 @@
 """Tests for consumers.py: the consumers left out of the learned house load."""
 
+from unittest.mock import ANY
+
 from homeassistant.config_entries import SOURCE_RECONFIGURE, SOURCE_USER, ConfigSubentry
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -217,15 +219,19 @@ async def test_consumer_options_and_cards_from_the_chargers(hass: HomeAssistant)
     ]
     assert ev_charger_cards(hass, entry) == [
         {
+            "id": ANY,
             "name": "Oprit",
             "icon": None,
+            "exclude_from_learning": True,
             "power": ["sensor.oprit_power"],
             "energy": ["sensor.oprit_energy"],
             "phases": ["sensor.oprit_l1"],
         },
         {
+            "id": ANY,
             "name": "Garage",
             "icon": None,
+            "exclude_from_learning": True,
             "power": ["sensor.garage_power"],
             "energy": [],
             "phases": [],
@@ -425,8 +431,10 @@ async def test_consumer_cards_with_their_name_and_icon(hass: HomeAssistant):
 
     assert consumer_cards(entry) == [
         {
+            "id": ANY,
             "name": "Zwembad",
             "icon": "mdi:pool",
+            "exclude_from_learning": True,
             "power": "sensor.zwembad",
             "energy": "sensor.zwembad_energie",
         }

@@ -2,7 +2,7 @@
 
 from datetime import date, timedelta
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.config_entries import ConfigSubentry
@@ -19,8 +19,10 @@ from custom_components.alpha_ess_local.frontend import (
     PANEL_URL_PATH,
     SETTABLE_OPTIONS,
     _is_our_panel,
+    _ws_set_exclude_from_learning,
     _ws_set_option,
     _ws_set_provider_hours,
+    _ws_set_time_slots,
     day_details,
     extra_pv_string_entities,
     source_list,
@@ -254,6 +256,78 @@ def test_set_provider_hours_requires_admin(hass):
         _ws_set_provider_hours(hass, connection, {"id": 1, "type": "x", "hours": [3]})
 
 
+def test_set_time_slots_stores_them(hass):
+    entry = MockConfigEntry(domain=DOMAIN, options={"pv_power": 9800})
+    entry.add_to_hass(hass)
+    connection = _ws_connection()
+    slot = {
+        "id": "a",
+        "start": 2,
+        "end": 5,
+        "days": [0, 1],
+        "action": "no_charging",
+        "soc": 80,
+        "power": None,
+        "enabled": True,
+    }
+
+    with patch.object(hass.config_entries, "async_loaded_entries", return_value=[entry]):
+        _ws_set_time_slots(hass, connection, {"id": 1, "type": "x", "slots": [slot]})
+
+    # No SOC for an action that has none.
+    stored = {**slot, "soc": None}
+    assert entry.options == {"pv_power": 9800, "time_slots": [stored]}
+    connection.send_result.assert_called_once_with(1, {"slots": [stored]})
+
+
+def test_set_time_slots_requires_admin(hass):
+    connection = _ws_connection(is_admin=False)
+
+    with pytest.raises(Unauthorized):
+        _ws_set_time_slots(hass, connection, {"id": 1, "type": "x", "slots": []})
+
+
+def test_set_exclude_from_learning_updates_the_subentry(hass):
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={"consumer_power_entity": "sensor.zwembad", "exclude_from_learning": True},
+            subentry_type="consumer",
+            title="Zwembad",
+            unique_id=None,
+        ),
+    )
+    subentry_id = next(iter(entry.subentries))
+    connection = _ws_connection()
+
+    with patch.object(hass.config_entries, "async_loaded_entries", return_value=[entry]):
+        _ws_set_exclude_from_learning(
+            hass, connection, {"id": 1, "type": "x", "subentry_id": subentry_id, "value": False}
+        )
+
+    assert entry.subentries[subentry_id].data == {
+        "consumer_power_entity": "sensor.zwembad",
+        "exclude_from_learning": False,
+    }
+    connection.send_result.assert_called_once_with(1, {"exclude_from_learning": False})
+
+
+def test_set_exclude_from_learning_unknown_subentry(hass):
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+    connection = _ws_connection()
+
+    with patch.object(hass.config_entries, "async_loaded_entries", return_value=[entry]):
+        _ws_set_exclude_from_learning(
+            hass, connection, {"id": 1, "type": "x", "subentry_id": "nope", "value": False}
+        )
+
+    connection.send_error.assert_called_once()
+    connection.send_result.assert_not_called()
+
+
 # --- price/solar source order ---------------------------------------------------
 
 
@@ -399,6 +473,46 @@ async def test_pv_installation_change_reloads(hass):
         await async_reload_entry(hass, entry)
 
     reload.assert_called_once_with(entry.entry_id)
+
+
+async def test_time_slot_change_plans_again_without_reload(hass):
+    entry = _loaded_entry(hass, {"pv_power": 9800})
+    entry.runtime_data.schedule_coordinator = MagicMock(async_request_refresh=AsyncMock())
+    hass.config_entries.async_update_entry(
+        entry, options={"pv_power": 9800, "time_slots": [{"id": "a"}]}
+    )
+
+    with patch.object(hass.config_entries, "async_reload") as reload:
+        await async_reload_entry(hass, entry)
+
+    reload.assert_not_called()
+    entry.runtime_data.schedule_coordinator.async_request_refresh.assert_awaited_once()
+
+
+async def test_exclude_from_learning_change_skips_reload(hass):
+    """Counting a consumer in or out of the learned load is read live."""
+    from custom_components.alpha_ess_local import _subentries_snapshot
+
+    entry = _loaded_entry(hass, {})
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={"consumer_power_entity": "sensor.zwembad", "exclude_from_learning": True},
+            subentry_type="consumer",
+            title="Zwembad",
+            unique_id=None,
+        ),
+    )
+    entry.runtime_data.subentries = _subentries_snapshot(entry)
+    subentry = next(iter(entry.subentries.values()))
+    hass.config_entries.async_update_subentry(
+        entry, subentry, data={**subentry.data, "exclude_from_learning": False}
+    )
+
+    with patch.object(hass.config_entries, "async_reload") as reload:
+        await async_reload_entry(hass, entry)
+
+    reload.assert_not_called()
 
 
 # --- sidebar panel identity -----------------------------------------------------

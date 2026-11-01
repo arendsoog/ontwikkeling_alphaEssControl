@@ -114,12 +114,24 @@ def excluded_power_entities(options: Mapping[str, Any]) -> list[str]:
     )
 
 
-def _subentries(entry: ConfigEntry, subentry_type: str) -> list[Mapping[str, Any]]:
+def _subentries(
+    entry: ConfigEntry, subentry_type: str, with_id: bool = False
+) -> list[Mapping[str, Any]]:
     return [
-        {**subentry.data, "name": subentry.title}
+        {
+            **subentry.data,
+            "name": subentry.title,
+            **({"id": subentry.subentry_id} if with_id else {}),
+        }
         for subentry in entry.subentries.values()
         if subentry.subentry_type == subentry_type
     ]
+
+
+def left_out(item: Mapping[str, Any]) -> bool:
+    """Whether an EV charger's or consumer's power is kept out of the
+    learned house load."""
+    return item.get(CONF_EXCLUDE_FROM_LEARNING, DEFAULT_EXCLUDE_FROM_LEARNING)
 
 
 def ev_chargers(entry: ConfigEntry) -> list[Mapping[str, Any]]:
@@ -141,9 +153,6 @@ def consumer_options(entry: ConfigEntry) -> dict[str, Any]:
     chargers = ev_chargers(entry)
     if not (consumers or chargers):
         return options
-
-    def left_out(item: Mapping[str, Any]) -> bool:
-        return item.get(CONF_EXCLUDE_FROM_LEARNING, DEFAULT_EXCLUDE_FROM_LEARNING)
 
     options[CONF_EXCLUDED_POWER_ENTITIES] = _unique(
         [e for charger in chargers if left_out(charger) for e in ev_charger_power_entities(charger)]
@@ -171,13 +180,15 @@ def consumer_options(entry: ConfigEntry) -> dict[str, Any]:
 def ev_charger_cards(hass: HomeAssistant, entry: ConfigEntry) -> list[dict[str, Any]]:
     """The EV chargers' sensors per charger, for the panel's cards: one per
     subentry, named after it (an entry not migrated yet: grouped by device)."""
-    chargers = ev_chargers(entry)
+    chargers = _subentries(entry, SUBENTRY_EV_CHARGER, with_id=True)
     if not chargers:
         return ev_charger_groups(hass, entry.options)
     return [
         {
+            "id": charger["id"],
             "name": charger["name"],
             "icon": charger.get(CONF_ICON),
+            "exclude_from_learning": left_out(charger),
             "power": ev_charger_power_entities(charger),
             "energy": ev_charger_energy_entities(charger),
             "phases": ev_charger_phase_entities(charger),
@@ -190,12 +201,14 @@ def consumer_cards(entry: ConfigEntry) -> list[dict[str, Any]]:
     """The other consumers' sensors per consumer, for the panel's cards."""
     return [
         {
+            "id": consumer["id"],
             "name": consumer["name"],
             "icon": consumer.get(CONF_ICON),
+            "exclude_from_learning": left_out(consumer),
             "power": consumer.get(CONF_CONSUMER_POWER_ENTITY),
             "energy": consumer.get(CONF_CONSUMER_ENERGY_ENTITY),
         }
-        for consumer in other_consumers(entry)
+        for consumer in _subentries(entry, SUBENTRY_CONSUMER, with_id=True)
     ]
 
 

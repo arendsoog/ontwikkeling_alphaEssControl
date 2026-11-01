@@ -145,6 +145,19 @@ These are set on the dashboard's **Controls** tab, not in the options menu; a ch
 - **At most one full battery a day:**
   - On: the battery takes in at most one full battery per day (sun and grid together), and gives at most one full battery per day (house and grid together).
   - Off: there's no daily limit, and scheduled discharging is only done for your own use.
+- **Keep out of the learned consumption:** the same switch as in each EV charger's and consumer's form (see [Consumption sources](#consumption-sources)).
+
+### Time slots
+
+On the **Controls** tab you can add up to 8 time slots: a fixed action in fixed hours, for example every night from 02:00 to 05:00 charge from the grid up to 80% at 1200 W.
+
+- **From / to:** the hours. A slot that ends before it starts runs on past midnight.
+- **Days:** the weekdays it applies on.
+- **Action:** charge from the grid, charge from the sun, discharge, don't charge or don't discharge.
+- **SOC** (optional): for charging, up to this level; for discharging, down to it. Empty: as the plan would.
+- **Power** (optional, charging from the grid and discharging): the power in W. Charging from the grid still stays under the grid limit. Empty: as the plan would.
+
+The planner treats a slot's hours as fixed and plans the rest of the day around them, so the expected state of charge stays right. A slot applies even when the plan would never choose it, and outside the once-per-day limit. Each slot has a switch to pause it. A manual override goes before a slot, and nothing is sent to the inverter while **Battery control** is off.
 
 ## The dashboard
 
@@ -156,7 +169,7 @@ The integration adds **AlphaESS Control** to the sidebar, with four tabs.
   - the day's prices, solar and plan, with a decision log of what was planned per hour and why;
   - the integration status: which price/solar source is in use, which grid meter, and which grid-charge limit applies.
 - **Installations:** one card per AlphaESS (power, MPPTs, battery health, lifetime totals), a card for the PV installations with their switches, one card per EV charger and one per consumer.
-- **Control:** the switches and sliders below, and buttons to override the plan for the current hour.
+- **Control:** the switches and sliders above, the time slots, and buttons to override the plan for the current hour.
 - **History:** energy and savings per day, week, month or year.
 
 ## How the planning works

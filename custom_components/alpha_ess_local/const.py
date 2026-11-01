@@ -180,6 +180,8 @@ CONF_EXCLUDED_POWER_ENTITIES = "excluded_power_entities"
 # Options flow: scheduler tuning (config.ini [Daily])
 CONF_ALLOW_PROVIDER_CONTROL_HOURS = "allow_provider_control_hours"
 DEFAULT_ALLOW_PROVIDER_CONTROL_HOURS: list[str] = []
+# Fixed time slots (time_slots.py), set from the panel.
+CONF_TIME_SLOTS = "time_slots"
 # Minimum daily profit (EUR) the optimized schedule must clear over the
 # baseline before it's used instead of falling back — not an options-flow
 # field: a live-adjustable `number` entity (number.py), same "Bediening"

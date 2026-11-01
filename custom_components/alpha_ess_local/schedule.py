@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import copy
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .const import LOGGER
 from .data import (
@@ -41,6 +41,7 @@ from .data import (
 )
 from .prices import mk_return_price, mk_use_price
 from .storage import lead_bucket
+from .time_slots import FixedHour
 
 SOC_STEPS = 100
 CHARGE_LIMIT = 10000.0  # Wh
@@ -130,6 +131,13 @@ class ScheduleConfig:
     # the factor real/forecast solar at each scenario's percentile
     # (scenario_percentiles). None, or a missing group: the fixed factors.
     solar_spread: dict[int, tuple[float, ...]] | None = None
+    # Hours a time slot fixes (time_slots.fixed_hours), by hour index
+    # (0..47): only the slot's action, with its SOC and power, and outside
+    # the once-per-day budget -- the plan is made around them.
+    fixed_hours: dict[int, FixedHour] | None = None
+    # At most this much out of the battery in an hour's grid discharge (a
+    # slot's power).
+    discharge_limit_wh: float = DISCHARGE_LIMIT
 
 
 @dataclass(frozen=True)
@@ -409,7 +417,7 @@ def _evaluate_hour_action(
         and config.discharge_enabled
         and not config.multiple_per_day  # then the battery only supplies the house
     ):
-        discharge_soc = min(soc_wh - max(min_soc, max_discharge_after), DISCHARGE_LIMIT)
+        discharge_soc = min(soc_wh - max(min_soc, max_discharge_after), config.discharge_limit_wh)
         if discharge_soc > 0.0:
             batt_eff = _battery_efficiency(discharge_soc, battery_capacity)
             inv_eff = _inverter_efficiency(discharge_soc, inverter_nominal_power)
@@ -456,14 +464,67 @@ class _Option:
     start_soc_index: int = 0
 
 
+# When a slot's action can't be done from some SOC (charging, but already
+# at its SOC; discharging at a negative price), the hour holds instead, as
+# the dispatch then does -- still under the slot's action.
+_SLOT_HOLD = (Charge.NO_DISCHARGING, Charge.NO_CHARGING, Charge.CHARGING_ON_PV)
+
+
+def _slot_config(config: ScheduleConfig, fixed: FixedHour) -> ScheduleConfig:
+    """The config a slot's hour is evaluated with: its SOC as the charge
+    ceiling or discharge floor, its power as the discharge limit, and its
+    discharge allowed whatever the switch or the once-per-day setting say."""
+    changes: dict = {"discharge_enabled": True, "multiple_per_day": False}
+    if fixed.soc is not None:
+        if fixed.action == Charge.CHARGING_ON_GRID:
+            changes["max_soc_positive_price"] = fixed.soc
+            changes["max_soc_negative_price"] = fixed.soc
+        elif fixed.action == Charge.CHARGING_ON_PV:
+            changes["max_soc_negative_price"] = fixed.soc
+        elif fixed.action == Charge.CHARGING_DISCHARGE:
+            changes["min_soc_discharge"] = fixed.soc
+    if fixed.power is not None and fixed.action == Charge.CHARGING_DISCHARGE:
+        changes["discharge_limit_wh"] = float(fixed.power)
+    return replace(config, **changes)
+
+
+def _slot_options(
+    the_hour: Hour, config: ScheduleConfig, fixed: FixedHour, step_wh: float
+) -> list[list[_Option]]:
+    """A slot's hour: per SOC index its one action (or a hold, see _SLOT_HOLD)."""
+    slot_config = _slot_config(config, fixed)
+    grid_limit = None
+    if fixed.action == Charge.CHARGING_ON_GRID and fixed.power is not None:
+        grid_limit = float(fixed.power)
+    table = []
+    for si in range(SOC_STEPS + 1):
+        soc_wh = si * step_wh
+        for action in (fixed.action, *_SLOT_HOLD):
+            new_soc_wh, profit, done, _du = _evaluate_hour_action(
+                action, the_hour, soc_wh, False, False, slot_config, 0.0, grid_limit
+            )
+            if profit != float("-inf"):
+                break
+        if profit == float("-inf"):
+            table.append([])
+            continue
+        ns = int(_clamp(round(new_soc_wh / step_wh) if step_wh else 0, 0, SOC_STEPS))
+        units = round(max(0, ns - si) / _SOC_PER_CYCLE_STEP)
+        table.append([_Option(fixed.action, ns, profit, done, units, si)])
+    return table
+
+
 def _hour_options(
     the_hour: Hour,
     config: ScheduleConfig,
     room_wh: float,
     step_wh: float,
     grid_allowed: bool,
+    fixed: FixedHour | None = None,
 ) -> list[list[_Option]]:
     """Every feasible _Option per SOC index for one hour."""
+    if fixed is not None:
+        return _slot_options(the_hour, config, fixed, step_wh)
     capacity = config.usable_battery_capacity
     grid_limits = [capacity * level / GRID_LEVELS for level in range(1, GRID_LEVELS + 1)]
     table = []
@@ -522,6 +583,7 @@ class _Plan:
         self.today = today
         self.tomorrow = tomorrow
         self.multiple = config.multiple_per_day
+        self.fixed = config.fixed_hours or {}
         self.n_states = 1 if self.multiple else (CYCLE_STEPS + 1) * 2
         self.end_hour = 0
         if today.valid:
@@ -555,7 +617,9 @@ class _Plan:
                 math.ceil(solar_after / cycle_step_wh - 1e-9) if cycle_step_wh else 0
             )
             grid_allowed = not (grid_blocked_today and hour < MAX_HOURS)
-            table = _hour_options(the_hour, config, room, step_wh, grid_allowed)
+            table = _hour_options(
+                the_hour, config, room, step_wh, grid_allowed, self.fixed.get(hour)
+            )
             self.options[hour] = table
             if hour == start_hour:
                 self.later = later
@@ -585,6 +649,12 @@ class _Plan:
         unless `reset` is False), or None when the state rules it out."""
         if self.multiple:
             nxt = 0
+        elif hour in self.fixed:
+            # A slot's hour is done whatever the budget; what it charges
+            # still counts in it.
+            charged, discharge_ruled_out = state >> 1, state & 1
+            charged_after = min(charged + option.cycle_units, CYCLE_STEPS)
+            nxt = (charged_after << 1) | discharge_ruled_out
         else:
             charged, discharge_ruled_out = state >> 1, state & 1
             charged_after = charged + option.cycle_units
@@ -888,6 +958,16 @@ def _finalise_schedule(today: Day, tomorrow: Day, config: ScheduleConfig) -> Non
             # hour, where there's no "next hour" to know a target from.
             target_index = _hour_at(i + 1).estimated_start_soc if i + 1 < end_hour else SOC_STEPS
             hour.cutoff_soc = round(target_index / SOC_STEPS * SOC_MAX_BATTERY)
+        # A slot's own SOC: up to it on a charge, down to it on a discharge.
+        fixed = (config.fixed_hours or {}).get(i)
+        if (
+            fixed is not None
+            and fixed.soc is not None
+            and hour.charge == fixed.action
+            and fixed.action
+            in (Charge.CHARGING_ON_GRID, Charge.CHARGING_ON_PV, Charge.CHARGING_DISCHARGE)
+        ):
+            hour.cutoff_soc = fixed.soc
 
 
 # Why set_schedule ended up with the schedule it chose (Day.selection).
