@@ -1006,6 +1006,16 @@ def _select_baseline(
     today.discharge_used = real_discharge_used
 
 
+def _grid_charged_today(today: Day, cur_hour: int, config: ScheduleConfig) -> bool:
+    """Whether an earlier hour today charged from the grid on the plan's
+    own choice (a time slot's hours don't count)."""
+    fixed = config.fixed_hours or {}
+    return any(
+        today.hour[h].charge == Charge.CHARGING_ON_GRID and h not in fixed
+        for h in range(min(cur_hour, len(today.hour)))
+    )
+
+
 def set_schedule(
     cur_soc: int, cur_hour: int, today: Day, tomorrow: Day, config: ScheduleConfig
 ) -> None:
@@ -1120,7 +1130,10 @@ def set_schedule(
         config,
     )
 
-    minimum = config.daily_min_profit
+    # The daily minimum decides whether to start; once the optimum has
+    # grid-charged today it is followed while it still beats the baseline,
+    # rather than dropped for falling a cent under the minimum halfway.
+    minimum = 0.0 if _grid_charged_today(today, cur_hour, config) else config.daily_min_profit
 
     if opt_valid:
         if not config.multiple_per_day:
@@ -1158,6 +1171,7 @@ def set_schedule(
             _assign_day(tomorrow, tomorrow_opt)
             today.selection = SELECTION_OPTIMUM
         today.opt_extra = opt_extra
+        today.min_profit = minimum
     else:
         LOGGER.debug("set_schedule: final schedule failed, selecting baseline")
         _select_baseline(

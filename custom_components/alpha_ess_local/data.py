@@ -150,6 +150,9 @@ class Day:
     # not computed) -- recorded per hour for the panel's decision log.
     selection: str = ""
     opt_extra: float | None = None
+    # The minimum opt_extra was held to (EUR, None if not compared): the
+    # daily minimum profit, or 0 once the optimum grid-charged today.
+    min_profit: float | None = None
     # Which source a price/solar Day was read from (the price entity's id /
     # a solar.SOLAR_SOURCES key), "" if none -- shown in the panel.
     source: str = ""

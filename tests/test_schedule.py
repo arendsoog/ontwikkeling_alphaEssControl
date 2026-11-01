@@ -16,6 +16,7 @@ from custom_components.alpha_ess_local.schedule import (
     SCENARIOS,
     SELECTION_BELOW_MINIMUM,
     SELECTION_BUDGET_USED,
+    SELECTION_OPTIMUM,
     SOC_STEPS,
     SOLAR_SCENARIO_MIN_WH,
     ScheduleConfig,
@@ -33,6 +34,7 @@ from custom_components.alpha_ess_local.schedule import (
     set_schedule,
     solar_reservation,
 )
+from custom_components.alpha_ess_local.time_slots import FixedHour
 
 
 def _config(**overrides) -> ScheduleConfig:
@@ -648,6 +650,35 @@ def test_multiple_per_day_skips_charging_worth_less_than_the_minimum():
 
     assert _sessions(today) == 0
     assert today.selection == SELECTION_BELOW_MINIMUM
+
+
+def test_once_grid_charged_the_optimum_is_followed_below_the_minimum():
+    # The optimum started a grid charge at 00:00; an hour later its extra
+    # falls under the daily minimum but still beats the baseline: it is
+    # followed on, not dropped halfway.
+    today = _two_valley_day(cheap=0.05, dear=0.60)
+    today.hour[0].charge = Charge.CHARGING_ON_GRID
+    config = _config(multiple_per_day=True, daily_min_profit=1000.0)
+    set_schedule(100, 1, today, Day(valid=False), config)
+
+    assert today.selection == SELECTION_OPTIMUM
+    assert today.min_profit == 0.0
+    assert 0 < today.opt_extra < 1000.0
+    assert any(today.hour[h].charge == Charge.CHARGING_ON_GRID for h in range(1, 14))
+
+
+def test_a_slot_grid_charge_leaves_the_minimum_as_it_is():
+    today = _two_valley_day(cheap=0.05, dear=0.60)
+    today.hour[0].charge = Charge.CHARGING_ON_GRID
+    config = _config(
+        multiple_per_day=True,
+        daily_min_profit=1000.0,
+        fixed_hours={0: FixedHour(Charge.CHARGING_ON_GRID)},
+    )
+    set_schedule(100, 1, today, Day(valid=False), config)
+
+    assert today.selection == SELECTION_BELOW_MINIMUM
+    assert today.min_profit == 1000.0
 
 
 def test_multiple_per_day_charges_for_the_morning_before_a_sunny_day():
