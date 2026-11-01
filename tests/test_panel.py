@@ -19,6 +19,7 @@ from custom_components.alpha_ess_local.frontend import (
     PANEL_URL_PATH,
     SETTABLE_OPTIONS,
     _is_our_panel,
+    _ws_set_exclude_from_learning,
     _ws_set_option,
     _ws_set_provider_hours,
     day_details,
@@ -254,6 +255,47 @@ def test_set_provider_hours_requires_admin(hass):
         _ws_set_provider_hours(hass, connection, {"id": 1, "type": "x", "hours": [3]})
 
 
+def test_set_exclude_from_learning_updates_the_subentry(hass):
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={"consumer_power_entity": "sensor.zwembad", "exclude_from_learning": True},
+            subentry_type="consumer",
+            title="Zwembad",
+            unique_id=None,
+        ),
+    )
+    subentry_id = next(iter(entry.subentries))
+    connection = _ws_connection()
+
+    with patch.object(hass.config_entries, "async_loaded_entries", return_value=[entry]):
+        _ws_set_exclude_from_learning(
+            hass, connection, {"id": 1, "type": "x", "subentry_id": subentry_id, "value": False}
+        )
+
+    assert entry.subentries[subentry_id].data == {
+        "consumer_power_entity": "sensor.zwembad",
+        "exclude_from_learning": False,
+    }
+    connection.send_result.assert_called_once_with(1, {"exclude_from_learning": False})
+
+
+def test_set_exclude_from_learning_unknown_subentry(hass):
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+    connection = _ws_connection()
+
+    with patch.object(hass.config_entries, "async_loaded_entries", return_value=[entry]):
+        _ws_set_exclude_from_learning(
+            hass, connection, {"id": 1, "type": "x", "subentry_id": "nope", "value": False}
+        )
+
+    connection.send_error.assert_called_once()
+    connection.send_result.assert_not_called()
+
+
 # --- price/solar source order ---------------------------------------------------
 
 
@@ -399,6 +441,32 @@ async def test_pv_installation_change_reloads(hass):
         await async_reload_entry(hass, entry)
 
     reload.assert_called_once_with(entry.entry_id)
+
+
+async def test_exclude_from_learning_change_skips_reload(hass):
+    """Counting a consumer in or out of the learned load is read live."""
+    from custom_components.alpha_ess_local import _subentries_snapshot
+
+    entry = _loaded_entry(hass, {})
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={"consumer_power_entity": "sensor.zwembad", "exclude_from_learning": True},
+            subentry_type="consumer",
+            title="Zwembad",
+            unique_id=None,
+        ),
+    )
+    entry.runtime_data.subentries = _subentries_snapshot(entry)
+    subentry = next(iter(entry.subentries.values()))
+    hass.config_entries.async_update_subentry(
+        entry, subentry, data={**subentry.data, "exclude_from_learning": False}
+    )
+
+    with patch.object(hass.config_entries, "async_reload") as reload:
+        await async_reload_entry(hass, entry)
+
+    reload.assert_not_called()
 
 
 # --- sidebar panel identity -----------------------------------------------------

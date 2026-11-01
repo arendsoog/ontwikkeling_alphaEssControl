@@ -2036,6 +2036,7 @@ class AlphaEssPanel extends HTMLElement {
           info: "Schakelt de PV-installatie uit bij negatieve prijzen, zodra de batterij haar doel-SOC heeft bereikt.",
         }),
         this._providerHours(st),
+        this._learningSwitches(st),
       ].join("") || '<div class="empty">Status laden…</div>'
     );
 
@@ -2161,6 +2162,35 @@ class AlphaEssPanel extends HTMLElement {
       </div>`;
   }
 
+  // Per EV charger and consumer: kept out of the learned house load (on)
+  // or counted in it (off), as set when adding it.
+  _learningSwitches(st) {
+    if (!st) return "";
+    const items = [
+      ...(st.ev_chargers || []).map((c) => ({ ...c, icon: c.icon || "mdi:ev-station" })),
+      ...(st.consumers || []).map((c) => ({ ...c, icon: c.icon || "mdi:power-plug-outline" })),
+    ].filter((item) => item.id);
+    if (!items.length) return "";
+    const rows = items
+      .map((item) => {
+        const on = Boolean(item.exclude_from_learning);
+        return `
+        <div class="ctl ctl-sub">
+          <div class="ctl-label"><ha-icon icon="${esc(item.icon)}"></ha-icon><span>${esc(item.name)}</span></div>
+          <button class="switch ${on ? "on" : ""}" role="switch" aria-checked="${on}" data-subentry="${esc(item.id)}" data-on="${on}"><span></span></button>
+        </div>`;
+      })
+      .join("");
+    return `
+      <div class="ctl">
+        ${this._ctlLabel({
+          icon: "mdi:school-outline",
+          label: "Buiten het geleerde verbruik houden",
+          info: "Aan: het verbruik van deze lader of verbruiker telt niet mee in het geleerde huisverbruik waarmee de planning rekent (bv. een EV of zwembad dat niet elke dag even veel gebruikt). Uit: het telt wel mee. Geldt direct.",
+        })}
+      </div>${rows}`;
+  }
+
   async _toggleHour(el) {
     const hour = Number(el.dataset.hour);
     const current = (this._status && this._status.allow_provider_control_hours) || [];
@@ -2189,7 +2219,16 @@ class AlphaEssPanel extends HTMLElement {
     const on = el.dataset.on !== "true";
     if (on && el.dataset.confirm && !window.confirm(el.dataset.confirm)) return;
     try {
-      if (el.dataset.option) {
+      if (el.dataset.subentry) {
+        await this._hass.callWS({ type: `${DOMAIN}/set_exclude_from_learning`, subentry_id: el.dataset.subentry, value: on });
+        // Applies live (no reload): show it right away.
+        if (this._status) {
+          const set = (list) => (list || []).map((c) => (c.id === el.dataset.subentry ? { ...c, exclude_from_learning: on } : c));
+          this._status = { ...this._status, ev_chargers: set(this._status.ev_chargers), consumers: set(this._status.consumers) };
+        }
+        this._renderAll();
+        this._loadStatus();
+      } else if (el.dataset.option) {
         await this._hass.callWS({ type: `${DOMAIN}/set_option`, key: el.dataset.option, value: on });
         // These options apply live (no reload): show the new state right away.
         if (this._status) this._status = { ...this._status, [el.dataset.option]: on };
@@ -3127,6 +3166,7 @@ const STYLE = `
   /* control tab */
   .ctl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px 48px; align-items: start; }
   .ctl { padding: 10px 0 14px; }
+  .ctl-sub { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0 4px 26px; }
   .hour-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin-top: 10px; }
   .hour {
     padding: 5px 0;

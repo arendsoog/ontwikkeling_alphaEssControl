@@ -16,6 +16,7 @@ from .api import AlphaEssLocalApiClient, AlphaEssLocalApiClientError
 from .const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_CONTROL_ENABLED,
+    CONF_EXCLUDE_FROM_LEARNING,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
     DOMAIN,
@@ -283,8 +284,13 @@ async def async_remove_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntr
 
 
 def _subentries_snapshot(entry: AlphaEssLocalConfigEntry) -> dict[str, Any]:
+    """The subentries as far as a change needs a reload: whether a charger
+    or consumer counts in the learned load is read live."""
     return {
-        subentry_id: (subentry.title, dict(subentry.data))
+        subentry_id: (
+            subentry.title,
+            {k: v for k, v in subentry.data.items() if k != CONF_EXCLUDE_FROM_LEARNING},
+        )
         for subentry_id, subentry in entry.subentries.items()
     }
 

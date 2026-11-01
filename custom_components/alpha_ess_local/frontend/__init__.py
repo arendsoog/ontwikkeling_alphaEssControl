@@ -27,6 +27,7 @@ from ..const import (
     CONF_ALLOW_PROVIDER_CONTROL_HOURS,
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONTROL_ENABLED,
+    CONF_EXCLUDE_FROM_LEARNING,
     CONF_EXTRA_PV_CONTROL_ENABLED,
     CONF_EXTRA_PV_ENERGY_ENTITIES,
     CONF_EXTRA_PV_MODBUS_HUB,
@@ -343,6 +344,35 @@ def _ws_set_provider_hours(
 
 @websocket_api.websocket_command(
     {
+        vol.Required("type"): f"{DOMAIN}/set_exclude_from_learning",
+        vol.Required("subentry_id"): str,
+        vol.Required("value"): bool,
+    }
+)
+@websocket_api.require_admin
+@callback
+def _ws_set_exclude_from_learning(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Keep an EV charger or consumer out of the learned house load, or count
+    it in; applies live, without a reload."""
+    entries = hass.config_entries.async_loaded_entries(DOMAIN)
+    if not entries:
+        connection.send_error(msg["id"], "not_loaded", "AlphaESSControl is not loaded")
+        return
+    entry = entries[0]
+    subentry = entry.subentries.get(msg["subentry_id"])
+    if subentry is None:
+        connection.send_error(msg["id"], "not_found", "No such EV charger or consumer")
+        return
+    hass.config_entries.async_update_subentry(
+        entry, subentry, data={**subentry.data, CONF_EXCLUDE_FROM_LEARNING: msg["value"]}
+    )
+    connection.send_result(msg["id"], {"exclude_from_learning": msg["value"]})
+
+
+@websocket_api.websocket_command(
+    {
         vol.Required("type"): f"{DOMAIN}/history",
         vol.Required("start"): cv.date,
         vol.Required("end"): cv.date,
@@ -476,6 +506,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         websocket_api.async_register_command(hass, _ws_today_power)
         websocket_api.async_register_command(hass, _ws_set_option)
         websocket_api.async_register_command(hass, _ws_set_provider_hours)
+        websocket_api.async_register_command(hass, _ws_set_exclude_from_learning)
         websocket_api.async_register_command(hass, _ws_history)
         hass.data[_DATA_REGISTERED] = True
 
