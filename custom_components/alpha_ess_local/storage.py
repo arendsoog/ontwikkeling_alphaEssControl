@@ -1179,13 +1179,14 @@ def store_hour_dispatch(
     hour: int,
     *,
     mode: str,
-    power: int,
-    power_max: int,
+    power: int | None,
+    power_max: int | None,
     written: bool,
     manual: bool,
 ) -> None:
     """Record what the dispatch sent (or, control off, would have sent) to
-    the inverter in an hour: its mode(s), first and largest power."""
+    the inverter in an hour: its mode(s), first and largest power (None
+    without State of Charge control)."""
     with _connection(db_path) as conn:
         _ensure_schema(conn)
         conn.execute(

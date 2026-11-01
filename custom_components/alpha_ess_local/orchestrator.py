@@ -1712,10 +1712,20 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
     ) -> None:
         """Keep this hour's dispatch for the decision log: the mode(s) in
         order, the first power and the largest one. Stored only when that
-        changes, not every cycle."""
+        changes, not every cycle.
+
+        Only State of Charge control's power counts: it is what the battery
+        is charged from (or discharged into) the grid at. The other modes
+        carry a placeholder (`_full_dispatch_power`: let the inverter
+        decide), which would make an hour look like it charged far harder
+        than it did."""
         key = (now.date(), now.hour)
         mode = dispatch.set_dispatch_msg(decision.param.mode)
-        power = decision.param.power
+        power = (
+            decision.param.power
+            if decision.param.mode == DispatchMode.STATE_OF_CHARGE_CONTROL
+            else None
+        )
         record = self._dispatch_record
         if record is None or record["key"] != key:
             record = {"key": key, "modes": [mode], "power": power, "power_max": power}
@@ -1723,7 +1733,9 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
             record = dict(record, modes=list(record["modes"]))
             if record["modes"][-1] != mode:
                 record["modes"].append(mode)
-            if abs(power) > abs(record["power_max"]):
+            if record["power"] is None:
+                record["power"] = record["power_max"] = power
+            elif power is not None and abs(power) > abs(record["power_max"]):
                 record["power_max"] = power
         record["written"] = control_enabled
         record["manual"] = self._manual_override is not None
