@@ -680,10 +680,13 @@ class AlphaEssPanel extends HTMLElement {
     // older load finishing last can't overwrite them.
     const seq = (this._historySeq = (this._historySeq || 0) + 1);
     const stale = () => seq !== this._historySeq;
-    let failed = false;
 
-    try {
-      const raw = await this._hass.callWS({
+    // The three requests run side by side and each is drawn as soon as it
+    // is in: the recorder's history can take many seconds on a large
+    // database, while today_power (the integration's own samples, which
+    // carry the day's lines) answers right away.
+    const history = this._hass
+      .callWS({
         type: "history/history_during_period",
         start_time: startOfDay().toISOString(),
         end_time: now.toISOString(),
@@ -691,50 +694,63 @@ class AlphaEssPanel extends HTMLElement {
         minimal_response: true,
         no_attributes: true,
         significant_changes_only: false,
+      })
+      .then((raw) => {
+        if (stale()) return true;
+        const byId = {};
+        for (const [id, entries] of Object.entries(raw || {})) {
+          byId[id] = entries
+            .map((e) => [((e.lu ?? e.lc) || 0) * 1000, num(e.s)])
+            .filter((p) => p[0] > 0);
+        }
+        this._history = byId;
+        this._renderAll();
+        return true;
+      })
+      .catch(() => {
+        this._history = this._history || {};
+        return false;
       });
-      if (stale()) return;
-      const history = {};
-      for (const [id, entries] of Object.entries(raw || {})) {
-        history[id] = entries
-          .map((e) => [((e.lu ?? e.lc) || 0) * 1000, num(e.s)])
-          .filter((p) => p[0] > 0);
-      }
-      this._history = history;
-    } catch (err) {
-      this._history = this._history || {};
-      failed = true;
-    }
 
-    try {
-      const today = await this._hass.callWS({ type: `${DOMAIN}/today_power` });
-      if (stale()) return;
-      this._todayPower = today && Array.isArray(today.samples) ? today : null;
-      // Nothing while the integration (re)loads after an update or a change.
-      if (!this._todayPower) failed = true;
-    } catch (err) {
-      // Older backend without the command: fall back to recorder history only.
-      this._todayPower = null;
-      failed = true;
-    }
-    this._retryHistory(failed);
+    const today = this._hass
+      .callWS({ type: `${DOMAIN}/today_power` })
+      .then((today) => {
+        if (stale()) return true;
+        this._todayPower = today && Array.isArray(today.samples) ? today : null;
+        this._renderAll();
+        // Nothing while the integration (re)loads after an update or a change.
+        return Boolean(this._todayPower);
+      })
+      .catch(() => {
+        // Older backend without the command: fall back to recorder history only.
+        this._todayPower = null;
+        return false;
+      });
 
-    if (counterIds.length) {
-      try {
-        const week = await this._hass.callWS({
-          type: "recorder/statistics_during_period",
-          start_time: startOfDay(-6).toISOString(),
-          end_time: now.toISOString(),
-          statistic_ids: counterIds,
-          period: "day",
-          types: ["change"],
-          units: { energy: "kWh" },
-        });
-        if (stale()) return;
-        this._stats = week || {};
-      } catch (err) {
-        this._stats = this._stats || {};
-      }
-    }
+    const stats = !counterIds.length
+      ? Promise.resolve()
+      : this._hass
+          .callWS({
+            type: "recorder/statistics_during_period",
+            start_time: startOfDay(-6).toISOString(),
+            end_time: now.toISOString(),
+            statistic_ids: counterIds,
+            period: "day",
+            types: ["change"],
+            units: { energy: "kWh" },
+          })
+          .then((week) => {
+            if (stale()) return;
+            this._stats = week || {};
+            this._renderAll();
+          })
+          .catch(() => {
+            this._stats = this._stats || {};
+          });
+
+    const [historyOk, todayOk] = await Promise.all([history, today, stats]);
+    if (stale()) return;
+    this._retryHistory(!(historyOk && todayOk));
     this._renderAll();
   }
 
