@@ -138,6 +138,10 @@ class ScheduleConfig:
     # At most this much out of the battery in an hour's grid discharge (a
     # slot's power).
     discharge_limit_wh: float = DISCHARGE_LIMIT
+    # The battery's measured one-way efficiency (the square root of the
+    # round trip storage.learn_battery_round_trip measured), in place of the
+    # power-dependent _battery_efficiency table. None: not measured yet.
+    battery_efficiency: float | None = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +162,13 @@ SCENARIOS: tuple[_Scenario, ...] = (
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _battery_eff(power: float, config: ScheduleConfig) -> float:
+    """The battery's measured efficiency once known, else the table's."""
+    if config.battery_efficiency is not None:
+        return config.battery_efficiency
+    return _battery_efficiency(power, config.usable_battery_capacity)
 
 
 def _inverter_efficiency(power: float, inverter_nominal_power: float) -> float:
@@ -323,7 +334,7 @@ def _evaluate_hour_action(
                 charge_ac = min(feed_in, CHARGE_LIMIT)
                 if charge_ac >= MIN_CHARGE_POWER:
                     inv_eff = _inverter_efficiency(charge_ac, inverter_nominal_power)
-                    batt_eff = _battery_efficiency(charge_ac, battery_capacity)
+                    batt_eff = _battery_eff(charge_ac, config)
                     charge_soc = min(charge_ac * inv_eff * batt_eff, space_soc)
                     charge_ac = charge_soc / (inv_eff * batt_eff)
                     new_soc_wh = soc_wh + charge_soc
@@ -334,7 +345,7 @@ def _evaluate_hour_action(
                 if discharge_ac < MIN_DISCHARGE_POWER:
                     discharge_ac = 0.0
                 inv_eff = _inverter_efficiency(discharge_ac, inverter_nominal_power)
-                batt_eff = _battery_efficiency(discharge_ac, battery_capacity)
+                batt_eff = _battery_eff(discharge_ac, config)
                 discharge_soc = min(discharge_ac / (inv_eff * batt_eff), available_soc)
                 discharge_ac = discharge_soc * inv_eff * batt_eff
                 new_soc_wh = soc_wh - discharge_soc
@@ -359,7 +370,7 @@ def _evaluate_hour_action(
             if discharge_ac < MIN_DISCHARGE_POWER:
                 discharge_ac = 0.0
             inv_eff = _inverter_efficiency(discharge_ac, inverter_nominal_power)
-            batt_eff = _battery_efficiency(discharge_ac, battery_capacity)
+            batt_eff = _battery_eff(discharge_ac, config)
             discharge_soc = min(discharge_ac / (inv_eff * batt_eff), available_soc)
             discharge_ac = discharge_soc * inv_eff * batt_eff
             new_soc_wh = soc_wh - discharge_soc
@@ -371,7 +382,7 @@ def _evaluate_hour_action(
             charge_ac = min(feed_in, CHARGE_LIMIT)
             if charge_ac >= MIN_CHARGE_POWER:
                 inv_eff = _inverter_efficiency(charge_ac, inverter_nominal_power)
-                batt_eff = _battery_efficiency(charge_ac, battery_capacity)
+                batt_eff = _battery_eff(charge_ac, config)
                 charge_soc = min(charge_ac * inv_eff * batt_eff, space_soc)
                 charge_ac = charge_soc / (inv_eff * batt_eff)
                 new_soc_wh = soc_wh + charge_soc
@@ -399,7 +410,7 @@ def _evaluate_hour_action(
             charge_soc = min(target_soc, CHARGE_LIMIT, rate_cap_soc)
             if charge_soc > 0.0:
                 charge_ac_est = charge_soc / ETA_GRID_TO_BATT
-                batt_eff = _battery_efficiency(charge_ac_est, battery_capacity)
+                batt_eff = _battery_eff(charge_ac_est, config)
                 inv_eff = _inverter_efficiency(charge_ac_est, inverter_nominal_power)
                 charge_ac = charge_soc / (inv_eff * batt_eff * ETA_GRID_TO_BATT)
                 if charge_ac >= MIN_CHARGE_POWER:
@@ -419,7 +430,7 @@ def _evaluate_hour_action(
     ):
         discharge_soc = min(soc_wh - max(min_soc, max_discharge_after), config.discharge_limit_wh)
         if discharge_soc > 0.0:
-            batt_eff = _battery_efficiency(discharge_soc, battery_capacity)
+            batt_eff = _battery_eff(discharge_soc, config)
             inv_eff = _inverter_efficiency(discharge_soc, inverter_nominal_power)
             discharge_ac = discharge_soc * batt_eff * inv_eff
             if discharge_ac >= MIN_DISCHARGE_POWER:

@@ -284,6 +284,15 @@ def _planning_tomorrow(today: Day, tomorrow: Day, price_tomorrow: Day) -> Day:
     return planned
 
 
+def _battery_efficiency(round_trip: float | None) -> float | None:
+    """The one-way efficiency the planner uses for each of charging and
+    discharging, from the measured round trip (None: not measured yet)."""
+    if round_trip is None:
+        return None
+    LOGGER.debug("orchestrator: measured battery round trip %.3f", round_trip)
+    return math.sqrt(round_trip)
+
+
 def _solar_to_battery(sample: FiveMin) -> float:
     """Energy-balance estimate: how much of this sample's battery charging
     (if any) is attributable to solar surplus, vs. `_grid_to_battery`'s
@@ -1102,6 +1111,8 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         if hour_changed or self._pv_total_energy_at_hour_start is None:
             self._pv_total_energy_at_hour_start = pv_total_energy_kwh
         if hour_changed or self._battery_charge_energy_at_hour_start is None:
+            await self._store_battery_counter(db_path, now, modbus_data)
+        if hour_changed or self._battery_charge_energy_at_hour_start is None:
             self._battery_charge_energy_at_hour_start = battery_charge_energy_kwh
         if hour_changed or self._battery_discharge_energy_at_hour_start is None:
             self._battery_discharge_energy_at_hour_start = battery_discharge_energy_kwh
@@ -1156,6 +1167,20 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         )
         return RealPowerData(
             day=self._today, extra_pv_power=extra_pv_power, yesterday_savings=yesterday_savings
+        )
+
+    async def _store_battery_counter(
+        self, db_path: str, now: datetime, modbus_data: dict[str, Any]
+    ) -> None:
+        """The hour's starting SOC and battery counters, for the battery's
+        measured round trip (see storage.learn_battery_round_trip)."""
+        soc = modbus_data.get("battery_soc")
+        charge_kwh = modbus_data.get("battery_total_energy_charge")
+        discharge_kwh = modbus_data.get("battery_total_energy_discharge")
+        if soc is None or charge_kwh is None or discharge_kwh is None:
+            return
+        await self.hass.async_add_executor_job(
+            storage.store_battery_counter, db_path, now, soc, charge_kwh, discharge_kwh
         )
 
 
@@ -1350,6 +1375,14 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             )
             or None,
             fixed_hours=fixed_hours(options, today_date),
+            battery_efficiency=_battery_efficiency(
+                await self.hass.async_add_executor_job(
+                    storage.learn_battery_round_trip,
+                    db_path,
+                    options.get(CONF_USABLE_BATTERY_CAPACITY, 0),
+                    today_date,
+                )
+            ),
         )
 
         modbus_data = self._modbus_coordinator.data or {}

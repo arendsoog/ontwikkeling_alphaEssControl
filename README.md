@@ -179,7 +179,7 @@ A battery's built-in logic is simple: charge from the sun, use it at night. On a
 **What it looks at.**
 - From the inverter, every 30 seconds over Modbus: state of charge, solar power, battery power and grid power.
 - From your other integrations: the day-ahead prices and the solar forecast.
-- From its own history (a local database): the measured solar production per hour, used to correct the forecast, and your consumption per hour of the day.
+- From its own history (a local database): the measured solar production per hour, used to correct the forecast, and your consumption per hour of the day. It also measures the battery's real round-trip efficiency from the inverter's charge/discharge counters and the state of charge, over the last 30 days. Once five full batteries have gone through, the planner uses that instead of its default battery losses.
 
 **How it decides.**
 - **The whole period at once.** It weighs the options for the whole period ahead at once, not hour by hour: charge from the sun, charge from the grid (in steps), hold, use the battery for the house, or sell. It replans whenever new prices, a new forecast or a new hour comes in.

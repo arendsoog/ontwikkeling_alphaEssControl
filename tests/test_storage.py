@@ -26,6 +26,7 @@ from custom_components.alpha_ess_local.storage import (
     calculate_and_store_mean_data,
     delete_hour_progress,
     lead_bucket,
+    learn_battery_round_trip,
     learn_forecast_spread,
     retrieve_day_actions,
     retrieve_day_battery_charge_wh,
@@ -40,6 +41,7 @@ from custom_components.alpha_ess_local.storage import (
     retrieve_hour_progress,
     retrieve_mean_data,
     retrieve_period_summary,
+    store_battery_counter,
     store_dispatch_daily_state,
     store_five_min_sample,
     store_forecasts,
@@ -1209,3 +1211,53 @@ def test_mean_learning_leaves_out_hours_with_estimated_readings(tmp_path):
             "SELECT hour FROM hour_data WHERE COALESCE(estimated, 0) = 0 ORDER BY hour"
         ).fetchall()
     assert rows == [(10,), (11,)]
+
+
+# --- the battery's measured round trip ------------------------------------------
+
+
+def test_battery_round_trip_from_the_counters_and_the_soc(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    # 10 kWh battery: 60 kWh in, 52 kWh out, and it ends 20% (2 kWh) fuller.
+    store_battery_counter(db_path, datetime(2026, 10, 1, 0), 40.0, 1000.0, 900.0)
+    store_battery_counter(db_path, datetime(2026, 10, 10, 0), 60.0, 1060.0, 952.0)
+
+    round_trip = learn_battery_round_trip(db_path, 10000, date(2026, 10, 10))
+
+    assert round_trip == pytest.approx(52 / 58)
+
+
+def test_battery_round_trip_keeps_the_first_reading_of_an_hour(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    store_battery_counter(db_path, datetime(2026, 10, 1, 0, 0), 40.0, 1000.0, 900.0)
+    store_battery_counter(db_path, datetime(2026, 10, 1, 0, 30), 99.0, 1005.0, 900.0)
+    store_battery_counter(db_path, datetime(2026, 10, 10, 0), 40.0, 1060.0, 954.0)
+
+    assert learn_battery_round_trip(db_path, 10000, date(2026, 10, 10)) == pytest.approx(0.9)
+
+
+@pytest.mark.parametrize(
+    ("end", "reason"),
+    [
+        ((40.0, 1030.0, 927.0), "too little through it yet"),
+        ((40.0, 1060.0, 1020.0), "more out than in: a counter is off"),
+        ((40.0, 1060.0, 930.0), "below the plausible minimum"),
+        ((40.0, 500.0, 400.0), "the counters were reset"),
+    ],
+)
+def test_battery_round_trip_none_without_a_sound_measurement(tmp_path, end, reason):
+    db_path = str(tmp_path / "test.db")
+    store_battery_counter(db_path, datetime(2026, 10, 1, 0), 40.0, 1000.0, 900.0)
+    store_battery_counter(db_path, datetime(2026, 10, 10, 0), *end)
+
+    assert learn_battery_round_trip(db_path, 10000, date(2026, 10, 10)) is None, reason
+
+
+def test_battery_round_trip_only_over_the_last_days(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    # A bad reading two months back is pruned / outside the window.
+    store_battery_counter(db_path, datetime(2026, 8, 1, 0), 0.0, 0.0, 500.0)
+    store_battery_counter(db_path, datetime(2026, 10, 1, 0), 40.0, 1000.0, 900.0)
+    store_battery_counter(db_path, datetime(2026, 10, 10, 0), 40.0, 1060.0, 954.0)
+
+    assert learn_battery_round_trip(db_path, 10000, date(2026, 10, 10)) == pytest.approx(0.9)

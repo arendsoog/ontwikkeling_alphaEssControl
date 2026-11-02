@@ -733,6 +733,51 @@ async def test_real_data_coordinator_uses_battery_energy_register_deltas_when_av
     assert previous_day.hour[first_hour].real_battery_discharge_energy == 300
 
 
+async def test_real_data_coordinator_keeps_the_battery_counters_each_hour(
+    hass: HomeAssistant, freezer
+):
+    # The SOC and counters at each hour's start, for the measured round trip.
+    entry = MockConfigEntry(domain=DOMAIN, options={})
+    entry.add_to_hass(hass)
+    modbus_coordinator = SimpleNamespace(
+        data={
+            "pv_power": 500,
+            "battery_power": -200,
+            "grid_power": 50,
+            "battery_soc": 40.0,
+            "battery_total_energy_charge": 10.0,
+            "battery_total_energy_discharge": 5.0,
+        }
+    )
+    coordinator = AlphaEssLocalRealDataCoordinator(
+        hass, entry, modbus_coordinator, SimpleNamespace(data=None)
+    )
+
+    with (
+        patch(
+            "custom_components.alpha_ess_local.storage.store_hour_data",
+            MagicMock(return_value=True),
+        ),
+        patch(
+            "custom_components.alpha_ess_local.storage.store_battery_counter", MagicMock()
+        ) as mock_counter,
+    ):
+        freezer.move_to("2024-01-15 10:03:00")
+        await coordinator._async_update_data()
+        modbus_coordinator.data.update(
+            battery_soc=55.0, battery_total_energy_charge=11.6, battery_total_energy_discharge=5.3
+        )
+        freezer.move_to("2024-01-15 10:30:00")
+        await coordinator._async_update_data()  # same hour: nothing new
+        freezer.move_to("2024-01-15 11:01:00")
+        await coordinator._async_update_data()
+
+    assert [c.args[2:] for c in mock_counter.call_args_list] == [
+        (40.0, 10.0, 5.0),
+        (55.0, 11.6, 5.3),
+    ]
+
+
 async def test_real_data_coordinator_falls_back_to_zero_battery_energy_without_registers(
     hass: HomeAssistant, freezer
 ):
