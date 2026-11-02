@@ -377,7 +377,7 @@ function barChart(o, metaStore) {
 // traced over its drawn cables in the same pixel coordinates. The version
 // in the URL changes with the image, so browsers don't keep showing the old
 // one from their cache.
-const SCENE_IMAGE = "/alpha_ess_local/frontend/house.webp?v=6203cdce";
+const SCENE_IMAGE = "/alpha_ess_local/frontend/house.webp?v=81803929";
 const SCENE_PATHS = {
   // roof panels -> battery
   solar: ["M566,272 L566,349 L521,349 L521,566"],
