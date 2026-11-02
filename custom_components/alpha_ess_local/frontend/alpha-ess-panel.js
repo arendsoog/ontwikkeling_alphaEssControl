@@ -229,12 +229,29 @@ const niceMax = (value) => {
   return 10 * exp;
 };
 
+// Round axis values covering min to max: a step of 1, 2, 2.5 or 5 (times a
+// power of ten) giving at most six intervals -- 0, 1, ... 5 kW rather than
+// 0, 1.3, 2.5, 3.8, 5. The first and last are the axis' new ends.
+const axisTicks = (min, max) => {
+  const span = max - min;
+  if (span <= 0) return [min, max];
+  const exp = 10 ** Math.floor(Math.log10(span));
+  const step = [0.1, 0.2, 0.25, 0.5, 1, 2, 2.5, 5].map((f) => f * exp).find((s) => span / s <= 6);
+  const ticks = [];
+  for (let k = Math.floor(min / step + 1e-9); k <= Math.ceil(max / step - 1e-9); k++) {
+    ticks.push(Number((k * step).toPrecision(12)));
+  }
+  return ticks;
+};
+
 // ---------------------------------------------------------------- charts
 
 // Multi-series line chart over a time axis. Series may sit on the left or a
 // right axis. Returns SVG markup; hover is handled by the panel using the
 // meta it stores under `id`.
 function lineChart(o, metaStore) {
+  const leftTicks = axisTicks(o.left.min, o.left.max);
+  o = { ...o, left: { ...o.left, min: leftTicks[0], max: leftTicks[leftTicks.length - 1] } };
   const W = o.w;
   const H = o.h;
   const pad = { l: 46, r: o.right ? 40 : 10, t: 10, b: 22 };
@@ -255,13 +272,13 @@ function lineChart(o, metaStore) {
     }
   }
 
-  for (let i = 0; i <= 4; i++) {
-    const v = o.left.min + ((o.left.max - o.left.min) * i) / 4;
+  for (const v of leftTicks) {
     const y = Y(v, o.left);
     parts.push(`<line x1="${pad.l}" x2="${W - pad.r}" y1="${y}" y2="${y}" class="grid"/>`);
     parts.push(`<text x="${pad.l - 6}" y="${y + 4}" class="axis" text-anchor="end">${esc(o.left.fmt(v))}</text>`);
     if (o.right) {
-      const rv = o.right.min + ((o.right.max - o.right.min) * i) / 4;
+      const share = (v - o.left.min) / (o.left.max - o.left.min);
+      const rv = o.right.min + (o.right.max - o.right.min) * share;
       parts.push(`<text x="${W - pad.r + 6}" y="${y + 4}" class="axis">${esc(o.right.fmt(rv))}</text>`);
     }
   }
@@ -329,8 +346,7 @@ function barChart(o, metaStore) {
   const barW = Math.min(14, (groupW * 0.8) / o.series.length);
 
   const parts = [];
-  for (let i = 0; i <= 4; i++) {
-    const v = (max * i) / 4;
+  for (const v of axisTicks(0, max)) {
     const y = Y(v);
     parts.push(`<line x1="${pad.l}" x2="${W - pad.r}" y1="${y}" y2="${y}" class="grid"/>`);
     parts.push(`<text x="${pad.l - 6}" y="${y + 4}" class="axis" text-anchor="end">${esc(o.fmt(v))}</text>`);
@@ -361,7 +377,7 @@ function barChart(o, metaStore) {
 // traced over its drawn cables in the same pixel coordinates. The version
 // in the URL changes with the image, so browsers don't keep showing the old
 // one from their cache.
-const SCENE_IMAGE = "/alpha_ess_local/frontend/house.webp?v=6203cdce";
+const SCENE_IMAGE = "/alpha_ess_local/frontend/house.webp?v=81803929";
 const SCENE_PATHS = {
   // roof panels -> battery
   solar: ["M566,272 L566,349 L521,349 L521,566"],
@@ -1955,7 +1971,27 @@ class AlphaEssPanel extends HTMLElement {
         ${item("Δ cel", delta === null ? "–" : `${Math.round(delta)} mV`, "battery_cell_voltage_delta", deltaClass)}
         ${item("Gezondheid (SOH)", fmt("battery_soh", 1, "%"), "battery_soh", "accent")}
         ${item("Cycli (geschat)", fmt("battery_cycles", 1, ""), "battery_cycles")}
+        ${this._roundTripItem()}
       </div>`;
+  }
+
+  // The battery's round trip measured from its counters (the planner uses
+  // it once enough went through), or how far the measurement is.
+  _roundTripItem() {
+    const rt = (this._status || {}).battery_round_trip;
+    if (!rt) return "";
+    let value;
+    let cls = "";
+    if (rt.value !== null && rt.value !== undefined) {
+      value = `${fmtNum(rt.value * 100, 1)} % (${rt.days} dagen)`;
+      cls = "accent";
+    } else if (rt.implausible) {
+      value = "meting onbetrouwbaar";
+      cls = "warn";
+    } else {
+      value = `aan het meten: ${fmtNum(Math.min(rt.cycles, rt.cycles_needed), 1)} van ${rt.cycles_needed} batterijen`;
+    }
+    return `<div class="kv" title="Wat er uit de batterij kwam gedeeld door wat erin ging, gecorrigeerd voor de laadstand. De planning rekent ermee zodra er ${rt.cycles_needed} volle batterijen doorheen gingen."><span>Rendement (gemeten)</span><span class="${cls}">${esc(value)}</span></div>`;
   }
 
   _extraPvCard(device) {

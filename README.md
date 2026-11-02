@@ -172,6 +172,28 @@ The integration adds **AlphaESS Control** to the sidebar, with four tabs.
 - **Control:** the switches and sliders above, the time slots, and buttons to override the plan for the current hour.
 - **History:** energy and savings per day, week, month or year.
 
+The screenshots show the dashboard in Dutch.
+
+**Overview**
+
+![Overview: system status, integration status, energy flow and today's energy](https://raw.githubusercontent.com/arendsoog/ontwikkeling_alphaEssControl/master/docs/images/overview.png)
+
+**Daily operation:** the measured and expected solar and consumption per hour, with the planned action as background and the market price as bars.
+
+![Daily operation chart](https://raw.githubusercontent.com/arendsoog/ontwikkeling_alphaEssControl/master/docs/images/daily-chart.png)
+
+**Decisions per hour:** what was planned each hour and why, what the inverter was told, the target SOC and the room kept for the sun.
+
+![Decision log](https://raw.githubusercontent.com/arendsoog/ontwikkeling_alphaEssControl/master/docs/images/decision-log.png)
+
+**Installations**
+
+![Installations: the AlphaESS, the PV installation and the EV charger](https://raw.githubusercontent.com/arendsoog/ontwikkeling_alphaEssControl/master/docs/images/installations.png)
+
+**Control**
+
+![Control: switches, planning settings, manual override and time slots](https://raw.githubusercontent.com/arendsoog/ontwikkeling_alphaEssControl/master/docs/images/control.png)
+
 ## How the planning works
 
 A battery's built-in logic is simple: charge from the sun, use it at night. On a dynamic contract that leaves money on the table. Prices change every hour, and are sometimes very high (worth buying cheap grid power for beforehand) or negative (worth using instead of exporting).
@@ -179,7 +201,7 @@ A battery's built-in logic is simple: charge from the sun, use it at night. On a
 **What it looks at.**
 - From the inverter, every 30 seconds over Modbus: state of charge, solar power, battery power and grid power.
 - From your other integrations: the day-ahead prices and the solar forecast.
-- From its own history (a local database): the measured solar production per hour, used to correct the forecast, and your consumption per hour of the day.
+- From its own history (a local database): the measured solar production per hour, used to correct the forecast, and your consumption per hour of the day. It also measures the battery's real round-trip efficiency from the inverter's charge/discharge counters and the state of charge, over the last 30 days. Once five full batteries have gone through, the planner uses that instead of its default battery losses.
 
 **How it decides.**
 - **The whole period at once.** It weighs the options for the whole period ahead at once, not hour by hour: charge from the sun, charge from the grid (in steps), hold, use the battery for the house, or sell. It replans whenever new prices, a new forecast or a new hour comes in.
@@ -188,6 +210,13 @@ A battery's built-in logic is simple: charge from the sun, use it at night. On a
 - **Pessimistic check.** Forecasts are never perfect. Before it uses a plan, it checks the plan against more pessimistic scenarios (less sun, more consumption). It only commits when the plan still makes the minimum daily profit you set; otherwise the battery just runs in its default mode. Once a plan has charged from the grid that day, it keeps following it as long as it still beats the default mode, so a charge isn't dropped halfway for falling a cent short.
 - **Live control.** Every 20 seconds (10 while charging from the grid) it sets the inverter's mode. It regulates grid charging on the smart meter's reading, so it stays under the grid limit, and at the target level it lets the sun finish the charge.
 - **Negative prices.** It never exports at a negative price. Once the battery is full it can switch off the PV installations rather than export at a loss.
+
+**How a grid charge is planned.**
+- **Per hour, an action and an amount.** The plan gives every hour an action. For a grid-charge hour it also chooses how much goes in: 10%, 20%, … of the battery, whichever pays most over the whole period. That amount becomes the hour's target SOC (the *Target SOC* column in the decision log).
+- **Charging stops at the target.** The battery charges at what the grid limit leaves (the limit minus the house's use) until it reaches the target, even halfway through the hour. For the rest of the hour only the sun charges it. Only a charge that the grid limit held back carries on into the next hour.
+- **Once per day.** With *At most one full battery a day* on, at most one full battery goes in per day, sun included. It may be spread over separate cheap hours, for example 20% at 03:00 and 10% at 13:00.
+- **The profit.** Every hour it works out two plans from now to the end of the known prices: the default mode (no grid charge) and the best plan. Tomorrow's prices count as today's until they are published. The difference between them is the extra profit in the decision log, for example *Optimised: +€0.16 ≥ €0.15*. What is already in the battery is in both plans, so the extra shrinks as the day goes on. That's why the minimum daily profit only decides whether to start; once a grid charge has started, the plan only has to beat the default mode.
+- **Example.** At 11:00 (€0.230) the plan was +€0.16, above the €0.15 minimum, so it chose a 20% charge: from 11% to a target of 30%, at 4.4 kW (a 7 kW limit minus 2.6 kW of house use), about 4.6 kWh within the hour. At 12:00 only the extra beyond that charge counted (+€0.15), and the plan was followed on.
 
 **When something is missing.**
 - **No prices:** if the price sources give nothing (for example right after a restart), it keeps the last known prices, or plans with yesterday's prices meanwhile. It replans as soon as the real prices arrive.

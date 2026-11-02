@@ -227,6 +227,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # The battery's state of charge and the inverter's cumulative battery
+    # charge/discharge counters (kWh) at the start of each hour -- to learn
+    # the battery's real round-trip efficiency (learn_battery_round_trip).
+    # Pruned after BATTERY_COUNTER_KEEP_DAYS.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS battery_counter (
+            year INTEGER, mon INTEGER, day INTEGER, hour INTEGER,
+            soc REAL, charge_kwh REAL, discharge_kwh REAL,
+            PRIMARY KEY (year, mon, day, hour)
+        )
+        """
+    )
     # The EV charger's share of house_load: left out of the learned house
     # load (it only charges on solar surplus, so it's no load to plan for).
     _add_column_if_missing(conn, "five_min_data", "ev_power", "REAL DEFAULT 0")
@@ -998,6 +1011,14 @@ LEAD_BUCKETS: tuple[tuple[int, int], ...] = ((0, 1), (2, 5), (6, 11), (12, 23), 
 # Fewer usable hours than this in a group: keep the fixed scenario factors.
 MIN_SPREAD_SAMPLES = 15
 
+# The battery's round trip: measured over this many days, once at least this
+# many full batteries went through; below BATTERY_ROUND_TRIP_MIN a counter or
+# the SOC must be off.
+BATTERY_ROUND_TRIP_DAYS = 30
+BATTERY_ROUND_TRIP_MIN_CYCLES = 5
+BATTERY_ROUND_TRIP_MIN = 0.75
+BATTERY_COUNTER_KEEP_DAYS = 60
+
 
 def lead_bucket(lead: int) -> int:
     """The LEAD_BUCKETS index for a lead time (the last one for anything further)."""
@@ -1092,6 +1113,83 @@ def retrieve_forecast_spread(db_path: str) -> dict[int, tuple[float, ...]]:
     for bucket, _index, factor in rows:
         spread.setdefault(bucket, []).append(factor)
     return {bucket: tuple(factors) for bucket, factors in spread.items()}
+
+
+def store_battery_counter(
+    db_path: str, when: datetime, soc: float, charge_kwh: float, discharge_kwh: float
+) -> None:
+    """Keep the battery's SOC (%) and cumulative charge/discharge counters
+    (kWh) as they stood at the start of `when`'s hour; the first reading of
+    an hour is kept. Prunes rows older than BATTERY_COUNTER_KEEP_DAYS."""
+    cutoff = when.date() - timedelta(days=BATTERY_COUNTER_KEEP_DAYS)
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO battery_counter
+                (year, mon, day, hour, soc, charge_kwh, discharge_kwh)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (when.year, when.month, when.day, when.hour, soc, charge_kwh, discharge_kwh),
+        )
+        conn.execute(
+            "DELETE FROM battery_counter WHERE year * 10000 + mon * 100 + day < ?",
+            (cutoff.year * 10000 + cutoff.month * 100 + cutoff.day,),
+        )
+        conn.commit()
+
+
+@dataclass(frozen=True)
+class BatteryRoundTrip:
+    """learn_battery_round_trip's result. `round_trip`: None until it can be
+    used. `cycles`: full batteries charged in the window so far (it needs
+    BATTERY_ROUND_TRIP_MIN_CYCLES). `implausible`: enough went through, but
+    the result can't be right (a counter or the SOC is off)."""
+
+    round_trip: float | None = None
+    cycles: float = 0.0
+    implausible: bool = False
+
+
+def learn_battery_round_trip(db_path: str, capacity_wh: float, today: date_cls) -> BatteryRoundTrip:
+    """The battery's measured round-trip efficiency over the last
+    BATTERY_ROUND_TRIP_DAYS: what came out over what went in, corrected for
+    the change in what it holds (SOC). No round trip until enough went
+    through (BATTERY_ROUND_TRIP_MIN_CYCLES full batteries), after a counter
+    reset, or when the result is implausible."""
+    if capacity_wh <= 0:
+        return BatteryRoundTrip()
+    since = today - timedelta(days=BATTERY_ROUND_TRIP_DAYS)
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT soc, charge_kwh, discharge_kwh FROM battery_counter
+            WHERE year * 10000 + mon * 100 + day >= ?
+            ORDER BY year, mon, day, hour
+            """,
+            (since.year * 10000 + since.month * 100 + since.day,),
+        ).fetchall()
+    if len(rows) < 2:
+        return BatteryRoundTrip()
+    (soc_start, charge_start, discharge_start), (soc_end, charge_end, discharge_end) = (
+        rows[0],
+        rows[-1],
+    )
+    charged = (charge_end - charge_start) * 1000
+    discharged = (discharge_end - discharge_start) * 1000
+    cycles = max(0.0, charged / capacity_wh)
+    if charged < BATTERY_ROUND_TRIP_MIN_CYCLES * capacity_wh:
+        return BatteryRoundTrip(cycles=cycles)
+    stored = (soc_end - soc_start) / 100 * capacity_wh
+    round_trip = discharged / (charged - stored) if charged - stored > 0 else -1.0
+    if not BATTERY_ROUND_TRIP_MIN <= round_trip <= 1.0:
+        LOGGER.warning(
+            "learn_battery_round_trip: %.3f is implausible -- using the default efficiencies",
+            round_trip,
+        )
+        return BatteryRoundTrip(cycles=cycles, implausible=True)
+    return BatteryRoundTrip(round_trip, cycles)
 
 
 def store_hour_action(

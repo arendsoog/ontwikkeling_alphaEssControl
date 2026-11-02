@@ -1214,3 +1214,23 @@ def test_battery_empty_after_counts_the_sun_and_tomorrow():
 def test_battery_empty_after_none_when_it_lasts_the_known_hours():
     today = _flat_day(price=0.30, solar=0, house_load=100)
     assert battery_empty_after(900, 20, today, Day(valid=False), _config()) is None
+
+
+def test_a_measured_battery_efficiency_makes_a_narrow_spread_worth_charging():
+    # Cheap at 00-03, a little dearer after: with the table's battery losses
+    # buying ahead doesn't pay, with a lossless measured battery it does.
+    def narrow_day():
+        today = _flat_day(price=0.23, solar=0, house_load=1000)
+        for h in range(4):
+            today.hour[h].price = 0.20
+        return today
+
+    table = narrow_day()
+    _calculate_best_schedule(10, 0, table, Day(valid=False), False, False, None, _config())
+    measured = narrow_day()
+    _calculate_best_schedule(
+        10, 0, measured, Day(valid=False), False, False, None, _config(battery_efficiency=1.0)
+    )
+
+    assert _sessions(table) == 0
+    assert _sessions(measured) == 1
