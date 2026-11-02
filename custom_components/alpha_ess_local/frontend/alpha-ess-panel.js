@@ -1955,7 +1955,27 @@ class AlphaEssPanel extends HTMLElement {
         ${item("Δ cel", delta === null ? "–" : `${Math.round(delta)} mV`, "battery_cell_voltage_delta", deltaClass)}
         ${item("Gezondheid (SOH)", fmt("battery_soh", 1, "%"), "battery_soh", "accent")}
         ${item("Cycli (geschat)", fmt("battery_cycles", 1, ""), "battery_cycles")}
+        ${this._roundTripItem()}
       </div>`;
+  }
+
+  // The battery's round trip measured from its counters (the planner uses
+  // it once enough went through), or how far the measurement is.
+  _roundTripItem() {
+    const rt = (this._status || {}).battery_round_trip;
+    if (!rt) return "";
+    let value;
+    let cls = "";
+    if (rt.value !== null && rt.value !== undefined) {
+      value = `${fmtNum(rt.value * 100, 1)} % (${rt.days} dagen)`;
+      cls = "accent";
+    } else if (rt.implausible) {
+      value = "meting onbetrouwbaar";
+      cls = "warn";
+    } else {
+      value = `aan het meten: ${fmtNum(Math.min(rt.cycles, rt.cycles_needed), 1)} van ${rt.cycles_needed} batterijen`;
+    }
+    return `<div class="kv" title="Wat er uit de batterij kwam gedeeld door wat erin ging, gecorrigeerd voor de laadstand. De planning rekent ermee zodra er ${rt.cycles_needed} volle batterijen doorheen gingen."><span>Rendement (gemeten)</span><span class="${cls}">${esc(value)}</span></div>`;
   }
 
   _extraPvCard(device) {

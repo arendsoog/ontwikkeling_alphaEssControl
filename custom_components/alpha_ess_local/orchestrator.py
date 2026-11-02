@@ -1214,6 +1214,9 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         self._modbus_coordinator = modbus_coordinator
         self._prices_coordinator = prices_coordinator
         self._solar_coordinator = solar_coordinator
+        # The battery's measured round trip as of the last planning run (the
+        # planner uses it once known; the panel shows it).
+        self.battery_round_trip = storage.BatteryRoundTrip()
 
     async def _async_update_data(self) -> dict[str, Day]:
         """Merge price/solar/house-load sources and (re)run the scheduler."""
@@ -1308,6 +1311,12 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         await self.hass.async_add_executor_job(
             storage.store_forecasts, db_path, _forecast_rows(today, tomorrow, now.hour)
         )
+        self.battery_round_trip = await self.hass.async_add_executor_job(
+            storage.learn_battery_round_trip,
+            db_path,
+            options.get(CONF_USABLE_BATTERY_CAPACITY, 0),
+            today_date,
+        )
 
         max_grid_load_wh = _effective_max_grid_load_wh(self.hass, self.config_entry)
 
@@ -1375,14 +1384,7 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             )
             or None,
             fixed_hours=fixed_hours(options, today_date),
-            battery_efficiency=_battery_efficiency(
-                await self.hass.async_add_executor_job(
-                    storage.learn_battery_round_trip,
-                    db_path,
-                    options.get(CONF_USABLE_BATTERY_CAPACITY, 0),
-                    today_date,
-                )
-            ),
+            battery_efficiency=_battery_efficiency(self.battery_round_trip.round_trip),
         )
 
         modbus_data = self._modbus_coordinator.data or {}

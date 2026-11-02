@@ -169,6 +169,13 @@ def _ws_panel_status(
             "price_sources": price_sources,
             "solar_sources": solar_sources,
             "grid_meter": grid_meter_status(hass, entry, dt_util.now()),
+            "battery_round_trip": {
+                "value": runtime.schedule_coordinator.battery_round_trip.round_trip,
+                "cycles": runtime.schedule_coordinator.battery_round_trip.cycles,
+                "cycles_needed": storage.BATTERY_ROUND_TRIP_MIN_CYCLES,
+                "days": storage.BATTERY_ROUND_TRIP_DAYS,
+                "implausible": runtime.schedule_coordinator.battery_round_trip.implausible,
+            },
         },
     )
 

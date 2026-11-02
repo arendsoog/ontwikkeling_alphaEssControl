@@ -1139,14 +1139,26 @@ def store_battery_counter(
         conn.commit()
 
 
-def learn_battery_round_trip(db_path: str, capacity_wh: float, today: date_cls) -> float | None:
+@dataclass(frozen=True)
+class BatteryRoundTrip:
+    """learn_battery_round_trip's result. `round_trip`: None until it can be
+    used. `cycles`: full batteries charged in the window so far (it needs
+    BATTERY_ROUND_TRIP_MIN_CYCLES). `implausible`: enough went through, but
+    the result can't be right (a counter or the SOC is off)."""
+
+    round_trip: float | None = None
+    cycles: float = 0.0
+    implausible: bool = False
+
+
+def learn_battery_round_trip(db_path: str, capacity_wh: float, today: date_cls) -> BatteryRoundTrip:
     """The battery's measured round-trip efficiency over the last
     BATTERY_ROUND_TRIP_DAYS: what came out over what went in, corrected for
-    the change in what it holds (SOC). None until enough went through
-    (BATTERY_ROUND_TRIP_MIN_CYCLES full batteries), after a counter reset,
-    or when the result is implausible."""
+    the change in what it holds (SOC). No round trip until enough went
+    through (BATTERY_ROUND_TRIP_MIN_CYCLES full batteries), after a counter
+    reset, or when the result is implausible."""
     if capacity_wh <= 0:
-        return None
+        return BatteryRoundTrip()
     since = today - timedelta(days=BATTERY_ROUND_TRIP_DAYS)
     with _connection(db_path) as conn:
         _ensure_schema(conn)
@@ -1159,26 +1171,25 @@ def learn_battery_round_trip(db_path: str, capacity_wh: float, today: date_cls) 
             (since.year * 10000 + since.month * 100 + since.day,),
         ).fetchall()
     if len(rows) < 2:
-        return None
+        return BatteryRoundTrip()
     (soc_start, charge_start, discharge_start), (soc_end, charge_end, discharge_end) = (
         rows[0],
         rows[-1],
     )
     charged = (charge_end - charge_start) * 1000
     discharged = (discharge_end - discharge_start) * 1000
-    if charged < BATTERY_ROUND_TRIP_MIN_CYCLES * capacity_wh or discharged < 0:
-        return None
+    cycles = max(0.0, charged / capacity_wh)
+    if charged < BATTERY_ROUND_TRIP_MIN_CYCLES * capacity_wh:
+        return BatteryRoundTrip(cycles=cycles)
     stored = (soc_end - soc_start) / 100 * capacity_wh
-    if charged - stored <= 0:
-        return None
-    round_trip = discharged / (charged - stored)
+    round_trip = discharged / (charged - stored) if charged - stored > 0 else -1.0
     if not BATTERY_ROUND_TRIP_MIN <= round_trip <= 1.0:
         LOGGER.warning(
             "learn_battery_round_trip: %.3f is implausible -- using the default efficiencies",
             round_trip,
         )
-        return None
-    return round_trip
+        return BatteryRoundTrip(cycles=cycles, implausible=True)
+    return BatteryRoundTrip(round_trip, cycles)
 
 
 def store_hour_action(

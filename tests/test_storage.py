@@ -17,6 +17,7 @@ from custom_components.alpha_ess_local.storage import (
     LOAD_TAU_DAYS,
     MIN_SAMPLES,
     MIN_SPREAD_SAMPLES,
+    BatteryRoundTrip,
     ForecastRow,
     _day_class,
     _ensure_schema,
@@ -1222,9 +1223,11 @@ def test_battery_round_trip_from_the_counters_and_the_soc(tmp_path):
     store_battery_counter(db_path, datetime(2026, 10, 1, 0), 40.0, 1000.0, 900.0)
     store_battery_counter(db_path, datetime(2026, 10, 10, 0), 60.0, 1060.0, 952.0)
 
-    round_trip = learn_battery_round_trip(db_path, 10000, date(2026, 10, 10))
+    learned = learn_battery_round_trip(db_path, 10000, date(2026, 10, 10))
 
-    assert round_trip == pytest.approx(52 / 58)
+    assert learned.round_trip == pytest.approx(52 / 58)
+    assert learned.cycles == pytest.approx(6.0)
+    assert learned.implausible is False
 
 
 def test_battery_round_trip_keeps_the_first_reading_of_an_hour(tmp_path):
@@ -1233,24 +1236,34 @@ def test_battery_round_trip_keeps_the_first_reading_of_an_hour(tmp_path):
     store_battery_counter(db_path, datetime(2026, 10, 1, 0, 30), 99.0, 1005.0, 900.0)
     store_battery_counter(db_path, datetime(2026, 10, 10, 0), 40.0, 1060.0, 954.0)
 
-    assert learn_battery_round_trip(db_path, 10000, date(2026, 10, 10)) == pytest.approx(0.9)
+    assert learn_battery_round_trip(db_path, 10000, date(2026, 10, 10)).round_trip == pytest.approx(
+        0.9
+    )
 
 
 @pytest.mark.parametrize(
-    ("end", "reason"),
+    ("end", "expected"),
     [
-        ((40.0, 1030.0, 927.0), "too little through it yet"),
-        ((40.0, 1060.0, 1020.0), "more out than in: a counter is off"),
-        ((40.0, 1060.0, 930.0), "below the plausible minimum"),
-        ((40.0, 500.0, 400.0), "the counters were reset"),
+        # too little through it yet: 3 of the 5 batteries
+        ((40.0, 1030.0, 927.0), BatteryRoundTrip(cycles=3.0)),
+        # more out than in: a counter is off
+        ((40.0, 1060.0, 1020.0), BatteryRoundTrip(cycles=6.0, implausible=True)),
+        # below the plausible minimum
+        ((40.0, 1060.0, 930.0), BatteryRoundTrip(cycles=6.0, implausible=True)),
+        # the counters were reset
+        ((40.0, 500.0, 400.0), BatteryRoundTrip(cycles=0.0)),
     ],
 )
-def test_battery_round_trip_none_without_a_sound_measurement(tmp_path, end, reason):
+def test_battery_round_trip_none_without_a_sound_measurement(tmp_path, end, expected):
     db_path = str(tmp_path / "test.db")
     store_battery_counter(db_path, datetime(2026, 10, 1, 0), 40.0, 1000.0, 900.0)
     store_battery_counter(db_path, datetime(2026, 10, 10, 0), *end)
 
-    assert learn_battery_round_trip(db_path, 10000, date(2026, 10, 10)) is None, reason
+    learned = learn_battery_round_trip(db_path, 10000, date(2026, 10, 10))
+
+    assert learned.round_trip is None
+    assert learned.cycles == pytest.approx(expected.cycles)
+    assert learned.implausible is expected.implausible
 
 
 def test_battery_round_trip_only_over_the_last_days(tmp_path):
@@ -1260,4 +1273,6 @@ def test_battery_round_trip_only_over_the_last_days(tmp_path):
     store_battery_counter(db_path, datetime(2026, 10, 1, 0), 40.0, 1000.0, 900.0)
     store_battery_counter(db_path, datetime(2026, 10, 10, 0), 40.0, 1060.0, 954.0)
 
-    assert learn_battery_round_trip(db_path, 10000, date(2026, 10, 10)) == pytest.approx(0.9)
+    assert learn_battery_round_trip(db_path, 10000, date(2026, 10, 10)).round_trip == pytest.approx(
+        0.9
+    )
