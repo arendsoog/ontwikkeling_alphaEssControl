@@ -744,16 +744,16 @@ class AlphaEssPanel extends HTMLElement {
       .callWS({ type: `${DOMAIN}/today_power` })
       .then((today) => {
         if (stale()) return true;
-        this._todayPower = today && Array.isArray(today.samples) ? today : null;
+        // Nothing while the integration (re)loads after an update or a
+        // change: keep the samples already shown, the retry fetches them.
+        if (!today || !Array.isArray(today.samples)) return false;
+        this._todayPower = today;
         this._renderAll();
-        // Nothing while the integration (re)loads after an update or a change.
-        return Boolean(this._todayPower);
+        return true;
       })
-      .catch(() => {
-        // Older backend without the command: fall back to recorder history only.
-        this._todayPower = null;
-        return false;
-      });
+      // Home Assistant restarting, or the connection gone: keep the samples
+      // already shown rather than dropping the day's lines.
+      .catch(() => false);
 
     const stats = !counterIds.length
       ? Promise.resolve()
