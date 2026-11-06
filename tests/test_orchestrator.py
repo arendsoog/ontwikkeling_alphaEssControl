@@ -371,6 +371,25 @@ def test_sample_hour_keeps_the_ev_chargers_share_apart():
     assert hour.real_ev_load == round((3000 + 1000) / 2)
 
 
+def test_sample_hour_never_runs_ahead_of_the_clock():
+    """Restarts each take a sample at once; one within a 5-minute slot that
+    already has its sample replaces it instead of adding one, so the hour's
+    12 places don't fill up (and later samples get dropped) before it ends."""
+    hour = Hour()
+    hour.five_min_count = 5  # restored hour progress: slots 0-4 sampled
+    # restart at :24 (slot 4): replaces slot 4
+    assert _sample_hour(hour, 0.0, 0.0, 1000.0, 0.0, 0.02, 0.01, 21.0, slot=4) == 4
+    assert hour.five_min_count == 5
+    # the next regular sample at :29 goes to slot 5
+    assert _sample_hour(hour, 0.0, 0.0, 1000.0, 0.0, 0.02, 0.01, 21.0, slot=5) == 5
+    assert hour.five_min_count == 6
+    # many restarts late in the hour never push the count past 12
+    for _ in range(10):
+        _sample_hour(hour, 0.0, 0.0, 1000.0, 0.0, 0.02, 0.01, 21.0, slot=11)
+    assert hour.five_min_count == 12
+    assert _sample_hour(hour, 0.0, 0.0, 1000.0, 0.0, 0.02, 0.01, 21.0, slot=11) == 11
+
+
 def test_sample_hour_return_vat_percentage_overrides_export_side_real_result():
     hour = Hour()
     hour.price = 0.20
