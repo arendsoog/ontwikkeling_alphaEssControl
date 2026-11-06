@@ -504,10 +504,24 @@ def _own_entity_state(
     state = hass.states.get(entity_id)
     if state is not None and state.state not in ("unknown", "unavailable"):
         return state.state
-    stored = restore_state.async_get(hass).last_states.get(entity_id)
+    stored = _stored_state(hass, entity_id)
     if stored is not None and stored.state.state not in ("unknown", "unavailable"):
         return stored.state.state
     return None
+
+
+def _stored_state(hass: HomeAssistant, entity_id: str) -> restore_state.StoredState | None:
+    """An entity's state in the restore-state store, or None.
+
+    HA 2026.11 replaced the ``last_states`` dict with
+    ``async_get_stored_state()``; support both.
+    """
+    data = restore_state.async_get(hass)
+    getter = getattr(data, "async_get_stored_state", None)
+    if getter is not None:
+        return getter(entity_id)
+    last_states = getattr(data, "last_states", None)
+    return last_states.get(entity_id) if last_states is not None else None
 
 
 def _effective_max_grid_load_wh(hass: HomeAssistant, entry: ConfigEntry) -> float:
