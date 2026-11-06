@@ -342,8 +342,16 @@ def _sample_hour(
     vat_percentage: float,
     return_vat_percentage: float | None = None,
     ev_power: float = 0.0,
-) -> None:
+    slot: int = MAX_FIVE_MINS - 1,
+) -> int | None:
     """Port of CalculatePower: accumulate one 5-minute sample into hour.five_min[].
+
+    `slot` is the clock's 5-minute slot (minute // 5). The sample goes in
+    the next free place, but never past `slot`: after a restart within a
+    slot already sampled (the count restored from the hour progress), it
+    replaces that slot's sample instead of adding one, so restarts don't
+    fill the hour's 12 places before the hour ends. Returns the index
+    written, or None when the sample was ignored.
 
     `return_vat_percentage` overrides `vat_percentage` for the return-price
     side of `hour.real_result` only -- defaults to `vat_percentage` when
@@ -356,14 +364,15 @@ def _sample_hour(
             "orchestrator: ignoring 5-minute sample with negative house load (%.0f)",
             real_house_load,
         )
-        return
+        return None
 
     count = hour.five_min_count
-    if not (0 <= count < MAX_FIVE_MINS):
+    if not (0 <= count <= MAX_FIVE_MINS):
         LOGGER.warning("orchestrator: five_min_count out of bounds (%d)", count)
-        return
+        return None
 
-    sample = hour.five_min[count]
+    index = min(count, max(0, min(slot, MAX_FIVE_MINS - 1)))
+    sample = hour.five_min[index]
     sample.real_solar_power_roof = pv_roof
     sample.real_extra_pv_power = extra_pv
     sample.total_active_power = total_active_power
@@ -373,9 +382,8 @@ def _sample_hour(
     sample.grid_to_battery = _grid_to_battery(sample)
     sample.ev_power = max(0.0, min(ev_power, real_house_load))
 
-    if hour.five_min_count < MAX_FIVE_MINS:
-        hour.five_min_count += 1
-        count = hour.five_min_count
+    count = max(count, index + 1)
+    hour.five_min_count = count
 
     samples = hour.five_min[:count]
     hour.real_solar_power_roof = round(sum(s.real_solar_power_roof for s in samples) / count)
@@ -398,6 +406,7 @@ def _sample_hour(
         hour.real_result = (
             -active_power * mk_return_price(hour.price, return_fee, effective_return_vat) / 1000.0
         )
+    return index
 
 
 # SMA's Modbus profile represents "no measurement" for a signed 32-bit
@@ -1040,9 +1049,9 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
             LOGGER.info("orchestrator: excluded consumers' readings back")
         self._ev_missing = ev_missing
 
-        samples_before = hour.five_min_count
+        sample_index = None
         if modbus_ok:
-            _sample_hour(
+            sample_index = _sample_hour(
                 hour,
                 pv_roof,
                 extra_pv_power or 0.0,
@@ -1055,8 +1064,9 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                 vat_percentage,
                 return_vat_percentage,
                 ev_power=ev_power or 0.0,
+                slot=now.minute // 5,
             )
-            if estimated and hour.five_min_count > samples_before:
+            if estimated and sample_index is not None:
                 hour.estimated = True
 
         pv_total_energy_kwh = modbus_data.get("pv_total_energy")
@@ -1136,7 +1146,7 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         # *that* hour's own baseline, never the just-completed hour's.
         # The sample just taken (if _sample_hour accepted it), for the
         # panel's power curve after a restart -- see storage.five_min_data.
-        if hour.five_min_count > samples_before:
+        if sample_index is not None:
             await self.hass.async_add_executor_job(
                 storage.store_five_min_sample,
                 db_path,
@@ -1144,8 +1154,8 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
                 now.month,
                 now.day,
                 now.hour,
-                samples_before,
-                hour.five_min[samples_before],
+                sample_index,
+                hour.five_min[sample_index],
             )
 
         if hour.five_min_count > 0:
