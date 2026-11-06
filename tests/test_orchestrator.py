@@ -60,6 +60,7 @@ from custom_components.alpha_ess_local.orchestrator import (
     _planning_tomorrow,
     _sample_hour,
     _solar_to_battery,
+    _stored_state,
     _switch_entity_value,
     async_handle_daily_rollover,
     async_handle_hourly_rollover,
@@ -3510,3 +3511,20 @@ async def test_real_data_coordinator_restores_stored_five_minute_samples(
 
     # This cycle's own new sample (slot 2) is stored for the next restart.
     assert store_sample.call_args.args[4:6] == (current_hour, 2)
+
+
+@pytest.mark.parametrize("new_api", [True, False])
+def test_stored_state_supports_old_and_new_restore_state_api(new_api: bool):
+    """HA 2026.11 replaced RestoreStateData.last_states with
+    async_get_stored_state(); both must keep working."""
+    stored = SimpleNamespace(state=State("number.x", "25.0"))
+    if new_api:
+        data = SimpleNamespace(async_get_stored_state={"number.x": stored}.get)
+    else:
+        data = SimpleNamespace(last_states={"number.x": stored})
+    with patch(
+        "custom_components.alpha_ess_local.orchestrator.restore_state.async_get",
+        return_value=data,
+    ):
+        assert _stored_state(MagicMock(), "number.x") is stored
+        assert _stored_state(MagicMock(), "number.y") is None
