@@ -10,6 +10,11 @@ DEFAULT_NAME = "AlphaESS"
 DEFAULT_PORT = 502
 SCAN_INTERVAL = timedelta(seconds=30)
 
+# Right after a (re)start, other integrations (prices, EV charger, extra
+# PV) may not have loaded yet: a missing source is only logged as an error
+# when it's still missing after this.
+STARTUP_GRACE = timedelta(minutes=5)
+
 # Options flow: device physical specs (config.ini [General])
 # CONF_PV_POWER is not itself a form field -- it's computed from
 # CONF_PV_PANEL_WP * CONF_PV_PANEL_COUNT each time an options section is

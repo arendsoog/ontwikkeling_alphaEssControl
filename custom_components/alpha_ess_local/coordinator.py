@@ -28,6 +28,7 @@ from .const import (
     DOMAIN,
     LOGGER,
     SCAN_INTERVAL,
+    STARTUP_GRACE,
 )
 from .data import Day
 from .orchestrator import get_db_path, hour_correction_from_mean
@@ -54,6 +55,7 @@ class _StartupRaceRetryHelper:
 
     def __init__(self, coordinator: DataUpdateCoordinator) -> None:
         self._coordinator = coordinator
+        self._started = dt_util.utcnow()
         self._attempt = 0
         self._unsub: callable | None = None
         self._missing_logged = False
@@ -76,7 +78,10 @@ class _StartupRaceRetryHelper:
             self._attempt = 0
             return
 
-        if not self._missing_logged:
+        if dt_util.utcnow() - self._started < STARTUP_GRACE:
+            # Sources still loading after a (re)start: not an error yet.
+            LOGGER.debug("No %s for today yet -- sources may still be loading", what)
+        elif not self._missing_logged:
             # Logged once, so it shows in Home Assistant's own log.
             LOGGER.error("No %s for today from any configured source", what)
             self._missing_logged = True
@@ -174,6 +179,7 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         self._retry_helper = _StartupRaceRetryHelper(self)
         # True while today is priced from yesterday's stored hours.
         self._using_yesterday = False
+        self._started = dt_util.utcnow()
 
     async def _async_update_data(self) -> dict[str, Day]:
         """Rebuild today's and tomorrow's prices from the configured entities."""
@@ -261,9 +267,11 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         day.valid = True
         day.kept = True
         day.source = "yesterday"
-        if not self._using_yesterday:
+        if dt_util.utcnow() - self._started < STARTUP_GRACE:
+            LOGGER.debug("No prices for %s yet -- planning with yesterday's meanwhile", today)
+        elif not self._using_yesterday:
             LOGGER.error("No prices for %s -- planning with yesterday's prices meanwhile", today)
-        self._using_yesterday = True
+            self._using_yesterday = True
         return day
 
 

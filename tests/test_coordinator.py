@@ -3,6 +3,7 @@
 from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
@@ -18,6 +19,7 @@ from custom_components.alpha_ess_local.const import (
     CONF_PROVIDER_USE_FEE,
     CONF_VAT_PERCENTAGE,
     DOMAIN,
+    STARTUP_GRACE,
 )
 from custom_components.alpha_ess_local.coordinator import (
     _STARTUP_RETRY_DELAYS_SECONDS,
@@ -269,6 +271,24 @@ async def test_startup_retry_helper_resets_attempt_counter_after_success(hass: H
 
     coordinator.async_request_refresh.assert_not_awaited()
     assert helper._attempt == 0
+
+
+async def test_startup_retry_helper_logs_an_error_only_after_the_startup_grace(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+):
+    """Right after a (re)start the sources may still be loading: no error
+    then, only once they're still missing after STARTUP_GRACE."""
+    coordinator = _FakeCoordinator(hass)
+    helper = _StartupRaceRetryHelper(coordinator)
+
+    helper.note_result(configured=True, found_data=False, what="prices")
+    assert "No prices for today from any configured source" not in caplog.text
+
+    later = dt_util.utcnow() + STARTUP_GRACE + timedelta(seconds=1)
+    with patch("custom_components.alpha_ess_local.coordinator.dt_util.utcnow", return_value=later):
+        helper.note_result(configured=True, found_data=False, what="prices")
+    assert "No prices for today from any configured source" in caplog.text
+    helper.note_result(configured=True, found_data=True)  # cancels the pending retry
 
 
 async def test_prices_coordinator_schedules_retry_on_startup_race(hass: HomeAssistant):
