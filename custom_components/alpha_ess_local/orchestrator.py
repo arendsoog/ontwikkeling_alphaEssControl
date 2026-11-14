@@ -78,6 +78,7 @@ from .const import (
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
+    STARTUP_GRACE,
 )
 from .consumers import consumer_options, excluded_power_entities
 from .data import (
@@ -721,6 +722,9 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         self._modbus_down = False
         self._extra_pv_estimating = False
         self._ev_missing = False
+        # Missing extra-PV/consumer readings right after a (re)start (their
+        # integrations still loading) aren't logged as errors yet.
+        self._started = dt_util.utcnow()
 
     async def _async_update_data(self) -> RealPowerData:
         """Sample current power values and roll the hour/day over as needed."""
@@ -1010,14 +1014,18 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
             # scale the roof's production by the two installations' peaks.
             extra_pv_power = _estimated_extra_pv(pv_roof, pv_options)
             estimated = extra_pv_power is not None and extra_pv_power > 0
+        starting = dt_util.utcnow() - self._started < STARTUP_GRACE
         # Logged only while the sun is up (an SMA asleep at night is normal).
-        if estimated and not self._extra_pv_estimating:
+        if estimated and starting:
+            pass  # its integration may still be loading -- checked again later
+        elif estimated and not self._extra_pv_estimating:
             LOGGER.error(
                 "orchestrator: no extra PV reading -- estimating it from the roof's production"
             )
         elif extra_pv_power is not None and not estimated and self._extra_pv_estimating:
             LOGGER.info("orchestrator: extra PV reading back")
-        self._extra_pv_estimating = estimated
+        if not (estimated and starting):
+            self._extra_pv_estimating = estimated
 
         meter = configured_grid_meter(self.hass, self.config_entry.options)
         house_load_power = grid_meter_power(self.hass, meter)
@@ -1040,14 +1048,17 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         ev_missing = any(reading is None for reading in readings)
         if ev_missing:
             estimated = True  # its consumption would be counted as house load
-        if ev_missing and not self._ev_missing:
+        if ev_missing and starting:
+            pass  # its integration may still be loading -- checked again later
+        elif ev_missing and not self._ev_missing:
             LOGGER.error(
                 "orchestrator: no reading from an excluded consumer (EV charger, ...) -- "
                 "its hours are left out of the learning"
             )
         elif not ev_missing and self._ev_missing:
             LOGGER.info("orchestrator: excluded consumers' readings back")
-        self._ev_missing = ev_missing
+        if not (ev_missing and starting):
+            self._ev_missing = ev_missing
 
         sample_index = None
         if modbus_ok:
