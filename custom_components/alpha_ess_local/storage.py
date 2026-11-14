@@ -1017,6 +1017,11 @@ MIN_SPREAD_SAMPLES = 15
 BATTERY_ROUND_TRIP_DAYS = 30
 BATTERY_ROUND_TRIP_MIN_CYCLES = 5
 BATTERY_ROUND_TRIP_MIN = 0.75
+# The SOC is the BMS's estimate and can be a few % off (1% of a 23 kWh
+# battery is 230 Wh): the measurement starts at a reading whose SOC is
+# within this many % of the latest one, so the SOC correction (nearly)
+# drops out and only the battery's own counters count.
+BATTERY_ROUND_TRIP_SOC_MATCH = 1.0
 BATTERY_COUNTER_KEEP_DAYS = 60
 
 
@@ -1154,7 +1159,10 @@ class BatteryRoundTrip:
 def learn_battery_round_trip(db_path: str, capacity_wh: float, today: date_cls) -> BatteryRoundTrip:
     """The battery's measured round-trip efficiency over the last
     BATTERY_ROUND_TRIP_DAYS: what came out over what went in, corrected for
-    the change in what it holds (SOC). No round trip until enough went
+    the change in what it holds (SOC). Measured from the earliest reading
+    whose SOC matches the latest one (BATTERY_ROUND_TRIP_SOC_MATCH), so an
+    off SOC estimate hardly matters; from the first reading when there's
+    none (or too little went through since). No round trip until enough went
     through (BATTERY_ROUND_TRIP_MIN_CYCLES full batteries), after a counter
     reset, or when the result is implausible."""
     if capacity_wh <= 0:
@@ -1172,10 +1180,17 @@ def learn_battery_round_trip(db_path: str, capacity_wh: float, today: date_cls) 
         ).fetchall()
     if len(rows) < 2:
         return BatteryRoundTrip()
-    (soc_start, charge_start, discharge_start), (soc_end, charge_end, discharge_end) = (
+    soc_end, charge_end, discharge_end = rows[-1]
+    start = next(
+        (
+            row
+            for row in rows[:-1]
+            if abs(row[0] - soc_end) <= BATTERY_ROUND_TRIP_SOC_MATCH
+            and (charge_end - row[1]) * 1000 >= BATTERY_ROUND_TRIP_MIN_CYCLES * capacity_wh
+        ),
         rows[0],
-        rows[-1],
     )
+    soc_start, charge_start, discharge_start = start
     charged = (charge_end - charge_start) * 1000
     discharged = (discharge_end - discharge_start) * 1000
     cycles = max(0.0, charged / capacity_wh)

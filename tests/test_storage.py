@@ -1230,6 +1230,37 @@ def test_battery_round_trip_from_the_counters_and_the_soc(tmp_path):
     assert learned.implausible is False
 
 
+def test_battery_round_trip_starts_at_a_reading_with_the_same_soc(tmp_path):
+    """An SOC that's a few % off would skew the correction for what the
+    battery holds: the measurement starts at the earliest reading whose SOC
+    matches the latest one, so only the counters count."""
+    db_path = str(tmp_path / "test.db")
+    # The first reading's SOC differs from the latest; from it, the
+    # (slightly off) SOC correction would give 52 / 58.
+    store_battery_counter(db_path, datetime(2026, 10, 1, 0), 40.0, 1000.0, 900.0)
+    # Same SOC as the latest reading (within 1%): 60 kWh in, 54 kWh out.
+    store_battery_counter(db_path, datetime(2026, 10, 1, 6), 60.5, 1002.0, 901.0)
+    store_battery_counter(db_path, datetime(2026, 10, 10, 0), 60.0, 1062.0, 955.0)
+
+    learned = learn_battery_round_trip(db_path, 10000, date(2026, 10, 10))
+
+    assert learned.round_trip == pytest.approx(54 / (60 - (-0.05)))
+    assert learned.cycles == pytest.approx(6.0)
+
+
+def test_battery_round_trip_falls_back_to_the_first_reading(tmp_path):
+    """A same-SOC reading too recent to have enough through it since is
+    skipped: the first reading (with the SOC correction) is used."""
+    db_path = str(tmp_path / "test.db")
+    store_battery_counter(db_path, datetime(2026, 10, 1, 0), 40.0, 1000.0, 900.0)
+    store_battery_counter(db_path, datetime(2026, 10, 9, 0), 60.0, 1050.0, 943.0)
+    store_battery_counter(db_path, datetime(2026, 10, 10, 0), 60.0, 1060.0, 952.0)
+
+    assert learn_battery_round_trip(db_path, 10000, date(2026, 10, 10)).round_trip == pytest.approx(
+        52 / 58
+    )
+
+
 def test_battery_round_trip_keeps_the_first_reading_of_an_hour(tmp_path):
     db_path = str(tmp_path / "test.db")
     store_battery_counter(db_path, datetime(2026, 10, 1, 0, 0), 40.0, 1000.0, 900.0)
