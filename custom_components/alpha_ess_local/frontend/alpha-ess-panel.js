@@ -15,24 +15,34 @@ const STATUS_REFRESH_MS = 30 * 1000;
 const HISTORY_RETRY_MS = 30 * 1000;
 const HISTORY_RETRIES = 10;
 
+// Home Assistant's energy colours (its Energy dashboard), with HA's defaults
+// as fallback; applyThemeColors() picks up the active theme's values.
+const ENERGY = {
+  gridIn: ["--energy-grid-consumption-color", "#488fc2"],
+  gridOut: ["--energy-grid-return-color", "#8353d1"],
+  solar: ["--energy-solar-color", "#ff9800"],
+  batteryIn: ["--energy-battery-in-color", "#f06292"],
+  batteryOut: ["--energy-battery-out-color", "#4db6ac"],
+};
+
 const COLOR = {
-  charge: "#2dd4bf",
-  discharge: "#99f6e4",
-  import: "#c026d3",
-  export: "#f97316",
-  solar: "#fbbf24",
+  charge: ENERGY.batteryIn[1],
+  discharge: ENERGY.batteryOut[1],
+  import: ENERGY.gridIn[1],
+  export: ENERGY.gridOut[1],
+  solar: ENERGY.solar[1],
   house: "#94a3b8",
-  battery: "#2dd4bf",
-  grid: "#a855f7",
-  soc: "#14b8a6",
-  forecast: "#fcd34d",
+  battery: ENERGY.batteryOut[1],
+  grid: ENERGY.gridIn[1],
+  soc: ENERGY.batteryOut[1],
+  forecast: "#ffcc80",
 };
 
 // Labels the scheduler emits (schedule.py's _CHARGE_MESSAGES) -> display.
 const ACTIONS = {
-  "Charge-grid": { label: "Laden vanaf net", color: "#e879f9" },
-  "Charge-PV": { label: "Laden met zon", color: "#fde047" },
-  Discharge: { label: "Batterij ontladen", color: "#5eead4" },
+  "Charge-grid": { label: "Laden vanaf net", color: ENERGY.gridIn[1] },
+  "Charge-PV": { label: "Laden met zon", color: ENERGY.solar[1] },
+  Discharge: { label: "Batterij ontladen", color: ENERGY.batteryOut[1] },
   "No-charging": { label: "Niet laden", color: "#cbd5e1" },
   "No-discharging": { label: "Niet ontladen", color: "#94a3b8" },
 };
@@ -393,14 +403,40 @@ const SCENE_PATHS = {
 // Same colours as the charts. The grid's depends on direction: magenta
 // while importing, orange while feeding in (see gridColour).
 const SCENE_COLOR = {
-  solar: "#fbbf24",
-  extraPv: "#fbbf24",
+  solar: ENERGY.solar[1],
+  extraPv: ENERGY.solar[1],
   house: "#94a3b8",
   ev: "#5aa8ff",
-  gridImport: "#c026d3",
-  gridExport: "#f97316",
+  gridImport: ENERGY.gridIn[1],
+  gridExport: ENERGY.gridOut[1],
   gridIdle: "#cbd5e1",
 };
+
+// The active theme's energy colours (HA sets them on the document), so the
+// panel's charts match the Energy dashboard -- also after a theme change.
+function applyThemeColors() {
+  const style = getComputedStyle(document.documentElement);
+  const pick = ([name, fallback]) => style.getPropertyValue(name).trim() || fallback;
+  const gridIn = pick(ENERGY.gridIn);
+  const gridOut = pick(ENERGY.gridOut);
+  const solar = pick(ENERGY.solar);
+  const batteryIn = pick(ENERGY.batteryIn);
+  const batteryOut = pick(ENERGY.batteryOut);
+  Object.assign(COLOR, {
+    charge: batteryIn,
+    discharge: batteryOut,
+    import: gridIn,
+    export: gridOut,
+    solar,
+    battery: batteryOut,
+    grid: gridIn,
+    soc: batteryOut,
+  });
+  Object.assign(SCENE_COLOR, { solar, extraPv: solar, gridImport: gridIn, gridExport: gridOut });
+  ACTIONS["Charge-grid"].color = gridIn;
+  ACTIONS["Charge-PV"].color = solar;
+  ACTIONS.Discharge.color = batteryOut;
+}
 
 function gridColour(watts) {
   if (watts === null || Math.abs(watts) < 15) return SCENE_COLOR.gridIdle;
@@ -487,6 +523,9 @@ class AlphaEssPanel extends HTMLElement {
     this._retryTimer = null;
     document.removeEventListener("visibilitychange", this._onVisible);
     this._watchConnection(null);
+    this._flowObserver?.disconnect();
+    this._flowObserver = null;
+    this._flowObserved = null;
   }
 
   // HA restarted or the connection dropped (a sleeping PC or tablet): once
@@ -846,11 +885,12 @@ class AlphaEssPanel extends HTMLElement {
   // ------------------------------------------------------------ rendering
 
   _renderShell() {
+    applyThemeColors();
     this.shadowRoot.innerHTML = `
       <style>${STYLE}</style>
       <div class="toolbar">
         <ha-menu-button></ha-menu-button>
-        <div class="brand"><div class="logo">A</div><div><div class="title">AlphaESS</div><div class="brand-sub">Batterijsturing</div></div></div>
+        <div class="brand"><div class="title">Batterijsturing</div></div>
         <nav class="tabs">
           ${TABS.map(
             (t) => `<button class="tab" data-tab="${t.key}"><ha-icon icon="${t.icon}"></ha-icon><span>${t.label}</span></button>`
@@ -864,8 +904,10 @@ class AlphaEssPanel extends HTMLElement {
         <section class="card" id="history"></section>
       </div>
       <div class="content tab-page" data-page="control">
-        <section class="card" id="controls"></section>
-        <section class="card" id="slots"></section>
+        <div class="ctl-grid">
+          <section class="card" id="controls"></section>
+          <section class="card" id="slots"></section>
+        </div>
       </div>
       <div class="content tab-page" data-page="overview">
         <div class="grid g-status">
@@ -982,6 +1024,7 @@ class AlphaEssPanel extends HTMLElement {
     if (!this._hass || !this._entities) return;
     this._charts = {};
     this._card("flow", this._renderFlow());
+    this._alignLeaders();
     this._card("today", this._renderToday());
     this._card("week", this._renderWeek());
     this._card("system", this._renderSystem());
@@ -1006,6 +1049,28 @@ class AlphaEssPanel extends HTMLElement {
 
   // Only touch the DOM when a card's markup actually changed, so running
   // animations and hover state survive unrelated updates.
+  // Start each scene leader line at its label's centre (labels are laid out by
+  // CSS, so measure them), again whenever the flow card changes size.
+  _alignLeaders() {
+    const card = this.shadowRoot.getElementById("flow");
+    const img = card?.querySelector(".scene-img");
+    if (!img) return;
+    if (this._flowObserved !== card) {
+      this._flowObserver?.disconnect();
+      this._flowObserver = new ResizeObserver(() => this._alignLeaders());
+      this._flowObserver.observe(card);
+      this._flowObserved = card;
+    }
+    const box = img.getBoundingClientRect();
+    if (!box.width) return;
+    for (const label of card.querySelectorAll(".scene-label[data-key]")) {
+      const line = img.querySelector(`line[data-key="${label.dataset.key}"]`);
+      if (!line) continue;
+      const r = label.getBoundingClientRect();
+      line.setAttribute("x1", (((r.left + r.width / 2 - box.left) / box.width) * 1260).toFixed(1));
+    }
+  }
+
   _card(id, html) {
     if (this._cards[id] === html) return;
     this._cards[id] = html;
@@ -1146,29 +1211,27 @@ class AlphaEssPanel extends HTMLElement {
       },
     ].filter(Boolean);
 
+    // Labels sit in flex rows (same margin to both sides, equal gaps), sorted
+    // left to right by target; _alignLeaders() points the leaders at them.
     const band = (which) =>
       labels
         .filter((l) => SCENE_TARGETS[l.key].band === which)
-        .map((l) => {
-          const pct = (SCENE_TARGETS[l.key].x / 1260) * 100;
-          // Keep edge labels inside the scene instead of centring them.
-          let pos = `left:${pct}%;transform:translateX(-50%)`;
-          if (pct > 88) pos = "right:0";
-          else if (pct < 12) pos = "left:0";
-          return `
-            <div class="scene-label" style="${pos}" data-entity="${esc(l.entity || "")}">
+        .sort((a, b) => SCENE_TARGETS[a.key].x - SCENE_TARGETS[b.key].x)
+        .map(
+          (l) => `
+            <div class="scene-label" data-key="${l.key}" data-entity="${esc(l.entity || "")}">
               <div class="scene-value"><span class="dot" style="background:${l.color}"></span>${esc(l.value)}</div>
               <div class="scene-name">${esc(l.name)}</div>
               ${l.sub ? `<div class="scene-sub">${esc(l.sub)}</div>` : ""}
-            </div>`;
-        })
+            </div>`,
+        )
         .join("");
 
     const leaders = labels
       .map((l) => {
         const t = SCENE_TARGETS[l.key];
         const y0 = t.band === "top" ? 0 : 848;
-        return `<line x1="${t.x}" y1="${y0}" x2="${t.x}" y2="${t.y}" class="leader" stroke="${l.color}"/><circle cx="${t.x}" cy="${t.y}" r="5" fill="${l.color}" class="leader-dot"/>`;
+        return `<line data-key="${l.key}" x1="${t.x}" y1="${y0}" x2="${t.x}" y2="${t.y}" class="leader" stroke="${l.color}"/><circle cx="${t.x}" cy="${t.y}" r="5" fill="${l.color}" class="leader-dot"/>`;
       })
       .join("");
 
@@ -1341,37 +1404,35 @@ class AlphaEssPanel extends HTMLElement {
     const meter = st && st.grid_meter;
 
     const left = [
-      row("Batterijsturing", st ? (st.control_enabled ? "Actief" : "Uit (alleen loggen)") : "–", st ? tone(st.control_enabled) : ""),
       row("Planning nu", actionLabel(action), "accent", "schedule_current_hour_action"),
       row("Volgend uur", actionLabel(next), "", "schedule_next_hour_action"),
       row("Dispatch-modus", this._text("dispatch_current_mode") ?? "–", "", "dispatch_current_mode"),
-      row("Handmatige override", st ? (st.manual_override ? actionLabel(st.manual_override) : "Geen") : "–", st && st.manual_override ? "warn" : ""),
       this._activeSlotRow(st, row),
       row("Prijs nu (all-in)", this._formatted("price_current_hour"), "", "price_current_hour"),
       row("Winststatus", this._formatted("price_earning_status"), "", "price_earning_status"),
-    ];
-    const right = [
-      row("Ontladen naar net via schema", this._formatted("discharge_enabled"), "", "discharge_enabled"),
-      sourcesRow("Zonnevoorspelling", st && st.solar_sources),
-      sourcesRow("Prijsbron", st && st.price_sources),
-      sourcesRow("Netmeting", meter && meter.meters, "huisverbruik, dag/nachttarief, regelen van netladen"),
       sourcesRow("Grens netladen", meter && meter.caps, "de hoogste geldt (maandpiek in hele kW)"),
+    ].filter(Boolean); // no blank gap for a row that has nothing to show
+    const right = [
+      row("Batterijsturing", st ? (st.control_enabled ? "Actief" : "Uit (alleen loggen)") : "–", st ? tone(st.control_enabled) : ""),
       row(
         "PV-sturing negatieve prijzen",
         !st ? "–" : st.extra_pv_unreachable ? "Niet bereikbaar" : st.extra_pv_control_enabled ? "Actief" : "Uit",
         !st ? "" : st.extra_pv_unreachable ? "error" : tone(st.extra_pv_control_enabled)
       ),
+      row("Handmatige override", st ? (st.manual_override ? actionLabel(st.manual_override) : "Geen") : "–", st && st.manual_override ? "warn" : ""),
+      row("Ontladen naar net via schema", this._formatted("discharge_enabled"), "", "discharge_enabled"),
+      sourcesRow("Zonnevoorspelling", st && st.solar_sources),
+      sourcesRow("Prijsbron", st && st.price_sources),
+      sourcesRow("Netmeting", meter && meter.meters, "huisverbruik, dag/nachttarief, regelen van netladen"),
     ];
-    // One grid, left and right row i side by side, so each row lines up
-    // across both columns whatever its height. Narrow: all of the left
-    // column first, then the right (see .status-grid's --o-narrow).
-    const rows = Math.max(left.length, right.length);
-    const cells = [];
-    for (let i = 0; i < rows; i++) {
-      cells.push(`<div style="--o-wide:${2 * i};--o-narrow:${i}">${left[i] || ""}</div>`);
-      cells.push(`<div style="--o-wide:${2 * i + 1};--o-narrow:${rows + i}">${right[i] || ""}</div>`);
-    }
-    return `${this._header("mdi:shield-check-outline", "Integratiestatus")}<div class="card-body status-grid">${cells.join("")}</div>`;
+    // Two cards: what the planning calculates now, and how it is set up.
+    const card = (icon, title, list) =>
+      `<section class="status-card">${this._header(icon, title)}<div class="card-body">${list.filter(Boolean).join("")}</div></section>`;
+    return `<div class="status-cards">${card("mdi:calculator-variant-outline", "Berekening sturing", left)}${card(
+      "mdi:tune-variant",
+      "Status instellingen",
+      right
+    )}</div>`;
   }
 
   // Power (kW) for the charts. Primary source is the integration's own
@@ -1495,8 +1556,10 @@ class AlphaEssPanel extends HTMLElement {
     const soc = this._value("battery_soc");
     const points = this._socSeries();
     const header = this._header("mdi:chart-areaspline", "SOC · vandaag", `<span class="muted big">${soc === null ? "" : `${Math.round(soc)}%`}</span>`);
+    // Same legend row as the Vermogen card next to it, so both plots line up.
+    const legend = this._legend([{ label: "Laadtoestand batterij", color: COLOR.soc }]);
     if (!points.length) {
-      return `${header}<div class="card-body"><div class="empty">${this._history === null ? "Laden…" : "Geen geschiedenis beschikbaar."}</div></div>`;
+      return `${header}<div class="card-body">${legend}<div class="empty">${this._history === null ? "Laden…" : "Geen geschiedenis beschikbaar."}</div></div>`;
     }
     const x0 = startOfDay().getTime();
     const x1 = startOfDay(1).getTime();
@@ -1515,7 +1578,7 @@ class AlphaEssPanel extends HTMLElement {
       },
       this._charts
     );
-    return `${header}<div class="card-body">${chart}</div>`;
+    return `${header}<div class="card-body">${legend}${chart}</div>`;
   }
 
   _renderDaily() {
@@ -1667,14 +1730,7 @@ class AlphaEssPanel extends HTMLElement {
           <div class="spacer"></div>
           <span class="${running ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : running ? "Aan" : "Uit"}</span>
         </div>
-        ${
-          consumer.power
-            ? `<div class="device-main wide" data-entity="${esc(consumer.power)}">
-          <div class="big ${running ? "accent" : "muted"}">${fmtW(power)}</div>
-          <div class="muted">Vermogen</div>
-        </div>`
-            : ""
-        }
+        ${consumer.power ? this._powerGauge(consumer.power, power, consumer.max_power, running, "house", "Vermogen") : ""}
         ${
           consumer.energy
             ? `<div class="section-title">Energie vandaag</div>${this._energyRows([
@@ -1724,14 +1780,7 @@ class AlphaEssPanel extends HTMLElement {
           <div class="spacer"></div>
           <span class="${charging ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : charging ? "Laadt" : "Laadt niet"}</span>
         </div>
-        ${
-          group.power.length
-            ? `<div class="device-main wide" data-entity="${esc(group.power[0])}">
-          <div class="big ${charging ? "accent" : "muted"}">${fmtW(power)}</div>
-          <div class="muted">Laadvermogen</div>
-        </div>`
-            : ""
-        }
+        ${group.power.length ? this._powerGauge(group.power[0], power, group.max_power ?? 11000, charging, "ev", "Laadvermogen") : ""}
         ${
           phases.length
             ? `<div class="section-title">Vermogen per fase</div>
@@ -1748,6 +1797,34 @@ class AlphaEssPanel extends HTMLElement {
         ${energy.length ? `<div class="section-title">Energie vandaag</div>${this._energyRows(energy)}` : ""}
         ${this._lifetimeSection(group.energy, "Geladen")}
       </section>`;
+  }
+
+  // A device's power, with -- when its max power is set -- a gauge (% of
+  // the max) and a bar beside it, like the PV installation's card.
+  _powerGauge(entity, power, max, active, kind, label) {
+    const value = `
+          <div class="big ${active ? "accent" : "muted"}">${fmtW(power)}</div>
+          <div class="muted">${label}</div>`;
+    if (!max) return `<div class="device-main wide" data-entity="${esc(entity)}">${value}</div>`;
+    const r = 52;
+    const circ = 2 * Math.PI * r;
+    const usage = power ? Math.min(100, (power / max) * 100) : 0;
+    const filled = (usage / 100) * 0.8;
+    return `
+        <div class="device-top">
+          <div class="ring small ${kind}" data-entity="${esc(entity)}">
+            <svg viewBox="0 0 130 130">
+              <circle cx="65" cy="65" r="${r}" class="ring-bg" stroke-dasharray="${circ * 0.8} ${circ}" transform="rotate(126 65 65)"/>
+              <circle cx="65" cy="65" r="${r}" class="ring-fg" stroke-dasharray="${circ * filled} ${circ}" transform="rotate(126 65 65)"/>
+            </svg>
+            <div class="ring-text"><div class="ring-value">${power === null ? "–" : Math.round(usage)}<small>%</small></div></div>
+            <div class="ring-scale"><span>0</span><span>${fmtNum(max / 1000, 1)} kW</span></div>
+          </div>
+          <div class="device-main" data-entity="${esc(entity)}">${value}
+            <div class="io-bar ${kind}"><div style="width:${usage}%"></div></div>
+            <div class="io-note left">van ${fmtNum(max / 1000, 1)} kW</div>
+          </div>
+        </div>`;
   }
 
   // The lifetime totals of a card's kWh counters, as on the AlphaESS card:
@@ -1882,6 +1959,11 @@ class AlphaEssPanel extends HTMLElement {
           </div>
         </div>
 
+        ${this._mpptSection([e.pv1_power, e.pv2_power, e.pv3_power])}
+
+        <div class="section-title">Energie vandaag</div>
+        ${today}
+
         ${this._healthSection(e)}
 
         ${this._limitsSection(e)}
@@ -1897,11 +1979,6 @@ class AlphaEssPanel extends HTMLElement {
             this._text("dispatch_current_mode") ?? "–"
           )}</span></div>
         </div>
-
-        ${this._mpptSection([e.pv1_power, e.pv2_power, e.pv3_power])}
-
-        <div class="section-title">Energie vandaag</div>
-        ${today}
 
         <details>
           <summary><ha-icon icon="mdi:counter"></ha-icon>Totalen (levensduur)</summary>
@@ -2012,6 +2089,10 @@ class AlphaEssPanel extends HTMLElement {
           ? this._todayPower.extra_pv_wh / 1000
           : integrateWh(this._historyOf(e, "extra_pv_power"), dayStart, Date.now()) / 1000;
     const producing = power !== null && power > 15;
+    // A gauge like the AlphaESS card's SOC ring: 0 to the peak power (kWp).
+    const r = 52;
+    const circ = 2 * Math.PI * r;
+    const filled = (usage / 100) * 0.8;
 
     return `
       <section class="card device">
@@ -2021,11 +2102,21 @@ class AlphaEssPanel extends HTMLElement {
           <div class="spacer"></div>
           <span class="${producing ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : producing ? "Produceert" : "Rust"}</span>
         </div>
-        <div class="device-main wide" data-entity="${esc(e.extra_pv_power)}">
-          <div class="big ${producing ? "solar" : "muted"}">${fmtW(power)}</div>
-          <div class="muted">Actueel vermogen</div>
-          <div class="io-bar solar"><div style="width:${usage}%"></div></div>
-          <div class="io-note left">${capacity ? `van ${fmtNum(capacity / 1000, 2)} kWp` : "Piekvermogen niet ingesteld"}</div>
+        <div class="device-top">
+          <div class="ring small solar" data-entity="${esc(e.extra_pv_power)}">
+            <svg viewBox="0 0 130 130">
+              <circle cx="65" cy="65" r="${r}" class="ring-bg" stroke-dasharray="${circ * 0.8} ${circ}" transform="rotate(126 65 65)"/>
+              <circle cx="65" cy="65" r="${r}" class="ring-fg" stroke-dasharray="${circ * filled} ${circ}" transform="rotate(126 65 65)"/>
+            </svg>
+            <div class="ring-text"><div class="ring-value">${capacity && power !== null ? Math.round(usage) : "–"}<small>%</small></div></div>
+            <div class="ring-scale"><span>0</span><span>${capacity ? `${fmtNum(capacity / 1000, 1)} kWp` : ""}</span></div>
+          </div>
+          <div class="device-main" data-entity="${esc(e.extra_pv_power)}">
+            <div class="big ${producing ? "solar" : "muted"}">${fmtW(power)}</div>
+            <div class="muted">Actueel vermogen</div>
+            <div class="io-bar solar"><div style="width:${usage}%"></div></div>
+            <div class="io-note left">${capacity ? `van ${fmtNum(capacity / 1000, 2)} kWp` : "Piekvermogen niet ingesteld"}</div>
+          </div>
         </div>
 
         ${this._mpptSection(st.extra_pv_string_entities || [])}
@@ -3140,7 +3231,7 @@ const STYLE = `
     font-family: var(--ha-font-family-body, Roboto, sans-serif);
     --muted: var(--secondary-text-color);
     --line: var(--divider-color);
-    --accent: #14b8a6;
+    --accent: var(--primary-color);
   }
   .toolbar {
     display: flex;
@@ -3153,20 +3244,7 @@ const STYLE = `
     box-sizing: border-box;
   }
   .brand { display: flex; align-items: center; gap: 10px; margin: 0 24px 0 8px; }
-  .logo {
-    width: 34px;
-    height: 34px;
-    border-radius: 10px;
-    background: var(--accent);
-    color: #062925;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 700;
-    font-size: 18px;
-  }
-  .title { font-size: 18px; line-height: 1.1; }
-  .brand-sub { font-size: 11px; opacity: 0.7; }
+  .title { font-size: 20px; font-weight: 400; }
   .tabs { display: flex; height: 100%; gap: 4px; overflow-x: auto; }
   .tab {
     display: flex;
@@ -3188,22 +3266,22 @@ const STYLE = `
   .tab.active { opacity: 1; border-bottom-color: currentColor; }
   .tab-page[hidden] { display: none; }
   @media (max-width: 700px) {
-    .brand > div:last-child, .tab span { display: none; }
+    .brand, .tab span { display: none; }
     .brand { margin-right: 8px; }
   }
   .content {
-    padding: 20px;
+    padding: 16px;
     margin: 0;
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 16px;
     box-sizing: border-box;
   }
-  .grid { display: grid; gap: 20px; align-items: stretch; }
-  .g-main { grid-template-columns: minmax(420px, 1.35fr) minmax(280px, 1fr) minmax(300px, 1fr); column-gap: 48px; }
+  .grid { display: grid; gap: 16px; align-items: stretch; }
+  .g-main { grid-template-columns: minmax(420px, 1.35fr) minmax(280px, 1fr) minmax(300px, 1fr); }
   .g-main .flow-card { grid-row: span 2; }
   .g2 { grid-template-columns: 1fr 1fr; }
-  .g-status { grid-template-columns: minmax(240px, 0.32fr) 1fr; column-gap: 48px; }
+  .g-status { grid-template-columns: minmax(240px, 0.32fr) 1fr; }
   @media (max-width: 1300px) {
     .g-main { grid-template-columns: 1fr 1fr; }
     .g-main .flow-card { grid-column: 1 / -1; grid-row: auto; }
@@ -3215,10 +3293,13 @@ const STYLE = `
     .g-main { grid-template-columns: 1fr; }
   }
 
+  /* Home Assistant's card look (ha-card), from the active theme. */
   .card {
-    background: none;
-    border: none;
-    padding: 12px 4px 20px;
+    background: var(--ha-card-background, var(--card-background-color));
+    border: var(--ha-card-border-width, 1px) solid var(--ha-card-border-color, var(--divider-color));
+    border-radius: var(--ha-card-border-radius, 12px);
+    box-shadow: var(--ha-card-box-shadow, none);
+    padding: 16px;
     min-width: 0;
     box-sizing: border-box;
   }
@@ -3226,15 +3307,16 @@ const STYLE = `
     display: flex;
     align-items: center;
     gap: 10px;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    font-size: 14px;
+    color: var(--ha-card-header-color, var(--primary-text-color));
+    font-size: var(--ha-card-header-font-size, 24px);
     font-weight: 400;
-    margin-bottom: 18px;
+    line-height: 32px;
+    letter-spacing: -0.012em;
+    margin: 0 0 16px;
   }
-  .card-header ha-icon { --mdc-icon-size: 18px; opacity: 0.7; }
-  .card-header .legend { text-transform: none; letter-spacing: 0; margin: 0; justify-content: flex-end; max-width: 60%; }
+  .card-header > ha-icon { display: none; }
+  .card-header .legend, .card-header .live { font-size: 12px; letter-spacing: 0; }
+  .card-header .legend { margin: 0; justify-content: flex-end; max-width: 60%; }
   .spacer { flex: 1; }
   .card-body { position: relative; }
   .subtitle { font-size: 13px; color: var(--muted); margin: -6px 0 10px; }
@@ -3253,14 +3335,24 @@ const STYLE = `
 
   /* energy flow scene (photo + traced flow paths, labels in bands) */
   .scene { background: none; overflow: hidden; }
+  /* Centre the scene in its card: vertically when the card is stretched by
+     its neighbours, horizontally (capped width) when it spans the page. */
+  .flow-card { display: flex; flex-direction: column; }
+  .flow-card .scene, .flow-card .scene-foot { width: 100%; max-width: 1100px; align-self: center; }
+  .flow-card .scene { margin-top: auto; }
+  .flow-card .scene-foot { margin-bottom: auto; }
   .scene-img { position: relative; }
   .scene-img img { display: block; width: 100%; height: auto; user-select: none; }
   .scene-img svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-  .scene-band { position: relative; height: 74px; }
-  .scene-band .scene-label { position: absolute; top: 12px; }
-  .scene-band.bottom .scene-label { top: auto; bottom: 12px; }
-  .scene-band .scene-label[style*="right:0"] { right: 12px !important; }
-  .scene-band .scene-label[style*="left:0"] { left: 12px !important; }
+  .scene-band {
+    height: 74px;
+    padding: 12px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+  }
+  .scene-band.bottom { align-items: flex-end; justify-content: center; gap: 8%; }
   .leader { stroke-width: 1.6; stroke-dasharray: 4 6; opacity: 0.55; }
   .leader-dot { opacity: 0.8; }
   .pulse {
@@ -3356,7 +3448,7 @@ const STYLE = `
     border-radius: 6px;
     cursor: pointer;
   }
-  .range.active { color: var(--accent); background: rgba(20, 184, 166, 0.1); }
+  .range.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 
   /* system status */
   /* System and integration status side by side, equally tall: the ring
@@ -3387,12 +3479,20 @@ const STYLE = `
   /* status rows */
   .status-note { font-size: 11px; color: var(--muted); }
   .status-row .error, .source.error { color: var(--error-color, #ef4444); }
-  .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 56px; }
-  .status-grid > div { order: var(--o-wide); display: flex; flex-direction: column; }
-  .status-grid > div > .status-row { flex: 1; }
+  /* The status card holds two cards side by side (stacked when narrow). */
+  .card#status { background: none; border: none; box-shadow: none; padding: 0; }
+  .status-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; height: 100%; }
+  .status-card {
+    background: var(--ha-card-background, var(--card-background-color));
+    border: var(--ha-card-border-width, 1px) solid var(--ha-card-border-color, var(--divider-color));
+    border-radius: var(--ha-card-border-radius, 12px);
+    box-shadow: var(--ha-card-box-shadow, none);
+    padding: 16px;
+    min-width: 0;
+    box-sizing: border-box;
+  }
   @media (max-width: 700px) {
-    .status-grid { grid-template-columns: 1fr; }
-    .status-grid > div { order: var(--o-narrow); }
+    .status-cards { grid-template-columns: 1fr; }
   }
   .status-row {
     display: flex;
@@ -3427,13 +3527,25 @@ const STYLE = `
   .hist-table tfoot td { font-weight: 600; border-top: 2px solid var(--line); border-bottom: none; }
   .hist-table tr.empty-row td { color: var(--muted); opacity: 0.6; }
   .hist-table tr.clickable { cursor: pointer; }
-  .hist-table tr.clickable:hover td { background: rgba(20, 184, 166, 0.08); }
+  .hist-table tr.clickable:hover td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
   .decision-table td:nth-child(n+3), .decision-table th:nth-child(n+3) { text-align: left; }
   .decision-table td:last-child, .decision-table th:last-child { text-align: right; }
   .decision-table .swatch { margin-right: 6px; vertical-align: middle; }
 
   /* control tab */
-  .ctl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px 48px; align-items: start; }
+  /* The controls card is three cards that, with Tijdsloten, share one grid of
+     equal blocks: the controls card and its inner grid only hold them. */
+  .card#controls, .card#controls > .ctl-grid { display: contents; }
+  .ctl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; align-items: stretch; }
+  .ctl-col {
+    background: var(--ha-card-background, var(--card-background-color));
+    border: var(--ha-card-border-width, 1px) solid var(--ha-card-border-color, var(--divider-color));
+    border-radius: var(--ha-card-border-radius, 12px);
+    box-shadow: var(--ha-card-box-shadow, none);
+    padding: 16px;
+    min-width: 0;
+    box-sizing: border-box;
+  }
   .ctl { padding: 10px 0 14px; }
   .ctl-sub { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0 4px 26px; }
   .hour-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin-top: 10px; }
@@ -3448,7 +3560,7 @@ const STYLE = `
     font-variant-numeric: tabular-nums;
     cursor: pointer;
   }
-  .hour.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .hour.on { background: var(--accent); border-color: var(--accent); color: var(--text-primary-color, #fff); }
   .limits { display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px; }
   @media (max-width: 700px) { .limits { grid-template-columns: 1fr; } }
   .ctl-label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 15px; font-weight: 300; }
@@ -3476,7 +3588,7 @@ const STYLE = `
     background: var(--muted);
     transition: transform 0.2s, background 0.2s;
   }
-  .switch.on { background: rgba(20, 184, 166, 0.35); }
+  .switch.on { background: color-mix(in srgb, var(--accent) 35%, transparent); }
   .switch.on span { transform: translateX(18px); background: var(--accent); }
   .slider-row { display: flex; align-items: center; gap: 16px; margin-top: 10px; }
   .slider-row input[type="range"] {
@@ -3545,25 +3657,40 @@ const STYLE = `
   .slot-buttons { display: flex; justify-content: flex-end; gap: 8px; }
 
   /* inverters tab */
-  .device-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 20px; align-items: start; }
+  .device-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; align-items: start; }
   @media (max-width: 500px) { .device-grid { grid-template-columns: 1fr; } }
+  /* Same title look as the other cards (HA card header). */
   .device-head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; font-size: 14px; }
-  .device-head ha-icon { color: var(--muted); }
-  .device-name { font-size: 19px; font-weight: 500; }
+  .device-head ha-icon { display: none; }
+  .device-name {
+    color: var(--ha-card-header-color, var(--primary-text-color));
+    font-size: var(--ha-card-header-font-size, 24px);
+    font-weight: 400;
+    line-height: 32px;
+    letter-spacing: -0.012em;
+  }
   .device-top { display: flex; align-items: center; gap: 24px; }
   .ring.small { width: 130px; margin: 0; flex: none; }
   .ring.small .ring-value { font-size: 34px; }
   .ring.small .ring-bg, .ring.small .ring-fg { stroke-width: 11; }
+  .ring.solar .ring-fg { stroke: ${COLOR.solar}; }
+  .ring.ev .ring-fg { stroke: ${SCENE_COLOR.ev}; }
+  .io-bar.ev div { background: ${SCENE_COLOR.ev}; }
+  .ring.house .ring-fg { stroke: ${SCENE_COLOR.house}; }
+  .io-bar.house div { background: ${SCENE_COLOR.house}; }
+  /* Min and max under the gauge's two ends. */
+  .ring-scale { display: flex; justify-content: space-between; padding: 0 14px; margin-top: -14px; font-size: 11px; color: var(--muted); }
   .device-main { flex: 1; min-width: 0; }
   .big { font-size: 34px; font-weight: 500; line-height: 1.1; font-variant-numeric: tabular-nums; }
-  .big.solar { color: #f59e0b; }
+  .big.solar { color: ${COLOR.solar}; }
+  /* An idle device keeps its big value size, so the cards' rows line up. */
+  .device-main .big.muted { font-size: 34px; letter-spacing: normal; }
   .io-bar.solar div { background: ${COLOR.solar}; }
   .io-note.left { text-align: left; }
   .section-title {
     color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    font-size: 12px;
+    font-size: 14px;
+    font-weight: 500;
     margin: 22px 0 8px;
   }
   .kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px; }

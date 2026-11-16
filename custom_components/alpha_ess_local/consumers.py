@@ -39,6 +39,8 @@ from .const import (
     CONF_EXCLUDE_FROM_LEARNING,
     CONF_EXCLUDED_LOAD_ENTITIES,
     CONF_EXCLUDED_POWER_ENTITIES,
+    CONF_MAX_POWER,
+    DEFAULT_EV_CHARGER_MAX_POWER,
     DEFAULT_EXCLUDE_FROM_LEARNING,
     SUBENTRY_CONSUMER,
     SUBENTRY_EV_CHARGER,
@@ -192,6 +194,7 @@ def ev_charger_cards(hass: HomeAssistant, entry: ConfigEntry) -> list[dict[str, 
             "power": ev_charger_power_entities(charger),
             "energy": ev_charger_energy_entities(charger),
             "phases": ev_charger_phase_entities(charger),
+            "max_power": charger.get(CONF_MAX_POWER, DEFAULT_EV_CHARGER_MAX_POWER),
         }
         for charger in chargers
     ]
@@ -207,6 +210,7 @@ def consumer_cards(entry: ConfigEntry) -> list[dict[str, Any]]:
             "exclude_from_learning": left_out(consumer),
             "power": consumer.get(CONF_CONSUMER_POWER_ENTITY),
             "energy": consumer.get(CONF_CONSUMER_ENERGY_ENTITY),
+            "max_power": consumer.get(CONF_MAX_POWER),
         }
         for consumer in _subentries(entry, SUBENTRY_CONSUMER, with_id=True)
     ]
