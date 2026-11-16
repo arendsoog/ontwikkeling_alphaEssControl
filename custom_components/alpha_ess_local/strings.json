@@ -198,6 +198,7 @@
                         "ev_charger_power_entity": "Power",
                         "ev_charger_energy_entity": "Total charged",
                         "ev_charger_phase_entities": "Power per phase",
+                        "max_power": "Max power",
                         "exclude_from_learning": "Keep out of the learned consumption"
                     },
                     "data_description": {
@@ -206,6 +207,7 @@
                         "ev_charger_power_entity": "The EV charger's charging power right now.",
                         "ev_charger_energy_entity": "The total charged energy (a rising counter in kWh), for 'charged today' in the panel. Optional.",
                         "ev_charger_phase_entities": "The power per phase (L1, L2, L3), for the EV charger's card. Optional.",
+                        "max_power": "The EV charger's highest charging power (11 kW for three-phase 16 A), the top of the gauge on its card in the panel. Optional.",
                         "exclude_from_learning": "On: its power is taken off the house load before the load per hour is learned, for big, irregular consumers (car, pool, heat pump). Off: it counts as ordinary house load (like a cooktop)."
                     }
                 },
@@ -218,6 +220,7 @@
                         "ev_charger_power_entity": "Power",
                         "ev_charger_energy_entity": "Total charged",
                         "ev_charger_phase_entities": "Power per phase",
+                        "max_power": "Max power",
                         "exclude_from_learning": "Keep out of the learned consumption"
                     },
                     "data_description": {
@@ -226,6 +229,7 @@
                         "ev_charger_power_entity": "The EV charger's charging power right now.",
                         "ev_charger_energy_entity": "The total charged energy (a rising counter in kWh), for 'charged today' in the panel. Optional.",
                         "ev_charger_phase_entities": "The power per phase (L1, L2, L3), for the EV charger's card. Optional.",
+                        "max_power": "The EV charger's highest charging power (11 kW for three-phase 16 A), the top of the gauge on its card in the panel. Optional.",
                         "exclude_from_learning": "On: its power is taken off the house load before the load per hour is learned, for big, irregular consumers (car, pool, heat pump). Off: it counts as ordinary house load (like a cooktop)."
                     }
                 }
@@ -248,6 +252,7 @@
                         "icon": "Icon",
                         "consumer_power_entity": "Power",
                         "consumer_energy_entity": "Total used",
+                        "max_power": "Max power",
                         "exclude_from_learning": "Keep out of the learned consumption"
                     },
                     "data_description": {
@@ -255,6 +260,7 @@
                         "icon": "The icon on its card in the panel. Optional.",
                         "consumer_power_entity": "The power the consumer uses right now.",
                         "consumer_energy_entity": "The total used energy (a rising counter in kWh). Optional.",
+                        "max_power": "The consumer's highest power, the top of the gauge on its card in the panel. Optional: without it the card shows no gauge.",
                         "exclude_from_learning": "On: its power is taken off the house load before the load per hour is learned, for big, irregular consumers (car, pool, heat pump). Off: it counts as ordinary house load (like a cooktop)."
                     }
                 },
@@ -266,6 +272,7 @@
                         "icon": "Icon",
                         "consumer_power_entity": "Power",
                         "consumer_energy_entity": "Total used",
+                        "max_power": "Max power",
                         "exclude_from_learning": "Keep out of the learned consumption"
                     },
                     "data_description": {
@@ -273,6 +280,7 @@
                         "icon": "The icon on its card in the panel. Optional.",
                         "consumer_power_entity": "The power the consumer uses right now.",
                         "consumer_energy_entity": "The total used energy (a rising counter in kWh). Optional.",
+                        "max_power": "The consumer's highest power, the top of the gauge on its card in the panel. Optional: without it the card shows no gauge.",
                         "exclude_from_learning": "On: its power is taken off the house load before the load per hour is learned, for big, irregular consumers (car, pool, heat pump). Off: it counts as ordinary house load (like a cooktop)."
                     }
                 }

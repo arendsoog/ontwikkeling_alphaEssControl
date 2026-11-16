@@ -42,6 +42,7 @@ from .const import (
     CONF_GRID_TARIFF_ENTITY,
     CONF_HOUSE_LOAD_POWER_ENTITY,
     CONF_INVERTER_NOMINAL_POWER,
+    CONF_MAX_POWER,
     CONF_NETWORK_USE_FEE_LOW,
     CONF_NETWORK_USE_FEE_NORMAL,
     CONF_PEAK_LOAD_THIS_MONTH_ENTITY,
@@ -58,6 +59,7 @@ from .const import (
     CONF_USABLE_BATTERY_CAPACITY,
     CONF_VAT_PERCENTAGE,
     DEFAULT_APPLY_VAT_ON_RETURN,
+    DEFAULT_EV_CHARGER_MAX_POWER,
     DEFAULT_EXCLUDE_FROM_LEARNING,
     DEFAULT_NETWORK_USE_FEE,
     DEFAULT_PORT,
@@ -463,6 +465,7 @@ def _consumer_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.Sch
                 CONF_CONSUMER_ENERGY_ENTITY,
                 description={"suggested_value": options.get(CONF_CONSUMER_ENERGY_ENTITY)},
             ): _sensor_selector("energy"),
+            **_max_power_field(options),
             **_exclude_from_learning_field(options),
         }
     )
@@ -495,6 +498,7 @@ def _ev_charger_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.S
                 CONF_EV_CHARGER_PHASE_ENTITIES,
                 description={"suggested_value": ev_charger_phase_entities(options)},
             ): _sensor_selector("power", multiple=True),
+            **_max_power_field(options, DEFAULT_EV_CHARGER_MAX_POWER),
             **_exclude_from_learning_field(options),
         }
     )
@@ -506,6 +510,16 @@ def _icon_field(options: Mapping[str, Any]) -> dict[Any, Any]:
         vol.Optional(
             CONF_ICON, description={"suggested_value": options.get(CONF_ICON)}
         ): selector.IconSelector()
+    }
+
+
+def _max_power_field(options: Mapping[str, Any], suggested: int | None = None) -> dict[Any, Any]:
+    """Its highest power: the top of the gauge on its card in the panel."""
+    return {
+        vol.Optional(
+            CONF_MAX_POWER,
+            description={"suggested_value": options.get(CONF_MAX_POWER, suggested)},
+        ): _power_selector("W")
     }
 
 

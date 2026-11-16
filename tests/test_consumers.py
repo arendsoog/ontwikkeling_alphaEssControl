@@ -138,6 +138,7 @@ async def test_add_ev_charger(hass: HomeAssistant):
         "ev_charger_power_entity",
         "ev_charger_energy_entity",
         "ev_charger_phase_entities",
+        "max_power",
         "exclude_from_learning",
     ]
     result = await hass.config_entries.subentries.async_configure(
@@ -226,6 +227,7 @@ async def test_consumer_options_and_cards_from_the_chargers(hass: HomeAssistant)
             "power": ["sensor.oprit_power"],
             "energy": ["sensor.oprit_energy"],
             "phases": ["sensor.oprit_l1"],
+            "max_power": 11000,
         },
         {
             "id": ANY,
@@ -235,6 +237,7 @@ async def test_consumer_options_and_cards_from_the_chargers(hass: HomeAssistant)
             "power": ["sensor.garage_power"],
             "energy": [],
             "phases": [],
+            "max_power": 11000,
         },
     ]
 
@@ -315,6 +318,7 @@ async def test_add_consumer(hass: HomeAssistant):
         "icon",
         "consumer_power_entity",
         "consumer_energy_entity",
+        "max_power",
         "exclude_from_learning",
     ]
     result = await hass.config_entries.subentries.async_configure(
@@ -437,5 +441,6 @@ async def test_consumer_cards_with_their_name_and_icon(hass: HomeAssistant):
             "exclude_from_learning": True,
             "power": "sensor.zwembad",
             "energy": "sensor.zwembad_energie",
+            "max_power": None,
         }
     ]

@@ -402,9 +402,6 @@ const SCENE_PATHS = {
 };
 // Same colours as the charts. The grid's depends on direction: magenta
 // while importing, orange while feeding in (see gridColour).
-// Top of the EV charger's gauge: a three-phase 16 A charger (11 kW).
-const EV_GAUGE_MAX_W = 11000;
-
 const SCENE_COLOR = {
   solar: ENERGY.solar[1],
   extraPv: ENERGY.solar[1],
@@ -1733,14 +1730,7 @@ class AlphaEssPanel extends HTMLElement {
           <div class="spacer"></div>
           <span class="${running ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : running ? "Aan" : "Uit"}</span>
         </div>
-        ${
-          consumer.power
-            ? `<div class="device-main wide" data-entity="${esc(consumer.power)}">
-          <div class="big ${running ? "accent" : "muted"}">${fmtW(power)}</div>
-          <div class="muted">Vermogen</div>
-        </div>`
-            : ""
-        }
+        ${consumer.power ? this._powerGauge(consumer.power, power, consumer.max_power, running, "house", "Vermogen") : ""}
         ${
           consumer.energy
             ? `<div class="section-title">Energie vandaag</div>${this._energyRows([
@@ -1790,7 +1780,7 @@ class AlphaEssPanel extends HTMLElement {
           <div class="spacer"></div>
           <span class="${charging ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : charging ? "Laadt" : "Laadt niet"}</span>
         </div>
-        ${group.power.length ? this._evGauge(group.power[0], power, charging) : ""}
+        ${group.power.length ? this._powerGauge(group.power[0], power, group.max_power ?? 11000, charging, "ev", "Laadvermogen") : ""}
         ${
           phases.length
             ? `<div class="section-title">Vermogen per fase</div>
@@ -1809,28 +1799,30 @@ class AlphaEssPanel extends HTMLElement {
       </section>`;
   }
 
-  // The charger's power on a gauge from 0 to EV_GAUGE_MAX_W, like the PV
-  // installation's, with the value beside it.
-  _evGauge(entity, power, charging) {
+  // A device's power, with -- when its max power is set -- a gauge (% of
+  // the max) and a bar beside it, like the PV installation's card.
+  _powerGauge(entity, power, max, active, kind, label) {
+    const value = `
+          <div class="big ${active ? "accent" : "muted"}">${fmtW(power)}</div>
+          <div class="muted">${label}</div>`;
+    if (!max) return `<div class="device-main wide" data-entity="${esc(entity)}">${value}</div>`;
     const r = 52;
     const circ = 2 * Math.PI * r;
-    const usage = power ? Math.min(100, (power / EV_GAUGE_MAX_W) * 100) : 0;
+    const usage = power ? Math.min(100, (power / max) * 100) : 0;
     const filled = (usage / 100) * 0.8;
     return `
         <div class="device-top">
-          <div class="ring small ev" data-entity="${esc(entity)}">
+          <div class="ring small ${kind}" data-entity="${esc(entity)}">
             <svg viewBox="0 0 130 130">
               <circle cx="65" cy="65" r="${r}" class="ring-bg" stroke-dasharray="${circ * 0.8} ${circ}" transform="rotate(126 65 65)"/>
               <circle cx="65" cy="65" r="${r}" class="ring-fg" stroke-dasharray="${circ * filled} ${circ}" transform="rotate(126 65 65)"/>
             </svg>
             <div class="ring-text"><div class="ring-value">${power === null ? "–" : Math.round(usage)}<small>%</small></div></div>
-            <div class="ring-scale"><span>0</span><span>${fmtNum(EV_GAUGE_MAX_W / 1000, 0)} kW</span></div>
+            <div class="ring-scale"><span>0</span><span>${fmtNum(max / 1000, 1)} kW</span></div>
           </div>
-          <div class="device-main" data-entity="${esc(entity)}">
-            <div class="big ${charging ? "accent" : "muted"}">${fmtW(power)}</div>
-            <div class="muted">Laadvermogen</div>
-            <div class="io-bar ev"><div style="width:${usage}%"></div></div>
-            <div class="io-note left">van ${fmtNum(EV_GAUGE_MAX_W / 1000, 0)} kW</div>
+          <div class="device-main" data-entity="${esc(entity)}">${value}
+            <div class="io-bar ${kind}"><div style="width:${usage}%"></div></div>
+            <div class="io-note left">van ${fmtNum(max / 1000, 1)} kW</div>
           </div>
         </div>`;
   }
@@ -3684,6 +3676,8 @@ const STYLE = `
   .ring.solar .ring-fg { stroke: ${COLOR.solar}; }
   .ring.ev .ring-fg { stroke: ${SCENE_COLOR.ev}; }
   .io-bar.ev div { background: ${SCENE_COLOR.ev}; }
+  .ring.house .ring-fg { stroke: ${SCENE_COLOR.house}; }
+  .io-bar.house div { background: ${SCENE_COLOR.house}; }
   /* Min and max under the gauge's two ends. */
   .ring-scale { display: flex; justify-content: space-between; padding: 0 14px; margin-top: -14px; font-size: 11px; color: var(--muted); }
   .device-main { flex: 1; min-width: 0; }

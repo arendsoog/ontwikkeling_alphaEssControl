@@ -198,6 +198,7 @@
                         "ev_charger_power_entity": "Vermogen",
                         "ev_charger_energy_entity": "Totaal geladen",
                         "ev_charger_phase_entities": "Vermogen per fase",
+                        "max_power": "Max vermogen",
                         "exclude_from_learning": "Buiten het geleerde verbruik houden"
                     },
                     "data_description": {
@@ -206,6 +207,7 @@
                         "ev_charger_power_entity": "Het laadvermogen van de EV-lader nu.",
                         "ev_charger_energy_entity": "De totaal geladen energie (een oplopende teller in kWh), voor 'geladen vandaag' in het paneel. Optioneel.",
                         "ev_charger_phase_entities": "Het vermogen per fase (L1, L2, L3), voor de kaart van de EV-lader. Optioneel.",
+                        "max_power": "Het hoogste laadvermogen van de laadpaal (11 kW bij driefase 16 A), de bovenkant van de meter op zijn kaart in het paneel. Optioneel.",
                         "exclude_from_learning": "Aan: het vermogen wordt van het huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd, voor grote, onregelmatige verbruikers (auto, zwembad, warmtepomp). Uit: telt als gewoon huisverbruik (zoals een kookplaat)."
                     }
                 },
@@ -218,6 +220,7 @@
                         "ev_charger_power_entity": "Vermogen",
                         "ev_charger_energy_entity": "Totaal geladen",
                         "ev_charger_phase_entities": "Vermogen per fase",
+                        "max_power": "Max vermogen",
                         "exclude_from_learning": "Buiten het geleerde verbruik houden"
                     },
                     "data_description": {
@@ -226,6 +229,7 @@
                         "ev_charger_power_entity": "Het laadvermogen van de EV-lader nu.",
                         "ev_charger_energy_entity": "De totaal geladen energie (een oplopende teller in kWh), voor 'geladen vandaag' in het paneel. Optioneel.",
                         "ev_charger_phase_entities": "Het vermogen per fase (L1, L2, L3), voor de kaart van de EV-lader. Optioneel.",
+                        "max_power": "Het hoogste laadvermogen van de laadpaal (11 kW bij driefase 16 A), de bovenkant van de meter op zijn kaart in het paneel. Optioneel.",
                         "exclude_from_learning": "Aan: het vermogen wordt van het huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd, voor grote, onregelmatige verbruikers (auto, zwembad, warmtepomp). Uit: telt als gewoon huisverbruik (zoals een kookplaat)."
                     }
                 }
@@ -248,6 +252,7 @@
                         "icon": "Pictogram",
                         "consumer_power_entity": "Vermogen",
                         "consumer_energy_entity": "Totaal verbruikt",
+                        "max_power": "Max vermogen",
                         "exclude_from_learning": "Buiten het geleerde verbruik houden"
                     },
                     "data_description": {
@@ -255,6 +260,7 @@
                         "icon": "Het pictogram op de kaart in het paneel. Optioneel.",
                         "consumer_power_entity": "Het vermogen dat de verbruiker nu gebruikt.",
                         "consumer_energy_entity": "Het totaal verbruikte energie (een oplopende teller in kWh). Optioneel.",
+                        "max_power": "Het hoogste vermogen van de verbruiker, de bovenkant van de meter op zijn kaart in het paneel. Optioneel: zonder toont de kaart geen meter.",
                         "exclude_from_learning": "Aan: het vermogen wordt van het huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd, voor grote, onregelmatige verbruikers (auto, zwembad, warmtepomp). Uit: telt als gewoon huisverbruik (zoals een kookplaat)."
                     }
                 },
@@ -266,6 +272,7 @@
                         "icon": "Pictogram",
                         "consumer_power_entity": "Vermogen",
                         "consumer_energy_entity": "Totaal verbruikt",
+                        "max_power": "Max vermogen",
                         "exclude_from_learning": "Buiten het geleerde verbruik houden"
                     },
                     "data_description": {
@@ -273,6 +280,7 @@
                         "icon": "Het pictogram op de kaart in het paneel. Optioneel.",
                         "consumer_power_entity": "Het vermogen dat de verbruiker nu gebruikt.",
                         "consumer_energy_entity": "Het totaal verbruikte energie (een oplopende teller in kWh). Optioneel.",
+                        "max_power": "Het hoogste vermogen van de verbruiker, de bovenkant van de meter op zijn kaart in het paneel. Optioneel: zonder toont de kaart geen meter.",
                         "exclude_from_learning": "Aan: het vermogen wordt van het huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd, voor grote, onregelmatige verbruikers (auto, zwembad, warmtepomp). Uit: telt als gewoon huisverbruik (zoals een kookplaat)."
                     }
                 }

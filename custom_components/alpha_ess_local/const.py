@@ -181,6 +181,11 @@ CONF_CONSUMER_ENERGY_ENTITY = "consumer_energy_entity"
 CONF_EXCLUDE_FROM_LEARNING = "exclude_from_learning"
 DEFAULT_EXCLUDE_FROM_LEARNING = True
 CONF_EXCLUDED_POWER_ENTITIES = "excluded_power_entities"
+# Per EV charger/consumer: its highest power (W), the top of the gauge on
+# its card in the panel. Optional; an EV charger's is suggested at 11 kW
+# (three-phase 16 A).
+CONF_MAX_POWER = "max_power"
+DEFAULT_EV_CHARGER_MAX_POWER = 11000
 
 # Options flow: scheduler tuning (config.ini [Daily])
 CONF_ALLOW_PROVIDER_CONTROL_HOURS = "allow_provider_control_hours"
