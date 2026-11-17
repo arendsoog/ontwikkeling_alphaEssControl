@@ -28,6 +28,9 @@ REG_SOC = 0x0102
 REG_PV_POWER = 0x041F
 REG_PV_POWER_COUNT = 10
 REG_BATTERY_POWER = 0x0126
+# The inverter's total AC power (int32, W; positive = giving out, negative =
+# taking in), the sum of its three phases (0x0406/0x0408/0x040A).
+REG_INVERTER_POWER = 0x040C
 REG_TOTAL_ACTIVE_POWER = 0x0021
 REG_TOTAL_ENERGY_FEED_TO_GRID = 0x0010
 REG_TOTAL_ENERGY_CONSUME_FROM_GRID = 0x0012

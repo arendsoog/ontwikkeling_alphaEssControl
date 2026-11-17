@@ -40,7 +40,7 @@ from .data import (
     Hour,
 )
 from .prices import mk_return_price, mk_use_price
-from .storage import lead_bucket
+from .storage import INVERTER_POWER_BANDS, lead_bucket
 from .time_slots import FixedHour
 
 SOC_STEPS = 100
@@ -142,6 +142,15 @@ class ScheduleConfig:
     # round trip storage.learn_battery_round_trip measured), in place of the
     # power-dependent _battery_efficiency table. None: not measured yet.
     battery_efficiency: float | None = None
+    # The inverter's measured conversion between grid side and battery, per
+    # direction (storage.learn_inverter_efficiency), in place of the
+    # power-dependent _inverter_efficiency table. None: not measured yet.
+    inverter_charge_efficiency: float | None = None
+    inverter_discharge_efficiency: float | None = None
+    # The same per power band (below 3 kW, 3-6 kW, from 6 kW; see
+    # storage.INVERTER_POWER_BANDS), used before the overall value.
+    inverter_charge_bands: tuple[float | None, ...] = (None, None, None)
+    inverter_discharge_bands: tuple[float | None, ...] = (None, None, None)
 
 
 @dataclass(frozen=True)
@@ -169,6 +178,22 @@ def _battery_eff(power: float, config: ScheduleConfig) -> float:
     if config.battery_efficiency is not None:
         return config.battery_efficiency
     return _battery_efficiency(power, config.usable_battery_capacity)
+
+
+def _conversion_eff(power: float, config: ScheduleConfig, *, charging: bool) -> float:
+    """The inverter's conversion between grid side and battery at `power`:
+    measured for its power band once known, else measured over all powers,
+    else the table's."""
+    bands = config.inverter_charge_bands if charging else config.inverter_discharge_bands
+    band = sum(power >= edge for edge in INVERTER_POWER_BANDS)
+    if band < len(bands) and bands[band] is not None:
+        return bands[band]
+    measured = (
+        config.inverter_charge_efficiency if charging else config.inverter_discharge_efficiency
+    )
+    if measured is not None:
+        return measured
+    return _inverter_efficiency(power, config.inverter_nominal_power)
 
 
 def _inverter_efficiency(power: float, inverter_nominal_power: float) -> float:
@@ -333,6 +358,8 @@ def _evaluate_hour_action(
                 space_soc = max_soc_eou - soc_wh
                 charge_ac = min(feed_in, CHARGE_LIMIT)
                 if charge_ac >= MIN_CHARGE_POWER:
+                    # Solar surplus goes into the battery on the DC side: not
+                    # the measured grid-to-battery conversion.
                     inv_eff = _inverter_efficiency(charge_ac, inverter_nominal_power)
                     batt_eff = _battery_eff(charge_ac, config)
                     charge_soc = min(charge_ac * inv_eff * batt_eff, space_soc)
@@ -344,7 +371,7 @@ def _evaluate_hour_action(
                 discharge_ac = min(-feed_in, DISCHARGE_LIMIT)
                 if discharge_ac < MIN_DISCHARGE_POWER:
                     discharge_ac = 0.0
-                inv_eff = _inverter_efficiency(discharge_ac, inverter_nominal_power)
+                inv_eff = _conversion_eff(discharge_ac, config, charging=False)
                 batt_eff = _battery_eff(discharge_ac, config)
                 discharge_soc = min(discharge_ac / (inv_eff * batt_eff), available_soc)
                 discharge_ac = discharge_soc * inv_eff * batt_eff
@@ -369,7 +396,7 @@ def _evaluate_hour_action(
             discharge_ac = min(-feed_in, DISCHARGE_LIMIT)
             if discharge_ac < MIN_DISCHARGE_POWER:
                 discharge_ac = 0.0
-            inv_eff = _inverter_efficiency(discharge_ac, inverter_nominal_power)
+            inv_eff = _conversion_eff(discharge_ac, config, charging=False)
             batt_eff = _battery_eff(discharge_ac, config)
             discharge_soc = min(discharge_ac / (inv_eff * batt_eff), available_soc)
             discharge_ac = discharge_soc * inv_eff * batt_eff
@@ -381,6 +408,7 @@ def _evaluate_hour_action(
             space_soc = max_soc_eou - soc_wh
             charge_ac = min(feed_in, CHARGE_LIMIT)
             if charge_ac >= MIN_CHARGE_POWER:
+                # Solar surplus: DC side, not the measured grid conversion.
                 inv_eff = _inverter_efficiency(charge_ac, inverter_nominal_power)
                 batt_eff = _battery_eff(charge_ac, config)
                 charge_soc = min(charge_ac * inv_eff * batt_eff, space_soc)
@@ -411,7 +439,7 @@ def _evaluate_hour_action(
             if charge_soc > 0.0:
                 charge_ac_est = charge_soc / ETA_GRID_TO_BATT
                 batt_eff = _battery_eff(charge_ac_est, config)
-                inv_eff = _inverter_efficiency(charge_ac_est, inverter_nominal_power)
+                inv_eff = _conversion_eff(charge_ac_est, config, charging=True)
                 charge_ac = charge_soc / (inv_eff * batt_eff * ETA_GRID_TO_BATT)
                 if charge_ac >= MIN_CHARGE_POWER:
                     new_soc_wh = soc_wh + charge_soc
@@ -431,7 +459,7 @@ def _evaluate_hour_action(
         discharge_soc = min(soc_wh - max(min_soc, max_discharge_after), config.discharge_limit_wh)
         if discharge_soc > 0.0:
             batt_eff = _battery_eff(discharge_soc, config)
-            inv_eff = _inverter_efficiency(discharge_soc, inverter_nominal_power)
+            inv_eff = _conversion_eff(discharge_soc, config, charging=False)
             discharge_ac = discharge_soc * batt_eff * inv_eff
             if discharge_ac >= MIN_DISCHARGE_POWER:
                 new_soc_wh = soc_wh - discharge_soc

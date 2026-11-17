@@ -175,6 +175,28 @@ def _ws_panel_status(
                 "cycles_needed": storage.BATTERY_ROUND_TRIP_MIN_CYCLES,
                 "days": storage.BATTERY_ROUND_TRIP_DAYS,
                 "implausible": runtime.schedule_coordinator.battery_round_trip.implausible,
+                "lossless": runtime.schedule_coordinator.battery_round_trip.lossless,
+            },
+            "inverter_efficiency": {
+                "charge": runtime.schedule_coordinator.inverter_efficiency.charge,
+                "discharge": runtime.schedule_coordinator.inverter_efficiency.discharge,
+                "charged_kwh": runtime.schedule_coordinator.inverter_efficiency.charged_wh / 1000,
+                "discharged_kwh": (
+                    runtime.schedule_coordinator.inverter_efficiency.discharged_wh / 1000
+                ),
+                "needed_kwh": storage.INVERTER_EFFICIENCY_MIN_WH / 1000,
+                "days": storage.INVERTER_EFFICIENCY_DAYS,
+                "band_edges_kw": [edge / 1000 for edge in storage.INVERTER_POWER_BANDS],
+                "band_needed_kwh": storage.INVERTER_BAND_MIN_WH / 1000,
+                "bands": [
+                    {
+                        "charge": band.charge,
+                        "discharge": band.discharge,
+                        "charged_kwh": band.charged_wh / 1000,
+                        "discharged_kwh": band.discharged_wh / 1000,
+                    }
+                    for band in runtime.schedule_coordinator.inverter_efficiency.bands
+                ],
             },
         },
     )

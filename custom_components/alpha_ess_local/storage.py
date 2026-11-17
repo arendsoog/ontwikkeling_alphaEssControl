@@ -240,6 +240,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Per hour and power band, what went through the inverter between grid
+    # side (AC) and battery (DC), each way, from the 5-minute samples (Wh) --
+    # to learn its conversion efficiency (learn_inverter_efficiency).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS inverter_samples (
+            year INTEGER, mon INTEGER, day INTEGER, hour INTEGER, band INTEGER,
+            ac_in REAL, dc_in REAL, dc_out REAL, ac_out REAL,
+            PRIMARY KEY (year, mon, day, hour, band)
+        )
+        """
+    )
     # The EV charger's share of house_load: left out of the learned house
     # load (it only charges on solar surplus, so it's no load to plan for).
     _add_column_if_missing(conn, "five_min_data", "ev_power", "REAL DEFAULT 0")
@@ -1022,7 +1034,36 @@ BATTERY_ROUND_TRIP_MIN = 0.75
 # within this many % of the latest one, so the SOC correction (nearly)
 # drops out and only the battery's own counters count.
 BATTERY_ROUND_TRIP_SOC_MATCH = 1.0
+# Above this the battery's own counters show (next to) no loss at all -- an
+# LFP battery loses a few % per cycle, so they can't see it (they count at
+# the cells, the losses aren't in them): the planner keeps its default
+# battery efficiencies then.
+BATTERY_ROUND_TRIP_MAX = 0.98
 BATTERY_COUNTER_KEEP_DAYS = 60
+
+# The inverter's conversion between the grid side (AC) and the battery (DC),
+# measured per direction from the 5-minute samples (store_inverter_sample):
+# only when the roof panels give nothing (then all the inverter's AC power
+# is the battery's) and at least INVERTER_SAMPLE_MIN_W flows (at a trickle
+# the two readings' timing differences weigh too much). Used once at least
+# INVERTER_EFFICIENCY_MIN_WH went through each way over the last
+# INVERTER_EFFICIENCY_DAYS; outside INVERTER_EFFICIENCY_RANGE a reading
+# must be off.
+PV_IDLE_W = 20
+INVERTER_SAMPLE_MIN_W = 500
+INVERTER_EFFICIENCY_DAYS = 30
+INVERTER_EFFICIENCY_MIN_WH = 20_000
+INVERTER_EFFICIENCY_RANGE = (0.80, 0.995)
+# The conversion depends on the power: also learned per band of the grid-side
+# power (below 3 kW, 3-6 kW, from 6 kW), each once INVERTER_BAND_MIN_WH went
+# through it that way.
+INVERTER_POWER_BANDS = (3000, 6000)
+INVERTER_BAND_MIN_WH = 10_000
+
+
+def inverter_power_band(power_w: float) -> int:
+    """The INVERTER_POWER_BANDS index (0, 1 or 2) for a grid-side power."""
+    return sum(abs(power_w) >= edge for edge in INVERTER_POWER_BANDS)
 
 
 def lead_bucket(lead: int) -> int:
@@ -1154,6 +1195,8 @@ class BatteryRoundTrip:
     round_trip: float | None = None
     cycles: float = 0.0
     implausible: bool = False
+    # Above BATTERY_ROUND_TRIP_MAX: what was measured (not used).
+    lossless: float | None = None
 
 
 def learn_battery_round_trip(db_path: str, capacity_wh: float, today: date_cls) -> BatteryRoundTrip:
@@ -1198,6 +1241,13 @@ def learn_battery_round_trip(db_path: str, capacity_wh: float, today: date_cls) 
         return BatteryRoundTrip(cycles=cycles)
     stored = (soc_end - soc_start) / 100 * capacity_wh
     round_trip = discharged / (charged - stored) if charged - stored > 0 else -1.0
+    if BATTERY_ROUND_TRIP_MAX < round_trip <= 1.0:
+        LOGGER.debug(
+            "learn_battery_round_trip: %.3f -- the counters show no loss, "
+            "using the default battery efficiencies",
+            round_trip,
+        )
+        return BatteryRoundTrip(cycles=cycles, lossless=round_trip)
     if not BATTERY_ROUND_TRIP_MIN <= round_trip <= 1.0:
         LOGGER.warning(
             "learn_battery_round_trip: %.3f is implausible -- using the default efficiencies",
@@ -1205,6 +1255,130 @@ def learn_battery_round_trip(db_path: str, capacity_wh: float, today: date_cls) 
         )
         return BatteryRoundTrip(cycles=cycles, implausible=True)
     return BatteryRoundTrip(round_trip, cycles)
+
+
+def store_inverter_sample(
+    db_path: str, when: datetime, pv_w: float, battery_w: float, inverter_w: float, minutes: float
+) -> None:
+    """Add one sample of the inverter's conversion to `when`'s hour: the
+    battery's power (DC, negative = charging) and the inverter's (AC,
+    negative = taking in), each held for `minutes`. Skipped while the roof
+    panels give power, below INVERTER_SAMPLE_MIN_W, or when the two point
+    different ways (a reading taken mid-switch)."""
+    if pv_w > PV_IDLE_W or abs(battery_w) < INVERTER_SAMPLE_MIN_W:
+        return
+    if (battery_w > 0) != (inverter_w > 0):
+        return
+    band = inverter_power_band(inverter_w)
+    wh = minutes / 60
+    ac_in = dc_in = dc_out = ac_out = 0.0
+    if battery_w < 0:
+        ac_in, dc_in = -inverter_w * wh, -battery_w * wh
+    else:
+        dc_out, ac_out = battery_w * wh, inverter_w * wh
+    cutoff = when.date() - timedelta(days=BATTERY_COUNTER_KEEP_DAYS)
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO inverter_samples
+                (year, mon, day, hour, band, ac_in, dc_in, dc_out, ac_out)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (year, mon, day, hour, band) DO UPDATE SET
+                ac_in = ac_in + excluded.ac_in,
+                dc_in = dc_in + excluded.dc_in,
+                dc_out = dc_out + excluded.dc_out,
+                ac_out = ac_out + excluded.ac_out
+            """,
+            (when.year, when.month, when.day, when.hour, band, ac_in, dc_in, dc_out, ac_out),
+        )
+        conn.execute(
+            "DELETE FROM inverter_samples WHERE year * 10000 + mon * 100 + day < ?",
+            (cutoff.year * 10000 + cutoff.month * 100 + cutoff.day,),
+        )
+        conn.commit()
+
+
+@dataclass(frozen=True)
+class InverterBand:
+    """One power band's measured conversion each way (None until enough went
+    through it, or when implausible) and how much went through (Wh: in at
+    the grid side, out of the battery)."""
+
+    charge: float | None = None
+    discharge: float | None = None
+    charged_wh: float = 0.0
+    discharged_wh: float = 0.0
+
+
+@dataclass(frozen=True)
+class InverterEfficiency:
+    """learn_inverter_efficiency's result: the conversion each way over all
+    powers, and per power band (INVERTER_POWER_BANDS)."""
+
+    charge: float | None = None
+    discharge: float | None = None
+    charged_wh: float = 0.0
+    discharged_wh: float = 0.0
+    bands: tuple[InverterBand, ...] = tuple(
+        InverterBand() for _ in range(len(INVERTER_POWER_BANDS) + 1)
+    )
+
+
+def _conversion_ratio(part: float, whole: float, min_wh: float, label: str) -> float | None:
+    """part / whole once at least `min_wh` went through, if plausible."""
+    if whole < min_wh:
+        return None
+    value = part / whole
+    low, high = INVERTER_EFFICIENCY_RANGE
+    if not low <= value <= high:
+        LOGGER.warning(
+            "learn_inverter_efficiency: %s %.3f is implausible -- using the default", label, value
+        )
+        return None
+    return value
+
+
+def learn_inverter_efficiency(db_path: str, today: date_cls) -> InverterEfficiency:
+    """The inverter's measured conversion over the last
+    INVERTER_EFFICIENCY_DAYS, overall and per power band: charging, what
+    reached the battery over what came in at the grid side; discharging,
+    what came out at the grid side over what left the battery."""
+    since = today - timedelta(days=INVERTER_EFFICIENCY_DAYS)
+    with _connection(db_path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT band, SUM(ac_in), SUM(dc_in), SUM(dc_out), SUM(ac_out)
+            FROM inverter_samples WHERE year * 10000 + mon * 100 + day >= ?
+            GROUP BY band
+            """,
+            (since.year * 10000 + since.month * 100 + since.day,),
+        ).fetchall()
+    sums = {band: rest for band, *rest in rows}
+    bands = []
+    for band in range(len(INVERTER_POWER_BANDS) + 1):
+        ac_in, dc_in, dc_out, ac_out = sums.get(band, (0.0, 0.0, 0.0, 0.0))
+        bands.append(
+            InverterBand(
+                charge=_conversion_ratio(
+                    dc_in, ac_in, INVERTER_BAND_MIN_WH, f"charging (band {band})"
+                ),
+                discharge=_conversion_ratio(
+                    ac_out, dc_out, INVERTER_BAND_MIN_WH, f"discharging (band {band})"
+                ),
+                charged_wh=ac_in,
+                discharged_wh=dc_out,
+            )
+        )
+    ac_in, dc_in, dc_out, ac_out = (sum(v[i] for v in sums.values()) for i in range(4))
+    return InverterEfficiency(
+        charge=_conversion_ratio(dc_in, ac_in, INVERTER_EFFICIENCY_MIN_WH, "charging"),
+        discharge=_conversion_ratio(ac_out, dc_out, INVERTER_EFFICIENCY_MIN_WH, "discharging"),
+        charged_wh=ac_in,
+        discharged_wh=dc_out,
+        bands=tuple(bands),
+    )
 
 
 def store_hour_action(

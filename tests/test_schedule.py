@@ -23,6 +23,7 @@ from custom_components.alpha_ess_local.schedule import (
     _apply_scenario_to_day,
     _battery_efficiency,
     _calculate_best_schedule,
+    _conversion_eff,
     _evaluate_hour_action,
     _finalise_schedule,
     _inverter_efficiency,
@@ -99,6 +100,26 @@ def test_battery_efficiency_breakpoints():
 
 def test_battery_efficiency_guards_zero_capacity():
     assert _battery_efficiency(100, 0) == 0.975
+
+
+def test_conversion_measured_per_direction_else_the_table():
+    measured = _config(inverter_charge_efficiency=0.95, inverter_discharge_efficiency=0.94)
+    assert _conversion_eff(3000, measured, charging=True) == 0.95
+    assert _conversion_eff(3000, measured, charging=False) == 0.94
+    # not measured yet: the table (3 kW on a 10 kW inverter is load 0.30)
+    assert _conversion_eff(3000, _config(), charging=True) == 0.97
+    only_charge = _config(inverter_charge_efficiency=0.95)
+    assert _conversion_eff(3000, only_charge, charging=False) == 0.97
+
+
+def test_conversion_per_power_band_before_the_overall_value():
+    config = _config(
+        inverter_charge_efficiency=0.95,
+        inverter_charge_bands=(0.93, None, 0.965),
+    )
+    assert _conversion_eff(2000, config, charging=True) == 0.93
+    assert _conversion_eff(4000, config, charging=True) == 0.95  # band not measured yet
+    assert _conversion_eff(8000, config, charging=True) == 0.965
 
 
 # --- _evaluate_hour_action ---------------------------------------------------
