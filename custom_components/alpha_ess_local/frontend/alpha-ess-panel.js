@@ -2062,13 +2062,48 @@ class AlphaEssPanel extends HTMLElement {
     if (rt.value !== null && rt.value !== undefined) {
       value = `${fmtNum(rt.value * 100, 1)} % (${rt.days} dagen)`;
       cls = "accent";
+    } else if (rt.lossless !== null && rt.lossless !== undefined) {
+      value = `${fmtNum(rt.lossless * 100, 1)} % — tellers tonen geen verlies, standaardwaarden gebruikt`;
+      cls = "muted";
     } else if (rt.implausible) {
       value = "meting onbetrouwbaar";
       cls = "warn";
     } else {
       value = `aan het meten: ${fmtNum(Math.min(rt.cycles, rt.cycles_needed), 1)} van ${rt.cycles_needed} batterijen`;
     }
-    return `<div class="kv" title="Wat er uit de batterij kwam gedeeld door wat erin ging, gecorrigeerd voor de laadstand. De planning rekent ermee zodra er ${rt.cycles_needed} volle batterijen doorheen gingen."><span>Rendement (gemeten)</span><span class="${cls}">${esc(value)}</span></div>`;
+    return `<div class="kv" title="Wat er uit de batterij kwam gedeeld door wat erin ging, volgens de tellers van de batterij, gecorrigeerd voor de laadstand. De planning rekent ermee zodra er ${rt.cycles_needed} volle batterijen doorheen gingen, tenzij de tellers geen verlies tonen (boven 98 %)."><span>Rendement batterij (gemeten)</span><span class="${cls}">${esc(value)}</span></div>${this._conversionItem()}`;
+  }
+
+  // The inverter's measured conversion between grid side and battery, per
+  // direction, or how far the measurement is.
+  _conversionItem() {
+    const ie = (this._status || {}).inverter_efficiency;
+    if (!ie) return "";
+    const part = (eff, kwh) =>
+      eff !== null && eff !== undefined
+        ? `${fmtNum(eff * 100, 1)} %`
+        : `meten ${fmtNum(Math.min(kwh, ie.needed_kwh), 0)}/${fmtNum(ie.needed_kwh, 0)} kWh`;
+    const both = ie.charge != null && ie.discharge != null;
+    const value = `laden ${part(ie.charge, ie.charged_kwh)} · ontladen ${part(ie.discharge, ie.discharged_kwh)}`;
+    const total = both ? `<div class="kv"><span>Rendement net → batterij → net</span><span class="accent">${fmtNum(ie.charge * ie.discharge * 100, 1)} % (zonder batterijverlies)</span></div>` : "";
+    return `<div class="kv" title="Gemeten uit het vermogen aan de netkant van de omvormer en dat van de batterij, alleen als de zonnepanelen niets leveren, over ${ie.days} dagen. De planning rekent ermee per richting zodra er ${fmtNum(ie.needed_kwh, 0)} kWh doorheen ging."><span>Rendement omvormer (gemeten)</span><span class="${both ? "accent" : "muted"}">${esc(value)}</span></div>${total}${this._conversionBands(ie)}`;
+  }
+
+  // The inverter's conversion per power band, each way: where the loss is.
+  // A band in use by the planner once enough went through it.
+  _conversionBands(ie) {
+    if (!ie.bands || !ie.band_edges_kw) return "";
+    const [low, high] = ie.band_edges_kw.map((kw) => fmtNum(kw, 0));
+    const names = [`onder ${low} kW`, `${low}–${high} kW`, `vanaf ${high} kW`];
+    const part = (eff, kwh) =>
+      eff !== null && eff !== undefined ? `${fmtNum(eff * 100, 1)} %` : kwh > 0 ? `${fmtNum(kwh, 1)}/${fmtNum(ie.band_needed_kwh, 0)} kWh` : "–";
+    const rows = ie.bands
+      .map(
+        (b, i) =>
+          `<tr><td>${names[i]}</td><td>${part(b.charge, b.charged_kwh)}</td><td>${part(b.discharge, b.discharged_kwh)}</td></tr>`
+      )
+      .join("");
+    return `<table class="eff-bands" title="Per vermogen aan de netkant. Een vak telt mee in de planning zodra er ${fmtNum(ie.band_needed_kwh, 0)} kWh doorheen ging; anders het gemiddelde over alle vermogens."><thead><tr><th>Vermogen</th><th>Laden</th><th>Ontladen</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   _extraPvCard(device) {
@@ -3697,6 +3732,10 @@ const STYLE = `
   @media (max-width: 500px) { .kv-grid { grid-template-columns: 1fr; } }
   .kv { display: flex; justify-content: space-between; gap: 12px; padding: 11px 0; font-size: 15px; font-weight: 300; }
   .kv span:first-child { color: var(--muted); }
+  .eff-bands { width: 100%; border-collapse: collapse; font-size: 13px; margin: 2px 0 8px; font-variant-numeric: tabular-nums; }
+  .eff-bands th { color: var(--muted); font-weight: 400; text-align: right; padding: 4px 0; }
+  .eff-bands td { text-align: right; padding: 4px 0; border-top: 1px solid var(--line); }
+  .eff-bands th:first-child, .eff-bands td:first-child { text-align: left; color: var(--muted); }
   .kv span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
   .sources { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 12px; }
   .source { color: var(--muted); }

@@ -19,6 +19,8 @@ from custom_components.alpha_ess_local.storage import (
     MIN_SPREAD_SAMPLES,
     BatteryRoundTrip,
     ForecastRow,
+    InverterBand,
+    InverterEfficiency,
     _day_class,
     _ensure_schema,
     _is_factor_reliable,
@@ -29,6 +31,7 @@ from custom_components.alpha_ess_local.storage import (
     lead_bucket,
     learn_battery_round_trip,
     learn_forecast_spread,
+    learn_inverter_efficiency,
     retrieve_day_actions,
     retrieve_day_battery_charge_wh,
     retrieve_day_battery_discharge_wh,
@@ -50,6 +53,7 @@ from custom_components.alpha_ess_local.storage import (
     store_hour_data,
     store_hour_dispatch,
     store_hour_progress,
+    store_inverter_sample,
 )
 
 
@@ -1307,3 +1311,96 @@ def test_battery_round_trip_only_over_the_last_days(tmp_path):
     assert learn_battery_round_trip(db_path, 10000, date(2026, 10, 10)).round_trip == pytest.approx(
         0.9
     )
+
+
+def test_battery_round_trip_without_losses_keeps_the_default(tmp_path):
+    """Counters that show next to no loss (above 98%) can't see the
+    battery's losses: not used, but what they show is kept for the panel."""
+    db_path = str(tmp_path / "test.db")
+    store_battery_counter(db_path, datetime(2026, 10, 1, 0), 40.0, 1000.0, 900.0)
+    store_battery_counter(db_path, datetime(2026, 10, 10, 0), 40.0, 1060.0, 959.4)
+
+    learned = learn_battery_round_trip(db_path, 10000, date(2026, 10, 10))
+
+    assert learned.round_trip is None
+    assert learned.implausible is False
+    assert learned.lossless == pytest.approx(0.99)
+
+
+# --- the inverter's measured conversion -------------------------------------------
+
+
+def _conversion_samples(db_path, count, charge_ac, charge_dc, discharge_dc, discharge_ac):
+    """`count` 5-minute samples each way, an hour apart, in October."""
+    for i in range(count):
+        when = datetime(2026, 10, 1 + i // 24, i % 24)
+        store_inverter_sample(db_path, when, 0, -charge_dc, -charge_ac, 5)
+        store_inverter_sample(db_path, when, 0, discharge_dc, discharge_ac, 5)
+
+
+def test_inverter_efficiency_per_direction(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    # 120 samples of 5 minutes at 4 kW: 40 kWh each way.
+    _conversion_samples(db_path, 120, 4000, 3800, 4000, 3760)
+
+    learned = learn_inverter_efficiency(db_path, date(2026, 10, 10))
+
+    assert learned.charge == pytest.approx(0.95)
+    assert learned.discharge == pytest.approx(0.94)
+    assert learned.charged_wh == pytest.approx(40000)
+    assert learned.discharged_wh == pytest.approx(40000)
+    # all of it at 4 kW: the 3-6 kW band
+    assert learned.bands[1].charge == pytest.approx(0.95)
+    assert learned.bands[1].discharge == pytest.approx(0.94)
+    assert learned.bands[0] == learned.bands[2] == InverterBand()
+
+
+def test_inverter_efficiency_per_power_band(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    # 2 kW at 93%, 8 kW at 96%: 12 + 48 kWh charged.
+    for i in range(72):
+        when = datetime(2026, 10, 1 + i // 24, i % 24)
+        store_inverter_sample(db_path, when, 0, -1860, -2000, 5)
+        store_inverter_sample(db_path, when, 0, -7680, -8000, 5)
+
+    learned = learn_inverter_efficiency(db_path, date(2026, 10, 10))
+
+    assert learned.bands[0].charge == pytest.approx(0.93)
+    assert learned.bands[1].charge is None
+    assert learned.bands[2].charge == pytest.approx(0.96)
+    assert learned.charge == pytest.approx((1860 + 7680) / 10000)
+    assert learned.discharge is None
+
+
+@pytest.mark.parametrize(
+    ("pv_w", "battery_w", "inverter_w"),
+    [
+        (500, -3000, -3100),  # the sun shines: the AC power isn't all the battery's
+        (0, -300, -320),  # a trickle
+        (0, 2000, -50),  # mid-switch: the two point different ways
+    ],
+)
+def test_inverter_sample_skipped(tmp_path, pv_w, battery_w, inverter_w):
+    db_path = str(tmp_path / "test.db")
+    for i in range(200):
+        store_inverter_sample(
+            db_path, datetime(2026, 10, 1 + i // 24, i % 24), pv_w, battery_w, inverter_w, 5
+        )
+
+    learned = learn_inverter_efficiency(db_path, date(2026, 10, 10))
+
+    assert learned == InverterEfficiency()
+
+
+def test_inverter_efficiency_needs_enough_and_a_plausible_value(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    # 10 kWh each way: too little yet.
+    _conversion_samples(db_path, 30, 4000, 3800, 4000, 3760)
+    assert learn_inverter_efficiency(db_path, date(2026, 10, 10)).charge is None
+
+    db_path = str(tmp_path / "other.db")
+    # More out at the grid side than left the battery: a reading is off.
+    _conversion_samples(db_path, 120, 4000, 3800, 4000, 4100)
+    learned = learn_inverter_efficiency(db_path, date(2026, 10, 10))
+    assert learned.charge == pytest.approx(0.95)
+    assert learned.discharge is None

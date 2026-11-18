@@ -1157,6 +1157,17 @@ class AlphaEssLocalRealDataCoordinator(DataUpdateCoordinator[RealPowerData]):
         # *that* hour's own baseline, never the just-completed hour's.
         # The sample just taken (if _sample_hour accepted it), for the
         # panel's power curve after a restart -- see storage.five_min_data.
+        inverter_power = modbus_data.get("inverter_power")
+        if sample_index is not None and modbus_ok and inverter_power is not None:
+            await self.hass.async_add_executor_job(
+                storage.store_inverter_sample,
+                db_path,
+                now,
+                pv_roof,
+                battery_power,
+                inverter_power,
+                5,
+            )
         if sample_index is not None:
             await self.hass.async_add_executor_job(
                 storage.store_five_min_sample,
@@ -1252,6 +1263,7 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         # The battery's measured round trip as of the last planning run (the
         # planner uses it once known; the panel shows it).
         self.battery_round_trip = storage.BatteryRoundTrip()
+        self.inverter_efficiency = storage.InverterEfficiency()
 
     async def _async_update_data(self) -> dict[str, Day]:
         """Merge price/solar/house-load sources and (re)run the scheduler."""
@@ -1352,6 +1364,9 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             options.get(CONF_USABLE_BATTERY_CAPACITY, 0),
             today_date,
         )
+        self.inverter_efficiency = await self.hass.async_add_executor_job(
+            storage.learn_inverter_efficiency, db_path, today_date
+        )
 
         max_grid_load_wh = _effective_max_grid_load_wh(self.hass, self.config_entry)
 
@@ -1420,6 +1435,10 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
             or None,
             fixed_hours=fixed_hours(options, today_date),
             battery_efficiency=_battery_efficiency(self.battery_round_trip.round_trip),
+            inverter_charge_efficiency=self.inverter_efficiency.charge,
+            inverter_discharge_efficiency=self.inverter_efficiency.discharge,
+            inverter_charge_bands=tuple(b.charge for b in self.inverter_efficiency.bands),
+            inverter_discharge_bands=tuple(b.discharge for b in self.inverter_efficiency.bands),
         )
 
         modbus_data = self._modbus_coordinator.data or {}

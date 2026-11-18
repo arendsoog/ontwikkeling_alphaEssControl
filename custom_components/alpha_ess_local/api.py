@@ -141,6 +141,11 @@ class AlphaEssLocalApiClient:
         registers = await self._read_registers(protocol.REG_BATTERY_POWER, 1)
         return protocol.to_signed_short(registers[0])
 
+    async def async_get_inverter_power(self) -> int:
+        """The inverter's AC power, in Watts. Positive = giving out, negative = taking in."""
+        registers = await self._read_registers(protocol.REG_INVERTER_POWER, 2)
+        return protocol.to_signed_int(registers[0], registers[1])
+
     async def async_get_total_active_power(self) -> int:
         """Grid power, in Watts. Negative = feed to grid, positive = use from grid."""
         registers = await self._read_registers(protocol.REG_TOTAL_ACTIVE_POWER, 2)
@@ -257,6 +262,7 @@ class AlphaEssLocalApiClient:
             "pv_power": sum(pv_strings.values()),
             **pv_strings,
             "battery_power": await self.async_get_battery_power(),
+            "inverter_power": await self.async_get_inverter_power(),
             "grid_power": await self.async_get_total_active_power(),
             "total_energy_feed_to_grid": await self.async_get_total_energy_feed_to_grid(),
             "total_energy_consume_from_grid": (
