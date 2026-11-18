@@ -30,6 +30,7 @@ from homeassistant.helpers import entity_registry as er
 
 from .const import (
     CONF_CONSUMER_ENERGY_ENTITY,
+    CONF_CONSUMER_PHASE_ENTITIES,
     CONF_CONSUMER_POWER_ENTITY,
     CONF_EV_CHARGER_ENERGY_ENTITIES,
     CONF_EV_CHARGER_ENERGY_ENTITY,
@@ -210,6 +211,7 @@ def consumer_cards(entry: ConfigEntry) -> list[dict[str, Any]]:
             "exclude_from_learning": left_out(consumer),
             "power": consumer.get(CONF_CONSUMER_POWER_ENTITY),
             "energy": consumer.get(CONF_CONSUMER_ENERGY_ENTITY),
+            "phases": consumer.get(CONF_CONSUMER_PHASE_ENTITIES) or [],
             "max_power": consumer.get(CONF_MAX_POWER),
         }
         for consumer in _subentries(entry, SUBENTRY_CONSUMER, with_id=True)

@@ -1731,6 +1731,7 @@ class AlphaEssPanel extends HTMLElement {
           <span class="${running ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : running ? "Aan" : "Uit"}</span>
         </div>
         ${consumer.power ? this._powerGauge(consumer.power, power, consumer.max_power, running, "house", "Vermogen") : ""}
+        ${this._phaseSection(consumer.phases, power, running)}
         ${
           consumer.energy
             ? `<div class="section-title">Energie vandaag</div>${this._energyRows([
@@ -1761,17 +1762,6 @@ class AlphaEssPanel extends HTMLElement {
     }));
     // Phase label from the sensor's name ("... L2", "... fase 2"), else by
     // its place in the list.
-    const phases = group.phases.map((id, i) => {
-      const s = this._hass.states[id];
-      const label = s && s.attributes.friendly_name;
-      let value = s ? num(s.state) : null;
-      if (value !== null && s.attributes.unit_of_measurement === "kW") value *= 1000;
-      // A charger that isn't charging may give no value per phase (an
-      // Alfen does): that's no power, as long as its total is known.
-      if (value === null && power !== null && !charging) value = 0;
-      return { id, label: (label && phaseOf(label)) || `L${i + 1}`, value };
-    });
-
     return `
       <section class="card device">
         <div class="device-head">
@@ -1781,22 +1771,29 @@ class AlphaEssPanel extends HTMLElement {
           <span class="${charging ? "accent" : "muted"}">${power === null ? "Niet beschikbaar" : charging ? "Laadt" : "Laadt niet"}</span>
         </div>
         ${group.power.length ? this._powerGauge(group.power[0], power, group.max_power ?? 11000, charging, "ev", "Laadvermogen") : ""}
-        ${
-          phases.length
-            ? `<div class="section-title">Vermogen per fase</div>
-        <div class="mppt-row">${phases
-          .map(
-            (p) =>
-              `<span class="mppt ${p.value ? "active" : ""}" data-entity="${esc(p.id)}">${esc(p.label)} · ${
-                fmtW(p.value)
-              }</span>`
-          )
-          .join("")}</div>`
-            : ""
-        }
+        ${this._phaseSection(group.phases, power, charging)}
         ${energy.length ? `<div class="section-title">Energie vandaag</div>${this._energyRows(energy)}` : ""}
         ${this._lifetimeSection(group.energy, "Geladen")}
       </section>`;
+  }
+
+  // A device's power per phase (L1/L2/L3), one chip each. A device that is
+  // off may give no value per phase (an Alfen does): that's no power, as
+  // long as its total is known.
+  _phaseSection(ids, power, active) {
+    if (!ids || !ids.length) return "";
+    const chips = ids
+      .map((id, i) => {
+        const s = this._hass.states[id];
+        const label = s && s.attributes.friendly_name;
+        let value = s ? num(s.state) : null;
+        if (value !== null && s.attributes.unit_of_measurement === "kW") value *= 1000;
+        if (value === null && power !== null && !active) value = 0;
+        const name = (label && phaseOf(label)) || `L${i + 1}`;
+        return `<span class="mppt ${value ? "active" : ""}" data-entity="${esc(id)}">${esc(name)} · ${fmtW(value)}</span>`;
+      })
+      .join("");
+    return `<div class="section-title">Vermogen per fase</div><div class="mppt-row">${chips}</div>`;
   }
 
   // A device's power, with -- when its max power is set -- a gauge (% of
