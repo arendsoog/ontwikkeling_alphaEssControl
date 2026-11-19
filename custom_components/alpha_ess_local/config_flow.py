@@ -22,6 +22,7 @@ from .api import (
 from .const import (
     CONF_APPLY_VAT_ON_RETURN,
     CONF_CONSUMER_ENERGY_ENTITY,
+    CONF_CONSUMER_PHASE_ENTITIES,
     CONF_CONSUMER_POWER_ENTITY,
     CONF_ENTSOE_PRICE_ENTITY,
     CONF_EV_CHARGER_ENERGY_ENTITY,
@@ -465,6 +466,10 @@ def _consumer_schema(hass: HomeAssistant, options: Mapping[str, Any]) -> vol.Sch
                 CONF_CONSUMER_ENERGY_ENTITY,
                 description={"suggested_value": options.get(CONF_CONSUMER_ENERGY_ENTITY)},
             ): _sensor_selector("energy"),
+            vol.Optional(
+                CONF_CONSUMER_PHASE_ENTITIES,
+                description={"suggested_value": options.get(CONF_CONSUMER_PHASE_ENTITIES)},
+            ): _sensor_selector("power", multiple=True),
             **_max_power_field(options),
             **_exclude_from_learning_field(options),
         }

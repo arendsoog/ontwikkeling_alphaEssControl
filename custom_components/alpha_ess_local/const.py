@@ -175,6 +175,8 @@ SUBENTRY_EV_CHARGER = "ev_charger"
 SUBENTRY_CONSUMER = "consumer"
 CONF_CONSUMER_POWER_ENTITY = "consumer_power_entity"
 CONF_CONSUMER_ENERGY_ENTITY = "consumer_energy_entity"
+# Its power per phase (L1, L2, L3), for its card in the panel. Optional.
+CONF_CONSUMER_PHASE_ENTITIES = "consumer_phase_entities"
 # Per EV charger/consumer: whether its power is left out of the learned
 # house load (on) or counts as ordinary house load (off). The power sensors
 # left out are listed under CONF_EXCLUDED_POWER_ENTITIES.

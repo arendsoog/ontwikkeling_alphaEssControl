@@ -318,6 +318,7 @@ async def test_add_consumer(hass: HomeAssistant):
         "icon",
         "consumer_power_entity",
         "consumer_energy_entity",
+        "consumer_phase_entities",
         "max_power",
         "exclude_from_learning",
     ]
@@ -441,6 +442,7 @@ async def test_consumer_cards_with_their_name_and_icon(hass: HomeAssistant):
             "exclude_from_learning": True,
             "power": "sensor.zwembad",
             "energy": "sensor.zwembad_energie",
+            "phases": [],
             "max_power": None,
         }
     ]

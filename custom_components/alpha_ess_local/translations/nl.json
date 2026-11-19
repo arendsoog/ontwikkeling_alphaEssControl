@@ -252,6 +252,7 @@
                         "icon": "Pictogram",
                         "consumer_power_entity": "Vermogen",
                         "consumer_energy_entity": "Totaal verbruikt",
+                        "consumer_phase_entities": "Vermogen per fase",
                         "max_power": "Max vermogen",
                         "exclude_from_learning": "Buiten het geleerde verbruik houden"
                     },
@@ -260,6 +261,7 @@
                         "icon": "Het pictogram op de kaart in het paneel. Optioneel.",
                         "consumer_power_entity": "Het vermogen dat de verbruiker nu gebruikt.",
                         "consumer_energy_entity": "Het totaal verbruikte energie (een oplopende teller in kWh). Optioneel.",
+                        "consumer_phase_entities": "Het vermogen per fase (L1, L2, L3), voor de kaart van de verbruiker. Optioneel.",
                         "max_power": "Het hoogste vermogen van de verbruiker, de bovenkant van de meter op zijn kaart in het paneel. Optioneel: zonder toont de kaart geen meter.",
                         "exclude_from_learning": "Aan: het vermogen wordt van het huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd, voor grote, onregelmatige verbruikers (auto, zwembad, warmtepomp). Uit: telt als gewoon huisverbruik (zoals een kookplaat)."
                     }
@@ -272,6 +274,7 @@
                         "icon": "Pictogram",
                         "consumer_power_entity": "Vermogen",
                         "consumer_energy_entity": "Totaal verbruikt",
+                        "consumer_phase_entities": "Vermogen per fase",
                         "max_power": "Max vermogen",
                         "exclude_from_learning": "Buiten het geleerde verbruik houden"
                     },
@@ -280,6 +283,7 @@
                         "icon": "Het pictogram op de kaart in het paneel. Optioneel.",
                         "consumer_power_entity": "Het vermogen dat de verbruiker nu gebruikt.",
                         "consumer_energy_entity": "Het totaal verbruikte energie (een oplopende teller in kWh). Optioneel.",
+                        "consumer_phase_entities": "Het vermogen per fase (L1, L2, L3), voor de kaart van de verbruiker. Optioneel.",
                         "max_power": "Het hoogste vermogen van de verbruiker, de bovenkant van de meter op zijn kaart in het paneel. Optioneel: zonder toont de kaart geen meter.",
                         "exclude_from_learning": "Aan: het vermogen wordt van het huisverbruik afgetrokken voordat het verbruik per uur wordt geleerd, voor grote, onregelmatige verbruikers (auto, zwembad, warmtepomp). Uit: telt als gewoon huisverbruik (zoals een kookplaat)."
                     }
