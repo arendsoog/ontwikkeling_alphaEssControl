@@ -39,6 +39,7 @@ from custom_components.alpha_ess_local.const import (
     CONF_PERSIST_DAILY_CHARGE_LIMIT,
     CONF_USABLE_BATTERY_CAPACITY,
     DOMAIN,
+    PLAN_WAIT,
 )
 from custom_components.alpha_ess_local.data import Charge, Day, Earning, FiveMin, Hour
 from custom_components.alpha_ess_local.extra_pv import SMA_PV_POWER_STRING_KEY
@@ -1646,6 +1647,9 @@ async def test_schedule_coordinator_calls_scheduler_with_current_soc_and_hour(
         data = await coordinator._async_update_data()
 
     assert set(data.keys()) == {"today", "tomorrow"}
+    # When it was planned, with today's own prices: for the dispatch.
+    assert data["today"].planned_at == dt_util.now()
+    assert data["today"].provisional is False
     args = mock_run_scheduler.call_args.args
     assert args[0] == 550  # 55.0% -> native 0-1000 scale
     assert args[1] == current_hour
@@ -2092,6 +2096,98 @@ async def test_dispatch_coordinator_control_enabled_writes_when_changed(
 
     client.async_set_max_feed_into_grid.assert_awaited_once_with(decision.target_feed_in_percentage)
     client.async_set_dispatch_param.assert_awaited_once_with(decision.param)
+
+
+def _plan_wait_setup(hass: HomeAssistant, day: Day):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={CONF_USABLE_BATTERY_CAPACITY: 10000, CONF_CONTROL_ENABLED: True},
+    )
+    entry.add_to_hass(hass)
+    cur_param = DispatchParam(
+        mode=DispatchMode.NO_BATTERY_CHARGE,
+        started=True,
+        power=0,
+        cutoff_soc=0,
+        duration=3600,
+        para7=255,
+        pv_on=True,
+    )
+    client = _fake_client(cur_param, cur_feed_in_percentage=0)
+    schedule_coordinator = SimpleNamespace(data={"today": day})
+    coordinator = AlphaEssLocalDispatchCoordinator(
+        hass, entry, _fake_modbus_coordinator(client), schedule_coordinator
+    )
+    return coordinator, client, schedule_coordinator
+
+
+async def test_dispatch_waits_for_the_plan_of_the_new_hour(hass: HomeAssistant, freezer):
+    """At the hour the dispatch ran before the replanning was done and set
+    the old plan's target for a few seconds (74 % where the new plan said
+    57 %): it leaves the inverter as it is until the plan for the hour is
+    there."""
+    freezer.move_to("2024-01-15 14:00:04")
+    now = dt_util.now()
+    old = _schedule_day_with_hour(now.hour, charge=Charge.CHARGING_ON_GRID, cutoff_soc=740)
+    old.planned_at = now - timedelta(minutes=2)
+    coordinator, client, schedule_coordinator = _plan_wait_setup(hass, old)
+
+    assert await coordinator._async_update_data() is None
+    client.async_set_dispatch_param.assert_not_called()
+
+    new = _schedule_day_with_hour(now.hour, charge=Charge.CHARGING_ON_GRID, cutoff_soc=570)
+    new.planned_at = now
+    schedule_coordinator.data = {"today": new}
+    decision = await coordinator._async_update_data()
+
+    assert decision.param.mode == DispatchMode.STATE_OF_CHARGE_CONTROL
+    assert decision.param.cutoff_soc == 568  # 57 %, in the register's 0.4 % steps
+    client.async_set_dispatch_param.assert_awaited_once_with(decision.param)
+
+
+async def test_dispatch_follows_the_last_plan_when_none_comes(hass: HomeAssistant, freezer):
+    freezer.move_to("2024-01-15 14:00:04")
+    now = dt_util.now()
+    old = _schedule_day_with_hour(now.hour, charge=Charge.CHARGING_ON_GRID, cutoff_soc=740)
+    old.planned_at = now - timedelta(minutes=2)
+    coordinator, client, _ = _plan_wait_setup(hass, old)
+
+    assert await coordinator._async_update_data() is None
+    freezer.tick(PLAN_WAIT)
+    decision = await coordinator._async_update_data()
+
+    # the old plan's action, not the safe default
+    assert decision.param.mode == DispatchMode.STATE_OF_CHARGE_CONTROL
+    assert decision.param.cutoff_soc == 740
+    client.async_set_dispatch_param.assert_awaited_once()
+
+
+async def test_dispatch_waits_for_todays_prices_right_after_a_start(hass: HomeAssistant, freezer):
+    """Planned with yesterday's prices right after a start: a different
+    action for the seconds until today's came in."""
+    freezer.move_to("2024-01-15 14:02:32")
+    day = _schedule_day_with_hour(dt_util.now().hour, charge=Charge.CHARGING_ON_GRID)
+    day.planned_at = dt_util.now()
+    day.provisional = True
+    coordinator, client, _ = _plan_wait_setup(hass, day)
+
+    assert await coordinator._async_update_data() is None
+    client.async_set_dispatch_param.assert_not_called()
+
+
+async def test_dispatch_follows_a_plan_on_yesterdays_prices_later_on(hass: HomeAssistant, freezer):
+    # Prices missing for good: no wait at every hour once past the start.
+    freezer.move_to("2024-01-15 14:00:00")
+    day = _schedule_day_with_hour(dt_util.now().hour, charge=Charge.CHARGING_ON_GRID)
+    day.provisional = True
+    coordinator, client, _ = _plan_wait_setup(hass, day)
+    freezer.tick(PLAN_WAIT)
+    day.planned_at = dt_util.now()
+
+    decision = await coordinator._async_update_data()
+
+    assert decision.param.mode == DispatchMode.STATE_OF_CHARGE_CONTROL
+    client.async_set_dispatch_param.assert_awaited_once()
 
 
 async def test_record_dispatch_logs_only_the_grid_charge_power(hass: HomeAssistant):

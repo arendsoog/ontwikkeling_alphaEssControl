@@ -78,6 +78,8 @@ from .const import (
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
+    PLAN_WAIT,
+    PRICE_SOURCE_YESTERDAY,
     STARTUP_GRACE,
 )
 from .consumers import consumer_options, excluded_power_entities
@@ -1496,6 +1498,11 @@ class AlphaEssLocalScheduleCoordinator(DataUpdateCoordinator[dict[str, Day]]):
                 )
             )
 
+        today.planned_at = now
+        # Priced like yesterday, until today's prices come in (after a start,
+        # within seconds as a rule).
+        prices_today = self._prices_coordinator.data["today"]
+        today.provisional = prices_today.valid and prices_today.source == PRICE_SOURCE_YESTERDAY
         return {"today": today, "tomorrow": tomorrow}
 
 
@@ -1696,6 +1703,38 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
         self._p1_fallback = False
         # True while writing the extra PV's on/off register keeps failing.
         self._extra_pv_unreachable = False
+        # Since when the plan isn't the one for now (see _plan_pending).
+        self._started_at = dt_util.now()
+        self._plan_wait_since: datetime | None = None
+
+    def _plan_pending(self, day: Day | None, now: datetime) -> bool:
+        """Whether to leave the inverter as it is a moment longer: the plan
+        is from an earlier hour (the hourly replanning is still running), or
+        priced like yesterday right after a start (today's prices come in
+        within seconds). Acting on it meanwhile set a target from the old
+        plan, or a different action, for a few seconds. At most PLAN_WAIT;
+        then that plan is followed after all."""
+        pending = False
+        if day is not None and day.planned_at is not None:
+            planned = (day.planned_at.date(), day.planned_at.hour)
+            stale = planned != (now.date(), now.hour)
+            early = now - self._started_at < PLAN_WAIT
+            pending = stale or (day.provisional and early)
+        if not pending:
+            self._plan_wait_since = None
+            return False
+        if self._plan_wait_since is None:
+            self._plan_wait_since = now
+            LOGGER.debug("dispatch: waiting for the plan for %02d:00", now.hour)
+        if now - self._plan_wait_since < PLAN_WAIT:
+            return True
+        if now - self._plan_wait_since < PLAN_WAIT + DISPATCH_INTERVAL:
+            LOGGER.warning(
+                "dispatch: no new plan for %02d:00 after %d s -- following the last one",
+                now.hour,
+                PLAN_WAIT.total_seconds(),
+            )
+        return False
 
     def _measured_grid_power(self, now: datetime) -> tuple[float | None, datetime | None]:
         """Measured net grid power (W, + = import) and when it was measured.
@@ -1878,6 +1917,10 @@ class AlphaEssLocalDispatchCoordinator(DataUpdateCoordinator[dispatch.DispatchDe
 
         schedule_data = self._schedule_coordinator.data
         schedule_day = schedule_data["today"] if schedule_data else None
+        if self._plan_pending(schedule_day, now):
+            # Not even the hour's bookkeeping: its first cycle comes once
+            # the plan for it is there.
+            return self.data
 
         if schedule_day is not None and schedule_day.valid and schedule_day.hour[now.hour].valid:
             hour = schedule_day.hour[now.hour]

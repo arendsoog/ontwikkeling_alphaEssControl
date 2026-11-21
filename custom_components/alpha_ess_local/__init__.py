@@ -174,6 +174,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlphaEssLocalConfigEntry
         hass, entry, modbus_coordinator, schedule_coordinator
     )
     await dispatch_coordinator.async_config_entry_first_refresh()
+    # A new plan goes to the inverter right away, not at the next cycle --
+    # the dispatch waits for it at the start of an hour (see _plan_pending).
+    entry.async_on_unload(
+        schedule_coordinator.async_add_listener(
+            lambda: hass.async_create_task(dispatch_coordinator.async_request_refresh())
+        )
+    )
 
     entry.runtime_data = AlphaEssLocalRuntimeData(
         client=client,

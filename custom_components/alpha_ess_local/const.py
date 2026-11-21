@@ -14,6 +14,13 @@ SCAN_INTERVAL = timedelta(seconds=30)
 # PV) may not have loaded yet: a missing source is only logged as an error
 # when it's still missing after this.
 STARTUP_GRACE = timedelta(minutes=5)
+# A price Day's source while today's prices are missing and yesterday's
+# stand in for them.
+PRICE_SOURCE_YESTERDAY = "yesterday"
+# How long the dispatch holds the inverter as it is while the plan is from
+# an earlier hour, or priced like yesterday right after a start, before it
+# acts on that plan after all.
+PLAN_WAIT = timedelta(minutes=2)
 
 # Options flow: device physical specs (config.ini [General])
 # CONF_PV_POWER is not itself a form field -- it's computed from

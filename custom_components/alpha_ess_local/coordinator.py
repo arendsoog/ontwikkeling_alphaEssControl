@@ -27,6 +27,7 @@ from .const import (
     DEFAULT_VAT_PERCENTAGE,
     DOMAIN,
     LOGGER,
+    PRICE_SOURCE_YESTERDAY,
     SCAN_INTERVAL,
     STARTUP_GRACE,
 )
@@ -266,7 +267,7 @@ class AlphaEssLocalPricesCoordinator(DataUpdateCoordinator[dict[str, Day]]):
         )
         day.valid = True
         day.kept = True
-        day.source = "yesterday"
+        day.source = PRICE_SOURCE_YESTERDAY
         if dt_util.utcnow() - self._started < STARTUP_GRACE:
             LOGGER.debug("No prices for %s yet -- planning with yesterday's meanwhile", today)
         elif not self._using_yesterday:

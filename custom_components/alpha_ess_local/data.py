@@ -3,6 +3,7 @@ Data types – vertaling van Data.h
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import IntEnum
 
 
@@ -160,3 +161,8 @@ class Day:
     # last known data for the same date, kept (prices don't change once
     # published; a forecast is still the best guess there is).
     kept: bool = False
+    # A planned Day: when it was planned (None if not by the schedule
+    # coordinator), and whether with a stand-in for prices or forecast
+    # (`kept`) -- the dispatch waits a moment for a better plan then.
+    planned_at: datetime | None = None
+    provisional: bool = False
