@@ -18,7 +18,11 @@ from custom_components.alpha_ess_local.dispatch import (
     regulate_grid_charge_power,
     set_dispatch_msg,
 )
-from custom_components.alpha_ess_local.protocol import DispatchMode, DispatchParam
+from custom_components.alpha_ess_local.protocol import (
+    DispatchMode,
+    DispatchParam,
+    dispatch_soc_setpoint,
+)
 
 CAPACITY = 10000.0
 FULL_POWER = 9460  # (10000 * (1000 - 104)) // 1000 + 500, hand-computed
@@ -244,6 +248,23 @@ def test_decide_dispatch_charging_on_grid_at_the_target_only_charges_from_pv():
     assert not is_grid_charge(decision.param, hour)  # nothing to regulate
 
 
+def test_decide_dispatch_charging_on_grid_target_as_the_inverter_holds_it():
+    """The inverter's SOC register counts in steps of 0.4 %: a 41.0 % target
+    stops it at 40.8 %. That is the target reached -- not state-of-charge
+    control at 0 W for the rest of the hour, feeding the solar surplus in."""
+    hour = _hour(charge=Charge.CHARGING_ON_GRID, earning=Earning.EARNING_ON_RETURN, cutoff_soc=410)
+
+    charging = decide_dispatch(hour, cur_soc=404, config=_config())
+    assert charging.param.mode == DispatchMode.STATE_OF_CHARGE_CONTROL
+    # what the inverter reads back, so "already set" holds
+    assert charging.param.cutoff_soc == 408
+
+    reached = decide_dispatch(hour, cur_soc=408, config=_config())
+    assert reached.param.mode == DispatchMode.ONLY_CHARGE_FROM_PV
+    assert reached.param.power == FULL_POWER
+    assert reached.param.pv_on is True
+
+
 # --- decide_dispatch: NO_DISCHARGING -------------------------------------------
 
 
@@ -341,6 +362,19 @@ def test_decide_extra_pv_state_on_for_earning_on_use_below_cutoff():
     # free/at a negative price instead of being curtailed for no reason.
     hour = Hour(earning=Earning.EARNING_ON_USE, cutoff_soc=900)
     assert decide_extra_pv_state(hour, cur_soc=500) == ExtraPvState.ON
+
+
+def test_decide_extra_pv_state_off_at_the_target_as_the_inverter_holds_it():
+    # A 90.2 % target stops the battery at 90.0 %: full for this hour.
+    hour = Hour(earning=Earning.EARNING_ON_USE, cutoff_soc=902)
+    assert decide_extra_pv_state(hour, cur_soc=900) == ExtraPvState.OFF
+
+
+def test_dispatch_soc_setpoint_rounds_down_to_the_register_step():
+    assert dispatch_soc_setpoint(410) == 408
+    assert dispatch_soc_setpoint(408) == 408
+    assert dispatch_soc_setpoint(1000) == 1000
+    assert dispatch_soc_setpoint(1200) == 1000
 
 
 def test_decide_extra_pv_state_on_for_no_earning():
