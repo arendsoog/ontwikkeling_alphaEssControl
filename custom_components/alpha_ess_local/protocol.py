@@ -15,6 +15,8 @@ SLAVE_ID = 85
 
 REG_DISPATCH_PARAM = 0x0880
 REG_DISPATCH_PARAM_COUNT = 11
+# The dispatch SOC register's step, in 0.1 % units (0.4 %).
+DISPATCH_SOC_STEP = 4
 REG_MAX_FEED_INTO_GRID = 0x0800
 REG_SOC = 0x0102
 # PV1 power = regs 0-1, PV2 voltage/current = regs 2-3, PV2 power = regs
@@ -194,11 +196,18 @@ def decode_dispatch_param(registers: list[int]) -> DispatchParam:
         mode=mode,
         started=(registers[0] == 1),
         power=decode_power(power_raw),
-        cutoff_soc=float(registers[6]) * 4,
+        cutoff_soc=float(registers[6]) * DISPATCH_SOC_STEP,
         duration=to_unsigned_int(registers[7], registers[8]),
         para7=registers[9],
         pv_on=(registers[10] == 1),
     )
+
+
+def dispatch_soc_setpoint(cutoff_soc: float) -> int:
+    """The SOC (0.1 % units) the inverter actually holds for `cutoff_soc`:
+    its dispatch register counts in steps of 0.4 %, rounded down (a target
+    of 41.0 % becomes 40.8 %)."""
+    return DISPATCH_SOC_STEP * int(min(cutoff_soc, 1000) / DISPATCH_SOC_STEP)
 
 
 def encode_dispatch_param(param: DispatchParam) -> list[int]:
@@ -217,7 +226,7 @@ def encode_dispatch_param(param: DispatchParam) -> list[int]:
     registers[3] = 0
     registers[4] = 0
     registers[5] = int(param.mode)
-    registers[6] = int(cutoff_soc / 4)
+    registers[6] = int(cutoff_soc / DISPATCH_SOC_STEP)
     registers[7] = (duration >> 16) & 0xFFFF
     registers[8] = duration & 0xFFFF
     registers[9] = 255  # matches C source: para7 is always sent as 255

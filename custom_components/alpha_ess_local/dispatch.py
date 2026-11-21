@@ -30,7 +30,7 @@ from .data import (
     Earning,
     Hour,
 )
-from .protocol import DispatchMode, DispatchParam
+from .protocol import DispatchMode, DispatchParam, dispatch_soc_setpoint
 
 _DISPATCH_MESSAGES = {
     DispatchMode.DEFAULT: "Default",
@@ -96,6 +96,12 @@ def _full_dispatch_power(usable_battery_capacity: float) -> int:
     return (int(usable_battery_capacity) * (SOC_MAX_BATTERY - SOC_MIN)) // 1000 + 500
 
 
+def _below_cutoff(cutoff_soc: float, cur_soc: int) -> bool:
+    """Whether the battery is still below this hour's target, as the
+    inverter holds it. A 100 % target always is: the battery may take more."""
+    return cutoff_soc == SOC_MAX_BATTERY or cur_soc < dispatch_soc_setpoint(cutoff_soc)
+
+
 def decide_dispatch(
     hour: Hour, cur_soc: int, config: DispatchConfig, house_load_w: float = 0.0
 ) -> DispatchDecision:
@@ -113,8 +119,12 @@ def decide_dispatch(
     consistent with what the DP actually planned for, rather than
     introducing a second, potentially-conflicting live signal.
     """
-    cutoff_soc = hour.cutoff_soc
-    below_cutoff = cutoff_soc == SOC_MAX_BATTERY or cur_soc < cutoff_soc
+    # The target as the inverter holds it (steps of 0.4 %): compared against
+    # the plan's own, a target of 41.0 % was never reached at the 40.8 % the
+    # inverter stopped at, so it stayed in state-of-charge control at 0 W
+    # for the rest of the hour -- feeding the solar surplus in.
+    cutoff_soc = dispatch_soc_setpoint(hour.cutoff_soc)
+    below_cutoff = _below_cutoff(hour.cutoff_soc, cur_soc)
 
     if hour.charge == Charge.CHARGING_ON_PV:
         mode = DispatchMode.NORMAL if below_cutoff else DispatchMode.NO_BATTERY_CHARGE
@@ -313,7 +323,7 @@ def decide_extra_pv_state(hour: Hour, cur_soc: int) -> ExtraPvState:
     negative price instead of being wasted."""
     if hour.earning != Earning.EARNING_ON_USE:
         return ExtraPvState.ON
-    below_cutoff = hour.cutoff_soc == SOC_MAX_BATTERY or cur_soc < hour.cutoff_soc
+    below_cutoff = _below_cutoff(hour.cutoff_soc, cur_soc)
     return ExtraPvState.ON if below_cutoff else ExtraPvState.OFF
 
 
